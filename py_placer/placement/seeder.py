@@ -399,25 +399,56 @@ def _wiring_target(state, ref: str, placed: Set[str],
 def _holes_outside(state, gate, ref: str, x: float, y: float,
                    rot: float) -> Tuple[int, int]:
     """`(holes, outside)`: how many drill holes (plated and NPTH) `ref` has,
-    and how many leave `gate`'s outline at (x, y, rot) -- the hole's whole
-    bounding square, so a hole straddling the edge counts. The pad frame
-    transform is `connector_geometry.pad_copper_outside`'s own."""
+    and how many leave `gate`'s outline at (x, y, rot), on the hole itself
+    (`pad_drill_capsule`, a circle or a milled slot, sampled), so a hole
+    straddling the edge counts and one whose bounding square alone crosses a
+    curved edge does not. A castellated pad's half-hole is exempt while it
+    straddles the outline, as check_assembly's copper gate exempts its pad
+    (`legality.pad_copper_overrun_mm`; #1297: rp2350's Teensy U8, 33)."""
+    from kicad_parser import pad_drill_capsule
+    from .legality import _on_board, footprint_at_pose
     fp = (state.pcb_data.footprints or {}).get(ref)
     if fp is None:
         return 0, 0
-    c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
     n = out = 0
-    for p in fp.pads:
-        d = float(getattr(p, 'drill', 0) or 0)
-        if d <= 0:
+    for p in footprint_at_pose(fp, (x, y, rot)).pads:
+        if float(getattr(p, 'drill', 0) or 0) <= 0:
             continue
         n += 1
-        lx, ly = float(p.local_x), float(p.local_y)
-        px, py = x + c * lx + s * ly, y - s * lx + c * ly
-        h = d / 2.0
-        if gate.rect_outside_amount((px - h, py - h, px + h, py + h)) > 1e-9:
+        (x1, y1), (x2, y2), r = pad_drill_capsule(p)
+        pts = [(cx + r * math.cos(k * math.pi / 8), cy + r * math.sin(k * math.pi / 8))
+               for cx, cy in {(x1, y1), (x2, y2)} for k in range(16)]
+        if getattr(p, 'castellated', False) and any(
+                _on_board(gate, px, py) for px, py in pts):
+            continue
+        if gate.points_overrun_mm(pts) > 1e-9:
             out += 1
     return n, out
+
+
+def _exact_pad_conflict(state, ctx, a: str, pose_a, b: str, pose_b):
+    """`(hit, mm)`: do `a`'s and `b`'s pads at their poses fall short of each
+    pair's own requirement on check_drc's exact pad geometry -- the census
+    `grade_pad_legality` re-verifies the seat gate's rect gaps with
+    (`legality.pad_pair_conflict`). The rect gap over-reads round pads:
+    glasgow's FID1 read 0.25 mm short of MK1 with the copper 0.842 mm apart
+    against 0.375 required (#1297). `(True, None)` when it cannot be asked,
+    so the rect verdict stands."""
+    from .legality import footprint_at_pose, pad_pair_conflict
+    try:
+        from check_drc import check_pad_pad_overlap as exact
+    except Exception:                                       # noqa: BLE001
+        return True, None
+    pa, pb = ctx.parts.get(a), ctx.parts.get(b)
+    fps = state.pcb_data.footprints or {}
+    if pa is None or pb is None or a not in fps or b not in fps:
+        return True, None
+    layers = list(getattr(state.pcb_data.board_info, 'copper_layers', None) or [])
+    mm, hit, _req, _src = pad_pair_conflict(
+        pa, pa.pad_rects(*pose_a), footprint_at_pose(fps[a], tuple(pose_a)).pads,
+        pb, pb.pad_rects(*pose_b), footprint_at_pose(fps[b], tuple(pose_b)).pads,
+        ctx.clearance, ctx.pad_clearance_model, exact, layers)
+    return hit, mm
 
 
 #: #1054: a courtyard overlap AREA (mm^2) above this is an overlap; below it
@@ -515,7 +546,13 @@ def _drill_conflict(state, a: str, pose_a, b: str, pose_b) -> Optional[str]:
     worst = None
     for ax, ay, ar, an in da:
         for bx, by, br, bn in db:
-            gap = math.hypot(ax - bx, ay - by) - ar - br
+            d = math.hypot(ax - bx, ay - by)
+            if d < 1e-3:
+                # Holes at one centre are KiCad's `holes_co_located` (a
+                # warning), not a hole-to-hole violation: one module drawn as
+                # two footprints, CM5's Module301/302 (#1297).
+                continue
+            gap = d - ar - br
             if gap < floor - 1e-6 and (worst is None or gap < worst[0]):
                 worst = (gap, an, bn)
     if worst is None:
@@ -643,15 +680,25 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
             sf = ctx.pair_shortfall(ref, other, pose_a=pose, pose_b=opose)
             # `pads_ok`'s conjuncts, ABSOLUTE rather than seed-relative: a
             # declared pose has no incumbent to be "no worse than".
+            pad_mm, short = sf.pad, sf.pad_overlap
+            if ((pad_mm > 1e-6 or short) and sf.gpad <= 1e-6
+                    and not sf.gstack):
+                # The gate reads rect gaps; a pose that is a fact is refused
+                # only on what the grader confirms on the pads' true copper.
+                hit, mm = _exact_pad_conflict(state, ctx, ref, pose, other, opose)
+                if not hit:
+                    pad_mm, short = 0.0, False
+                elif mm is not None:
+                    pad_mm = mm
             what = []
-            if sf.pad_overlap:
+            if short:
                 what.append(f"pads short {other}'s (different-net copper "
                             f"intersects)")
             elif sf.stack:
                 what.append(f"pads stack on {other}'s copper")
-            if sf.pad > 1e-6:
+            if pad_mm > 1e-6:
                 what.append(f"pad clearance to {other} short by "
-                            f"{sf.pad:.3f}mm")
+                            f"{pad_mm:.3f}mm")
             if sf.hole > 1e-6:
                 what.append(f"hole clearance to {other} short by "
                             f"{sf.hole:.3f}mm")
@@ -671,8 +718,7 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
             reasons.append(f"pad copper {ko:.3f}mm into a rule-area "
                            f"keep-out band")
     if outside:
-        from .connector_geometry import (geometry_for, pad_boxes,
-                                         pad_copper_outside)
+        from .connector_geometry import geometry_for, pad_boxes
         from .legality import BoardOutlineGate
         zero = getattr(state, '_zero_edge_gate', None)
         if zero is None:
@@ -692,8 +738,11 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
                 reasons.append(f"no copper pad or hole to anchor an "
                                f"overhang, and its courtyard is {amt:.3f}mm "
                                f"past the outline")
-        off = pad_copper_outside(geometry, zero, ref, (x, y, rot))
-        if off > 1e-9:
+        # check_assembly's own gate, per pad on its true outline, a
+        # castellated pad on its edge exempt (#1297: CM5's H102..H105 read
+        # 2.15 mm past the outline on their pad boxes, 0 on their pads)
+        off = _pad_copper_off_board(state, ref, x, y, rot)
+        if off > 1e-6:
             reasons.append(f"pad copper {off:.3f}mm past the outline")
         if holes_out:
             reasons.append(f"{holes_out} of {n_holes} drill hole(s) past "

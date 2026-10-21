@@ -55,7 +55,9 @@ lists instead, and names the judged ones the same way.
 Exit codes: 0 placed, 2 unreadable input, a part in two groups, or a face the
 board cannot take (two declarations disagree, or a KiCad-locked part is
 declared on the other face or at another pose), 4 placed with parts left
-illegal (a declared pose that is not legal among them).
+illegal, or with a declared pose that is not legal (`refused`, the same in
+every seed, so it is not counted against the seed and the judge still names
+seeds).
 """
 #: #937 registry: which door(s) show this tool, and whether it changes
 #: the board. Read by krt_registry.py -- by AST, never imported.
@@ -385,12 +387,19 @@ def _name_judged(a, seeds, summaries):
                          not in ('clustered', 'anchored')],
            'clustered': [s for s in seeds if summaries.get(s, {}).get('start') == 'clustered'],
            'anchored': [s for s in seeds if summaries.get(s, {}).get('start') == 'anchored'],
-           'illegal': [s for s in seeds if summaries.get(s, {}).get('illegal')]}
+           'illegal': [s for s in seeds if summaries.get(s, {}).get('illegal')],
+           # the declared poses refused, the same in every seed: the
+           # intent's to fix, not a seed's
+           'refused': next((summaries[s]['refused'] for s in seeds
+                            if summaries.get(s, {}).get('refused')), {})}
     path = os.path.join(os.path.dirname(a.out.format(seed=seeds[0])), 'judge.json')
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(doc, f, indent=1)
     print(f"place_simple: judge seeds {', '.join(map(str, judge)) or 'none'} "
           f"(the {a.judge} legal seeds of lowest cost) -> {path}")
+    for r, why in sorted(doc['refused'].items()):
+        print(f"  WARNING: {r}'s declared pose is not legal, in every seed: "
+              f"{'; '.join(why)}")
 
 
 def main(argv=None):
@@ -693,7 +702,9 @@ def main(argv=None):
         P = state.parts[m['ref']]
         _mean, worst = pad_deviation(P, (P.x, P.y, P.rot), model.template_target(i))
         drift.append({'anchor': anc, 'ref': m['ref'], 'worst_mm': round(worst, 3)})
-    illegal = [r for r in movable if not ok(r)] + sorted(refused)
+    # a refused declared pose is the intent's, the same in every seed: it is
+    # reported apart (`refused`), not counted against the seed (#1297)
+    illegal = [r for r in movable if not ok(r)]
     print(f"place_simple: annealed {res['moves']} moves in {t2 - t1:.1f} s; {_line(final)}")
     if res.get('repaired'):
         print("  NOTE: the last run never came clean; its overlaps were shoved apart where it stood")
@@ -719,15 +730,16 @@ def main(argv=None):
                         else 'scattered'), 'runs': k + 1,
               'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
-              'illegal': illegal, 'unseated': model.edge_unseated, 'notes': notes,
+              'illegal': illegal, 'refused': refused,
+              'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
     if a.json:
         json.dump(report, open(a.json, 'w', encoding='utf-8'), indent=1)
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
-                                           'seconds')}))
-    return 4 if illegal else 0
+                                           'refused', 'seconds')}))
+    return 4 if illegal or refused else 0
 
 
 if __name__ == '__main__':

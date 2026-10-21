@@ -627,7 +627,12 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
   0.6). Judging all 12 instead of the 6 cheapest ships worse
   (60 open nets): the judge is wrong more often with more to choose from.
   Exit 4 if any seed left a part illegal (its `illegal` list is not empty):
-  never judge or keep that seed. Exit 2 if any failed outright.
+  never judge or keep that seed. Exit 4 too when a declared pose is refused:
+  it is the intent's, the same in every seed, so it is listed once under
+  `refused` (in `judge.json` and each seed's summary) and the seeds are still
+  judged; fix the intent (the pose, or an `accept_courtyard_overlap` the
+  human board carries) rather than placing again. Exit 2 if any failed
+  outright.
 - A run that leaves a part with no legal pose anneals again from a fresh
   start, up to two more times (`runs` in the `--json` report). Exit 4 names
   parts still left illegal; exit 2 a face or pose the inputs contradict.

@@ -318,7 +318,9 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
 - **The seeds to judge.** A run of several seeds then names the `--judge`
   legal seeds of lowest `final.cost` (default 6) for a judging route:
   printed, and written to `judge.json` beside the boards (`judge`, cheapest
-  first, then the `scattered`, `clustered`, `anchored` and `illegal` seeds).
+  first, then the `scattered`, `clustered`, `anchored` and `illegal` seeds,
+  and `refused`: the declared poses that are not legal, the same in every
+  seed, so they do not keep a seed from the judge).
   Judging all 12 default seeds instead of the 6 cheapest shipped worse.
 - **Output.** The placed board with its siblings, a `JSON_SUMMARY:` line
   (final cost, moves, seed, `start` -- `scattered`, `clustered` or `anchored` -- parts
