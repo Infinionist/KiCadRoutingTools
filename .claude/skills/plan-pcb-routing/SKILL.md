@@ -2458,6 +2458,13 @@ every layer plus 0.09–0.2 mm necks. For those rails prefer a plane/region
 (`/recommend-plane-mappings`), or set the rail's width to what the ball
 field admits (e.g. 0.15–0.2) rather than the open-field ideal.
 
+The neck-down zone (`--neckdown-length`, 2.5 mm from each pad) is laid at the
+rail's width capped at the pad's short side wherever that fits, and at
+`--track-width` only where it does not (#1318): a 0.3 mm rail into a 0.3 mm
+LQFP pin keeps 0.3 where the neighbours allow. What still ships narrow is in
+the JSON summary's `power_widths` (and one `power copper shipped under width`
+row per net in `design_rules`).
+
 ### Target Swap Optimization (Memory Routing)
 
 For swappable signals (e.g., memory data lanes where any DQ can connect to any):

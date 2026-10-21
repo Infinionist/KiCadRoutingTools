@@ -58,7 +58,7 @@ TRACK_PROXIMITY_COST = 0.0
 
 # Distance parameters
 STUB_PROXIMITY_RADIUS = 2.0  # mm
-NECKDOWN_LENGTH = 2.5  # mm of narrow track from the pad on neck-down routes (issue #72)
+NECKDOWN_LENGTH = 2.5  # mm pad-entry zone of a neck-down route (issue #72): pad-capped width where it fits (#1318)
 NECKDOWN_TAPER_LENGTH = 0.5  # mm narrow->wide width taper (0 = abrupt)
 # Under --escalation off, the most routed path a wide (power / impedance) net
 # may run below its requested width on one edge or one via-to-pad tap: the

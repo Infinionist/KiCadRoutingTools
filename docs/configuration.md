@@ -313,7 +313,7 @@ live board via the pcbnew API.
 |--------|---------|-------------|
 | `--power-nets` | - | Glob patterns for power nets (e.g., `"*GND*" "*VCC*"`) |
 | `--power-nets-widths` | - | Track widths in mm for each power-net pattern (must match `--power-nets` length) |
-| `--neckdown-length` | 2.5 | Narrow track length in mm from the pads when a failed wide power route is retried at the default width (neck-down) |
+| `--neckdown-length` | 2.5 | Length in mm of the pad-entry zone at each pad end of a neck-down route (a failed wide power route retried at the default width): the power width capped at the pad's short side where it fits, the default width only where it does not (#1318) |
 | `--neckdown-taper-length` | 0.5 | Narrow-to-wide width taper length in mm (0 = abrupt) |
 | `--no-power-tap-neckdown` | off | Disable the neck-down retry of failed wide power routes |
 
@@ -700,7 +700,7 @@ class GridRouteConfig:
     via_drill: float = 0.2        # mm via drill
     power_net_widths: Dict[int, float] = {}  # net_id -> width for power nets
     power_tap_neckdown: bool = True   # retry failed wide power routes at default width
-    neckdown_length: float = 2.5      # mm of narrow track from the pads on necked routes
+    neckdown_length: float = 2.5      # mm pad-entry zone on necked routes (pad-capped width where it fits)
     neckdown_taper_length: float = 0.5  # mm narrow->wide width taper (0 = abrupt)
 
     # Grid

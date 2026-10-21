@@ -8560,8 +8560,10 @@ For differential pair routing, use route_diff.py:
                              "failure, the second narrows the whole-board pad-pair denominator to "
                              "the retried subset. Prefer this over parsing stdout.")
     parser.add_argument("--neckdown-length", type=float, default=defaults.NECKDOWN_LENGTH,
-                        help="Length in mm of narrow track from the target pad on neck-down tap routes; the track "
-                             "returns to the power width beyond this where clearance allows (default: 2.5)")
+                        help="Length in mm of the pad-entry zone at each pad end of a neck-down route: there the "
+                             "track is laid at the power width capped at the pad's short side where it fits, and "
+                             "narrowed only where it does not (#1318); beyond it the track returns to the power "
+                             "width where clearance allows (default: 2.5)")
     parser.add_argument("--neckdown-taper-length", type=float, default=defaults.NECKDOWN_TAPER_LENGTH,
                         help="Length in mm of the stepped narrow-to-wide width taper on neck-down tap routes "
                              "(0 = abrupt width change, default: 0.5)")

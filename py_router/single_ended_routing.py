@@ -2368,7 +2368,7 @@ def _route_net_with_obstacles_impl(pcb_data: PCBData, net_id: int, config: GridR
     # Both endpoints are pads: a neck-down necks the start side too.
     new_segments = _assign_wide_route_widths(
         new_segments, config, net_id, obstacles, coord, layer_names,
-        track_margin, necked_down, uniform_width, neck_start=True)
+        track_margin, necked_down, uniform_width, neck_start=True, pcb_data=pcb_data)
 
     # Neck any terminal-connection segment that grazes a foreign pad (#157): the
     # endpoint stub is laid geometrically with the endpoint region obstacle-exempt,
@@ -4715,7 +4715,7 @@ def _route_multipoint_main_impl(
     # Both endpoints are pads: a neck-down necks the start side too.
     segments = _assign_wide_route_widths(
         segments, config, net_id, obstacles, coord, layer_names,
-        track_margin, necked_down, uniform_width, neck_start=True)
+        track_margin, necked_down, uniform_width, neck_start=True, pcb_data=pcb_data)
     # Re-neck terminal grazes AFTER width assignment (#212): the neckdown/uniform
     # passes above rebuild widths and would otherwise restore a grazing terminal leg
     # to base/power width, undoing the graze-neck applied during conversion.
@@ -5590,7 +5590,7 @@ def _route_multipoint_taps_impl(
         )
         segments = _assign_wide_route_widths(
             segments, config, net_id, obstacles, coord, layer_names,
-            track_margin, necked_down, uniform_width, neck_start=False)
+            track_margin, necked_down, uniform_width, neck_start=False, pcb_data=pcb_data)
         # Re-neck terminal grazes AFTER width assignment (#212): the neckdown/uniform
         # passes rebuild widths and would otherwise restore a grazing terminal leg to
         # base/power width, undoing the graze-neck applied during conversion.
@@ -6140,15 +6140,42 @@ def _flip_segments(segments):
             for s in reversed(segments)]
 
 
+def _end_pad_caps(segments, pcb_data, net_id):
+    """``(start, end)``: the short side of the same-net pad each end of a run
+    lands on (#1318), None for an end on no pad (a via, a tap point on a
+    track) or with no board to look in. The width a neck zone tries first is
+    capped at it, so a run never enters its pad wider than the pad; an end
+    with no pad is tried at the run's own width (fit-checked like the rest)."""
+    if not segments or pcb_data is None:
+        return (None, None)
+    from routing_utils import point_in_pad_rect
+    pads = (getattr(pcb_data, 'pads_by_net', None) or {}).get(net_id) or ()
+
+    def _cap(x, y, layer):
+        best = None
+        for p in pads:
+            if not (layer in (p.layers or ()) or '*.Cu' in (p.layers or ())
+                    or (p.drill or 0) > 0):
+                continue
+            if point_in_pad_rect(x, y, p, 1e-3):
+                w = min(p.size_x, p.size_y)
+                if w > 0 and (best is None or w < best):
+                    best = w
+        return best
+    s0, s1 = segments[0], segments[-1]
+    return (_cap(s0.start_x, s0.start_y, s0.layer), _cap(s1.end_x, s1.end_y, s1.layer))
+
+
 def _assign_wide_route_widths(segments, config: GridRouteConfig, net_id: int,
                               obstacles, coord: GridCoord, layer_names,
                               track_margin, necked_down, uniform_width,
-                              neck_start: bool):
+                              neck_start: bool, pcb_data=None):
     """Give a wide (power / impedance) route its final widths (#1033).
 
     `necked_down` (a long trunk re-routed at the neck floor) goes through
-    _apply_neckdown_widths, which necks the pad ends and keeps the net's width
-    wherever it fits. `uniform_width` (a short edge that only routed at a
+    _apply_neckdown_widths, which keeps the net's width wherever it fits --
+    capped at the pad's short side within neckdown_length of a pad (#1318) --
+    and necks only where it does not. `uniform_width` (a short edge that only routed at a
     stepped-down width, #180) is laid at the net's own width and necked to
     `uniform_width` only where the full width does not fit. Anything else is
     returned unchanged.
@@ -6159,10 +6186,11 @@ def _assign_wide_route_widths(segments, config: GridRouteConfig, net_id: int,
     row per power net from the shipped board instead
     (fab_tiers.replace_power_track_rows).
     """
+    _caps = _end_pad_caps(segments, pcb_data, net_id)
     if necked_down:
         segments = _apply_neckdown_widths(segments, config, net_id, obstacles,
                                           coord, layer_names, track_margin,
-                                          neck_start=neck_start)
+                                          neck_start=neck_start, end_caps=_caps)
     elif uniform_width is not None:
         # #1033: the stepped-down width is the width the WHOLE edge could be
         # routed at, not the width every piece of it needs. Lay it at the
@@ -6176,7 +6204,7 @@ def _assign_wide_route_widths(segments, config: GridRouteConfig, net_id: int,
         segments = _apply_neckdown_widths(segments, config, net_id, obstacles,
                                           coord, layer_names, track_margin,
                                           neck_start=neck_start,
-                                          neck_w=uniform_width)
+                                          neck_w=uniform_width, end_caps=_caps)
     return segments
 
 
@@ -6285,18 +6313,50 @@ def _widen_fitting_pieces(seg, fits, narrow_w, coord=None):
 
 def _neck_pass(segments, config: GridRouteConfig, obstacles, coord: GridCoord,
                layer_map: Dict[str, int], track_margin, net_id: int,
-               neck_w=None):
+               neck_w=None, zone_cap=None):
     """Narrow the last neckdown_length mm of the run (the pad is at the list
-    END); beyond that, keep the wide width only where the wide clearance
-    fits -- piece by piece (#1033), not all-or-nothing per segment. Never
-    re-widens an already-narrow segment (so a second pass from the other end
-    preserves the first pass's neck). track_margin may be a scalar or a
-    per-layer list (#156). `neck_w` overrides the neck width (the short-edge
-    path necks to the width its edge routed at, #1033)."""
+    END) only where the pad-entry width does not fit; beyond that, keep the
+    wide width only where the wide clearance fits -- piece by piece (#1033),
+    not all-or-nothing per segment. Never re-widens an already-narrow segment
+    (so a second pass from the other end preserves the first pass's neck).
+    track_margin may be a scalar or a per-layer list (#156). `neck_w`
+    overrides the neck width (the short-edge path necks to the width its edge
+    routed at, #1033).
+
+    #1318: the neck zone used to be narrowed WHOLE, fit or not, so a short
+    edge -- a 1 mm pin-to-pin run or a 1.2 mm pad-to-via drop at a 0.5 mm
+    LQFP, all of it inside 2.5 mm of a pad -- shipped at the neck width end
+    to end. In the zone the run is now laid at the pad-entry width,
+    min(its width, `zone_cap`) (`zone_cap` is the short side of the pad the
+    run lands on at this end, None for a via or track end), and necked only
+    where that width does not fit, by the same swept-capsule test as the
+    widen-back beyond it."""
     def fits(s, guard=0.0):
         li = layer_map.get(s.layer, 0)
         return _segment_fits_wide(s, obstacles, coord, li,
                                   _margin_at(track_margin, li) + guard)
+
+    _zone_fits = {}
+
+    def _zone(seg, narrow_w):
+        zw = seg.width if zone_cap is None else min(seg.width, zone_cap)
+        if zw <= narrow_w + 1e-9:
+            seg.width = narrow_w
+            return [seg]
+        f = _zone_fits.get(zw)
+        if f is None:
+            if abs(zw - seg.width) <= 1e-9:
+                f = fits
+            else:
+                _m = config.track_margins_for_width(zw)
+
+                def f(s, guard=0.0, _m=_m):
+                    li = layer_map.get(s.layer, 0)
+                    return _segment_fits_wide(s, obstacles, coord, li,
+                                              _margin_at(_m, li) + guard)
+            _zone_fits[zw] = f
+        seg.width = zw
+        return _widen_fitting_pieces(seg, f, narrow_w, coord)
 
     out = []  # built in reverse (pad-first)
     cum = 0.0
@@ -6312,12 +6372,10 @@ def _neck_pass(segments, config: GridRouteConfig, obstacles, coord: GridCoord,
             # Straddles the neck boundary: split there (the far piece,
             # touching the pad side, is neckdown_length - cum long)
             near, far = _split_segment_at(seg, config.neckdown_length - cum)
-            far.width = narrow_w
-            out.append(far)
+            out.extend(reversed(_zone(far, narrow_w)))
             out.extend(reversed(_widen_fitting_pieces(near, fits, narrow_w, coord)))
         else:
-            seg.width = narrow_w
-            out.append(seg)
+            out.extend(reversed(_zone(seg, narrow_w)))
         cum += length
     out.reverse()
     return out
@@ -6326,15 +6384,17 @@ def _neck_pass(segments, config: GridRouteConfig, obstacles, coord: GridCoord,
 def _apply_neckdown_widths(segments, config: GridRouteConfig, net_id: int,
                            obstacles, coord: GridCoord, layer_names: List[str],
                            track_margin, neck_start: bool = False,
-                           neck_w=None):
+                           neck_w=None, end_caps=(None, None)):
     """Assign widths to a neck-down route (issue #72).
 
     The path was routed at the layer's default width because the power width
     did not fit. Segments within config.neckdown_length of the target pad
     (the END of the list; also the start when neck_start is set, for routes
-    that end on pads at both ends) stay narrow; farther segments return to
-    the power width wherever the wide clearance fits, with an optional
-    stepped taper at each narrow->wide transition.
+    that end on pads at both ends) go to the pad-entry width -- the power
+    width capped at that end's pad short side (`end_caps`, #1318) -- where it
+    fits and stay narrow where it does not; farther segments return to the
+    power width wherever the wide clearance fits, with an optional stepped
+    taper at each narrow->wide transition.
 
     Returns a new segment list (segments may be split for the taper).
     """
@@ -6345,11 +6405,11 @@ def _apply_neckdown_widths(segments, config: GridRouteConfig, net_id: int,
                 else _neck_width_for_net(config, net_id, layer))
 
     out = _neck_pass(segments, config, obstacles, coord, layer_map, track_margin,
-                     net_id, neck_w=neck_w)
+                     net_id, neck_w=neck_w, zone_cap=end_caps[1])
     if neck_start:
         out = _flip_segments(_neck_pass(_flip_segments(out), config, obstacles,
                                         coord, layer_map, track_margin, net_id,
-                                        neck_w=neck_w))
+                                        neck_w=neck_w, zone_cap=end_caps[0]))
     wide_flags = [s.width > _nw(s.layer) for s in out]
 
     # Suppress short wide islands (a wide run between narrow pinches that is

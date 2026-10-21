@@ -227,9 +227,10 @@ class GridRouteConfig:
     hole_clearance: float = 0.0
     max_turn_angle: float = 180.0  # Max cumulative turn angle (degrees) before reset, to prevent U-turns
     # Power-tap neck-down (issue #72): when a wide power-net tap edge fails,
-    # retry it at the layer's default track width. The narrow neck extends
-    # neckdown_length mm from the target pad; beyond that the track returns
-    # to the power width wherever the wide clearance fits.
+    # retry it at the layer's default track width. Within neckdown_length mm
+    # of a pad the track is laid at the power width capped at the pad's short
+    # side where that fits (#1318), narrow only where it does not; beyond it
+    # the track returns to the power width wherever the wide clearance fits.
     power_tap_neckdown: bool = True
     # #568 per-rung via legality: 0 = the configured via (baseline); 1 = the
     # small fab-rung via where the obstacle map's blocked_vias_small proves it
@@ -243,7 +244,7 @@ class GridRouteConfig:
     # against the run's via, so a rung-1 retry from that clone must ship the
     # pair the map was stamped at, not one derived from the net's own via.
     run_via: Optional[Tuple[float, float]] = None
-    neckdown_length: float = 2.5  # mm of narrow track from the target pad
+    neckdown_length: float = 2.5  # mm pad-entry zone (pad-capped width where it fits, #1318)
     neckdown_taper_length: float = 0.5  # mm narrow->wide taper (0 = abrupt width step)
     gnd_via_enabled: bool = True  # Enable GND via placement near diff pair signal vias
     # Vertical alignment attraction - encourages tracks on different layers to stack
