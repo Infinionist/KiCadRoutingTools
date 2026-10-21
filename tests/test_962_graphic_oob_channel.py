@@ -88,8 +88,12 @@ def main():
     try:
         # 1
         rows = {}
+        # edge_margin 0.55: the floor the shortfall below was measured at.
+        # esp_prog declares no edge rule, which #1301 reads as the 0.2 fab
+        # floor, and 0.25 mm inside is no shortfall at 0.2.
         for nm, pl in (('orig', []), ('bad', u2(115.34)), ('ok', u2(116.70))):
-            rows[nm] = grade_pad_legality(parse_kicad_pcb(stage(work, nm, pl)), 0.25)
+            rows[nm] = grade_pad_legality(parse_kicad_pcb(stage(work, nm, pl)), 0.25,
+                                          edge_margin=0.55)
         b = rows['bad']
         check('1. 115.34: count 1, amount 1.11, refs [[U2, 1.11]]',
               b['oob_graphic_copper_count'] == 1
