@@ -1200,7 +1200,8 @@ def route_diff_pairs(
                                 _c652 = _ch652(_h652)
                                 if _c652:
                                     print(f"  {_c652}")
-                                _rne652(state, _nid, "fanout_dropped", _v652)
+                                if (_v652 or {}).get('verdict') == 'fanout_dropped':
+                                    _rne652(state, _nid, "fanout_dropped", _v652)
                     except Exception:
                         pass
                 # #289: a 2-terminal pair that exhausted every coupled path

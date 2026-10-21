@@ -114,9 +114,11 @@ Validate routed boards against the *real* spec, with the right checker — most
   terminal failure with their outcome (`full` is the only success; `full_open`
   and `stub` ship broken). `stacked_copper` discloses same-net duplicate copper
   KiCad's DRC will never flag — the writer drops exact via re-emissions before
-  writing, and whatever still stacks (e.g. two same-net barrels at one point with
-  DIFFERENT drill/size, which is a fab question, not a bookkeeping one) is named
-  in the summary rather than shipped silently.
+  writing, the end-of-run dedup (#162) keeps only the widest of same-net
+  segments stacked on one span (locked and held copper left alone), and
+  whatever still stacks (e.g. two same-net barrels at one point with DIFFERENT
+  drill/size, which is a fab question, not a bookkeeping one) is named in the
+  summary rather than shipped silently.
 - **Net classes are RESPECTED (PR392); `--clearance` sets the DEFAULT class and
   `--clearance-ceiling` caps every class (#530 decision 2, replacing #439's implicit
   switch).** The router honors KiCad's pairwise `max(classA, classB)` between nets of

@@ -2763,7 +2763,7 @@ contain structured data including:
 - `failed_single`: List of single-ended nets with NO result at all
 - `open_single`: Nets that KEPT a result whose copper still leaves pads disconnected (non-multipoint only). A run is clean only when `failed_single` AND `open_single` are both empty — a board can ship open copper with `failed_single: []`
 - `terminal_restores`: `{net: outcome}` for rip victims restored at terminal failure — `full` is the only success; `full_open`/`stub` ship broken
-- `stacked_copper`: Same-net duplicate copper KiCad's DRC never flags (disclosure only, not a routing failure)
+- `stacked_copper`: Same-net duplicate copper KiCad's DRC never flags (disclosure only, not a routing failure). It is taken before the plane finalize; the end-of-run dedup (#162, the `Stacked copper (#162, end of run)` line) then removes the exact same-span copies the run ships, the widest kept, so `check_weird` on the output is the reading of what shipped
 - `failed_multipoint`: List of nets with unconnected pads (includes pad coordinates)
 - `blockers`: Per still-failed net, which routed nets wall it off (`blocked_by` with cell counts; #409)
 - `pad_pairs_connected`/`pad_pairs_total` + `pad_pairs_open`: Pad-pair routability tallies (PRR = connected/total) and per-open-net outcome — route-time failures are opens; shorts are DRC's domain (#409 follow-up)
@@ -2781,7 +2781,9 @@ fab-tier escalations; `design_rules` in `--json-out` names each, and
 failure state comes from a re-grade of the board the run wrote, over every net
 the run's passes worked on or disturbed (#1069, the `JSON_REGRADE` line), so a
 net an earlier reconciliation lap or finalize sub-run left broken stays
-counted. The big `JSON_SUMMARY` lines are several kB each and cover one pass
+counted. A pour net the plane finalize's oracle left with open links is graded
+on KiCad's exact fill there, not credited by the router's fill model (#1339;
+`--json-out` names it in `regrade.exact_open`). The big `JSON_SUMMARY` lines are several kB each and cover one pass
 each — they are forensics, not your read. Four things about it that are easy
 to get wrong:
 

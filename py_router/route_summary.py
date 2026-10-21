@@ -673,6 +673,10 @@ def _apply_regrade(merged: Dict, regrade: Dict, summaries: List[Dict]) -> None:
     # KiCad itself (route._regrade_pour_fill).
     if regrade.get('pour_fill') is not None:
         merged['regrade']['pour_fill'] = regrade['pour_fill']
+    if regrade.get('exact_open'):
+        # #1339: the pour nets graded on KiCad's exact fill (or the oracle's
+        # verdict) because the fill model credited them.
+        merged['regrade']['exact_open'] = dict(regrade['exact_open'])
 
 
 def merge_route_summaries(log: str) -> Optional[Dict]:

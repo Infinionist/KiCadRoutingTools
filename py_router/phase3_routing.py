@@ -1509,7 +1509,8 @@ def _retry_victim_main_with_ripup(
                 _c652 = _ch652(_h652)
                 if _c652:
                     print(f"    {_c652}")
-                record_net_event(state, victim_id, "fanout_dropped", _v652)
+                if (_v652 or {}).get('verdict') == 'fanout_dropped':
+                    record_net_event(state, victim_id, "fanout_dropped", _v652)
         except Exception:
             pass
         return None, []
