@@ -128,6 +128,13 @@ for group_name, net_names in groups.items():
     # PASS if spread <= tolerance (default 0.1 mm); report worst offender otherwise
 ```
 
+A **`.kicad_dru` length window** (`(constraint length (min ..) (max ..))`) is
+an absolute bound, not a spread: `check_drc.py` grades it (Step 1's run) and
+lists each net outside it as `LENGTH-OUT-OF-RANGE`, KiCad's
+`length_out_of_range`, plus any rule it could not model as `NOT GRADED`
+(#1313). Report those rows here too; a group can pass its spread while every
+member misses the window.
+
 `net_match_length` is the measurement `board_score.py --length-groups` grades
 with, so the two cannot disagree. **Never grade raw `net_copper_lengths`
 spreads**: a net with no copper reads 0.0 mm and one with only fanout stubs

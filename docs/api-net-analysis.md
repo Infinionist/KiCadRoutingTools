@@ -249,6 +249,16 @@ Both report **total net copper**. That equals the signal path only on a clean
 point-to-point net; on a multipoint/fly-by net, or one carrying a stub, it is
 the sum of every branch and matches no path at all.
 
+Each via is charged as **KiCad's length DRC** charges it (#1313,
+`kicad_via_length`): the barrel between the outermost and innermost of its
+layers where a same-net track has an endpoint exactly at the via, or a
+same-net pad is centred on it (a via-in-pad joins the pad's layer). One joined
+layer charges nothing. A via-in-pad on F.Cu whose track leaves on In1.Cu is
+charged F.Cu→In1.Cu, not the whole stack. On routed_output (10 layers,
+1.59 mm) this matches kicad-cli 10.0.0's `length_out_of_range` actuals to
+0.1 µm on every routed net it reported. `calculate_route_length` — the
+router's own measure, used for meander sizing — still charges the full span.
+
 ```python
 pin_pair_path_length(pcb_data, net_id, pad_a, pad_b, tolerance=0.02)
     -> Optional[float]

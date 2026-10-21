@@ -101,6 +101,9 @@ SIZE_KINDS = frozenset({
 # The kinds a consumer in this tool actually honours. Anything else in a
 # rule is reported as "parsed, not consumed".
 CONSUMED_KINDS = CLEARANCE_KINDS | SIZE_KINDS | {'disallow', 'via_count'}
+# Kinds no routing step honours but a grader does: check_drc grades every
+# `length` window (kicad_dru.read_board_length_rules, #1313).
+GRADED_ONLY_KINDS = frozenset({'length'})
 
 # Spellings a caller may use for a kind.
 KIND_ALIASES = {
@@ -1387,8 +1390,15 @@ class DesignRules:
             out.append(f".kicad_dru rule '{name}': NOT honoured ({why}); "
                        f"KiCad will still enforce it")
         for name, kinds in self.unconsumed():
-            out.append(f".kicad_dru rule '{name}': parsed, but {', '.join(kinds)} "
-                       f"has no consumer in this tool yet")
+            # #1313: a length window is graded (check_drc) but not routed to.
+            graded = [k for k in kinds if k in GRADED_ONLY_KINDS]
+            rest = [k for k in kinds if k not in GRADED_ONLY_KINDS]
+            if rest:
+                out.append(f".kicad_dru rule '{name}': parsed, but {', '.join(rest)} "
+                           f"has no consumer in this tool yet")
+            if graded:
+                out.append(f".kicad_dru rule '{name}': {', '.join(graded)} is not "
+                           f"routed to; check_drc grades it")
         out.extend(self.notes)
         return out
 
