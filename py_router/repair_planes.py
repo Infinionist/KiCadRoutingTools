@@ -394,6 +394,40 @@ def _ghost_kwargs(corridor_ghosts, batch_net_ids):
             'ripped_route_avoidance_radius': _RECONNECT_GHOST_RADIUS}
 
 
+def _seg_piece_key(x0, y0, x1, y1, layer):
+    a, b = (round(x0, 4), round(y0, 4)), (round(x1, 4), round(y1, 4))
+    return (min(a, b), max(a, b), layer)
+
+
+def _return_purged_copper(write_lists, purged, keep_segs, keep_vias):
+    """Put a FULLY restored net's write-list entries back (#1309).
+
+    The rip purges the net's entries from the write lists (board == write
+    list), and a net reconnected earlier in this run ships from those lists
+    alone: the writer strips its input copper (inplace_reconnected_ids). A
+    restore that gave the pieces back to pcb_data only shipped the net with
+    no copper (StickHub +3.3V, 17 pads). Each purged entry whose piece is
+    back on the board returns, matched by geometry. A partial restore's
+    pieces ship through partial_restores instead, so it never comes here."""
+    if write_lists is None or not purged:
+        return
+    from collections import Counter
+    ps, pv = purged
+    segs = Counter(_seg_piece_key(s.start_x, s.start_y, s.end_x, s.end_y,
+                                  s.layer) for s in keep_segs)
+    vias = Counter((round(v.x, 4), round(v.y, 4)) for v in keep_vias)
+    for d in ps:
+        k = _seg_piece_key(*d['start'], *d['end'], d['layer'])
+        if segs[k] > 0:
+            segs[k] -= 1
+            write_lists[0].append(d)
+    for d in pv:
+        k = (round(d['x'], 4), round(d['y'], 4))
+        if vias[k] > 0:
+            vias[k] -= 1
+            write_lists[1].append(d)
+
+
 def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_config,
                         max_search_radius, via_size, via_drill, max_rip_nets,
                         protected_net_ids, first_failure, ripped_net_ids, verbose,
@@ -433,6 +467,7 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
     failure = first_failure
     ripped_local = []  # (net_id, segments, vias) in rip order
     ripped_ids_local = set()
+    purged = {}  # net_id -> (segment dicts, via dicts) the rip took off the write lists
     for attempt in range(max_rip_nets):
         blocker = None
         # The frontier blocker names whoever stopped the failed ROUTE; the net
@@ -474,6 +509,8 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
             # whatever routes through the corridor afterwards (muzy_zynq2:
             # /G18 reconnected twice -> 99 kicad-DRC). board == write list.
             _wsegs, _wvias = write_lists
+            purged[blocker] = ([d for d in _wsegs if d.get('net_id') == blocker],
+                               [d for d in _wvias if d.get('net_id') == blocker])
             _wsegs[:] = [d for d in _wsegs if d.get('net_id') != blocker]
             _wvias[:] = [d for d in _wvias if d.get('net_id') != blocker]
         if corridor_ghosts is not None:
@@ -569,9 +606,12 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
                         pcb_data.vias = [x for x in pcb_data.vias if x not in keep_vias]
                         ripped_net_ids.append(blocker)
                         # (#517 arm 2: ghost stays FULL)
-                elif corridor_ghosts is not None:
-                    # Fully restored: nothing vacated, nothing to reserve.
-                    corridor_ghosts.drop_net(blocker)
+                else:
+                    _return_purged_copper(write_lists, purged.get(blocker),
+                                          keep_segs, keep_vias)
+                    if corridor_ghosts is not None:
+                        # Fully restored: nothing vacated, nothing to reserve.
+                        corridor_ghosts.drop_net(blocker)
             return result
         failure = result
     # FINAL FAILURE: restore every ripped net's copper (#329), but only the
@@ -636,6 +676,9 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
                     if corridor_ghosts is not None:
                         # Back to a full rip: reserve the whole footprint again.
                         corridor_ghosts.set_net(blocker, rsegs, rvias)
+            else:
+                _return_purged_copper(write_lists, purged.get(blocker),
+                                      keep_segs, keep_vias)
         print(f"(restored {n_restored}/{len(ripped_local)} ripped net(s))",
               end=" ", flush=True)
     return None

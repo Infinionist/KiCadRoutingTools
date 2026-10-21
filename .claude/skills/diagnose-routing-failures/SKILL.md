@@ -63,7 +63,10 @@ Key fields:
   and disturbed coverage-gate nets. NOT reconcilable with
   `multipoint_edges_*` (those count component-MST edges — pre-existing
   copper joins terminals first, so there are fewer edges than pad pairs).
-  Computed before the final reconciliation, like `blockers`. Counted per
+  Each summary's are computed before the final reconciliation, like
+  `blockers`; the merged document (`--json-out`, `JSON_SUMMARY_MIN`) takes a
+  still-broken net's tally from the end-of-run re-grade of the shipped board,
+  so a net broken after the last summary is listed too (#1309). Counted per
   outer board outline (#479): a gap between two outlines is neither a routable
   pair nor an open one.
 - `pad_pairs_open`: per net shipping a pair deficit: `{net, pairs_connected,
