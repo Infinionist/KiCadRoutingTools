@@ -38,6 +38,8 @@ the turned two-pad parts in one pass. One at a time:
   span of its pads. A net routed at 1.5-2x its span with several vias is usually a part
   placed away from the pins it serves.
 - **Two-pin parts whose airwires cross:** turning the part 180 degrees shortens both.
+  Use the `place_pose ... set` pose route_review prints, which swaps the two pads in
+  place; `rotate` turns about the footprint origin (#1322).
 - `python3 -X utf8 py_tools/render_placement.py BOARD -o OUT.png --ratsnest-nets NET ...`
   draws just the failing nets' airwires.
 

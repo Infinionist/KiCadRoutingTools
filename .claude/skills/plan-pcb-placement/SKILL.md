@@ -756,8 +756,12 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
 In `place` mode that placement is the result. Run
 `python3 -X utf8 py_tools/route_review.py wk/<run>/s<S>_fast.kicad_pcb --json wk/<run>/review.json`
 on its fast route: turn each two-pad part it lists as turned against its
-wiring with `place_pose ... rotate`, then check the board again
-(`check_assembly`, `check_floorplan --intent`, `render_placement`).
+wiring with the `place_pose BOARD OUT set REF X Y --rot R` it prints for that
+part, then check the board again (`check_assembly`, `check_floorplan
+--intent`, `render_placement`). That pose is a half turn about the midpoint of
+the two pads, so they trade places; `place_pose ... rotate` turns about the
+footprint origin instead (pad 1 on a through-hole axial, which swings the body
+by the pitch), and without `--relative` its angle is absolute (#1322).
 
 ### 3.8 Route (full mode)
 

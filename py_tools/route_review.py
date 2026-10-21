@@ -22,7 +22,13 @@ placement pass that moves parts and routes again:
                    areas, each listed with its parts and the nets through it.
   TURNED PARTS     two-pad parts whose two nets would both be shorter with the
                    part turned 180 degrees (each pad to the nearest pad of its
-                   own net: the net's tree, not its centroid).
+                   own net: the net's tree, not its centroid). The turn is the
+                   two pads trading places, a half turn about their midpoint,
+                   and each row carries the `place_pose set REF X Y --rot R`
+                   that makes it (`swap_pose`). `place_pose rotate` turns
+                   about the footprint origin, which is pad 1 on a
+                   through-hole axial, so it swings the body by the pitch
+                   instead (#1322).
 
     python3 -X utf8 py_tools/route_review.py routed.kicad_pcb
     python3 -X utf8 py_tools/route_review.py routed.kicad_pcb --top 12 --json review.json
@@ -204,8 +210,14 @@ def review(pcb_file, cell=2.0, hot=0.5, top=8, pcb=None):
             continue
         gain = sum(now) - sum(flip)
         if gain > 1.0 and flip[0] <= now[0] + 1e-9 and flip[1] <= now[1] + 1e-9:
+            # The pose that swaps the pads: a half turn about their midpoint.
+            mx = (a.global_x + b.global_x) / 2.0
+            my = (a.global_y + b.global_y) / 2.0
             turned.append({'ref': ref, 'x': round(fp.x, 2), 'y': round(fp.y, 2),
-                           'rot': fp.rotation or 0, 'saves_mm': round(gain, 1)})
+                           'rot': fp.rotation or 0, 'saves_mm': round(gain, 1),
+                           'swap_pose': [round(2 * mx - fp.x, 4),
+                                         round(2 * my - fp.y, 4),
+                                         ((fp.rotation or 0) + 180) % 360]})
     turned.sort(key=lambda t: (-t['saves_mm'], t['ref']))
 
     return {'board': pcb_file, 'layers_with_signal': layers, 'pitch_mm': round(pitch, 3),
@@ -246,7 +258,9 @@ def _print(r):
     if r['turned_parts']:
         print("== two-pad parts turned against their wiring (turn 180)")
         for t in r['turned_parts']:
-            print(f"   {t['ref']:6s} at ({t['x']}, {t['y']}) rot {t['rot']:g}: saves {t['saves_mm']} mm")
+            sx, sy, sr = t['swap_pose']
+            print(f"   {t['ref']:6s} at ({t['x']}, {t['y']}) rot {t['rot']:g}: saves {t['saves_mm']} mm"
+                  f"  -> place_pose BOARD OUT set {t['ref']} {sx} {sy} --rot {sr:g}")
 
 
 def main(argv=None):

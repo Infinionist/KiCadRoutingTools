@@ -8,7 +8,8 @@ On tracked boards (a few seconds, no corpus):
   2. a connected net with its copper deleted turns OPEN, named with the part
      holding the loose pad -- the control that the open list reads the copper;
   3. on esp_prog's human placement no two-pad part is turned against its
-     wiring, and one with its pads swapped is;
+     wiring, and one with its pads swapped is, with a `swap_pose` that puts
+     each pad where the other was (#1322);
   4. a congested area names the nets through it.
 """
 import os
@@ -82,6 +83,30 @@ def test_a_swapped_part_is_turned():
     r = route_review.review(PLACED, pcb=pcb)
     ok(f"{ref} with its pads swapped is turned",
        any(t['ref'] == ref for t in r['turned_parts']), str(r['turned_parts'][:3]))
+    # #1322: the printed pose makes the swap the finding priced -- each pad
+    # lands where the other was. `rotate` would turn about the origin.
+    row = [t for t in r['turned_parts'] if t['ref'] == ref]
+    if not row:
+        return
+    import contextlib
+    import io
+    import tempfile
+    from placement.writer import write_placed_output
+    x, y, rot = row[0]['swap_pose']
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, 'swapped.kicad_pcb')
+        with contextlib.redirect_stdout(io.StringIO()):
+            write_placed_output(PLACED, out, [{'reference': ref, 'new_x': x,
+                                               'new_y': y, 'new_rotation': rot}])
+        moved = parse_kicad_pcb(out).footprints[ref].pads
+    # `a` and `b` hold each other's positions in memory, so each written pad
+    # must sit at the position the in-memory twin now names.
+    got = {p.pad_number: (p.global_x, p.global_y) for p in moved}
+    want = {a.pad_number: (a.global_x, a.global_y),
+            b.pad_number: (b.global_x, b.global_y)}
+    ok(f"{ref}'s swap_pose puts each pad where the other was",
+       all(abs(got[n][0] - want[n][0]) < 1e-3 and abs(got[n][1] - want[n][1]) < 1e-3
+           for n in want), f"{got} vs {want}")
 
 
 def test_a_congested_area_names_its_parts():
