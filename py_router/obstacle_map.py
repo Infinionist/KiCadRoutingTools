@@ -2447,18 +2447,53 @@ def add_drill_hole_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
     # byte-identical (test_505's no-override case pins that). `npth_holes`
     # also carries #441's ring-uncovered plated holes, which check_drc's via
     # arm does not grade.
-    if npth_holes and _hole_clr > 0:
-        _via_hole_clr = (max(config.clearance, _hole_clr)
-                         + (config.via_size - config.via_drill) / 2.0)
-        if _via_hole_clr > config.hole_to_hole_clearance + 1e-9:
-            block_via_cells_near_drills(obstacles, npth_holes, config.via_drill,
-                                        _via_hole_clr, config.grid_step)
+    #
+    # Both via arms (this one and the #505 override arm) live in
+    # block_via_cells_near_npth_floors, which the plane engines' map
+    # (plane_region_connector.build_base_obstacles) calls too.
+    block_via_cells_near_npth_floors(
+        obstacles, pcb_data, npth_holes, config.via_size, config.via_drill,
+        config.clearance, config.hole_to_hole_clearance, _hole_clr,
+        config.grid_step)
+
+
+def block_via_cells_near_npth_floors(obstacles: GridObstacleMap,
+                                     pcb_data: PCBData, npth_holes,
+                                     via_size: float, via_drill: float,
+                                     clearance: float,
+                                     hole_to_hole_clearance: float,
+                                     hole_clr: float, grid_step: float):
+    """The two VIA keep-outs around no-copper holes that the hole-to-hole
+    drill stamp does not cover, shared by every map that places vias.
+
+    1. #1038: via COPPER off every hole in ``npth_holes`` at
+       ``max(clearance, hole_clr)``, the board's copper-to-hole floor
+       (``hole_clr`` = :func:`resolve_hole_clearance`; 0 = none declared,
+       and the arm stays off).
+    2. #505: via COPPER off an NPTH pad's hole at its ``local_clearance``
+       override (#326), read off ``pcb_data`` for every NPTH pad of every net.
+
+    Each arm only stamps when it reaches past the h2h drill stamp the caller
+    already laid at ``hole_to_hole_clearance``. ``npth_holes`` is the
+    caller's list of (x, y, drill) circles, net-independent (a drill does not
+    care whose net it nominally is).
+
+    The plane engines' map (``plane_region_connector.build_base_obstacles``:
+    region joins, the KiCad-oracle links, repair_planes) used to have neither
+    arm: on neo6502 the finalize's oracle links put two 0.7 mm vias 0.10 and
+    0.15 mm inside MH3's 1.85 mm override.
+    """
+    if npth_holes and hole_clr > 0:
+        _via_hole_clr = max(clearance, hole_clr) + (via_size - via_drill) / 2.0
+        if _via_hole_clr > hole_to_hole_clearance + 1e-9:
+            block_via_cells_near_drills(obstacles, npth_holes, via_drill,
+                                        _via_hole_clr, grid_step)
 
     # VIA arm of the #326 override (#505). KiCad's hole_clearance holds a via's
     # COPPER -- not merely its drill -- `local_clearance` off the hole wall. For
     # an NPTH pad nothing enforced that: the pad has no copper, so the pad-copper
-    # blocker never stamps it, and the only via keep-out is the hole-to-hole
-    # DRILL minimum above, which is measured drill-to-drill at a much smaller
+    # blocker never stamps it, and the only via keep-out is the caller's
+    # hole-to-hole DRILL minimum, which is measured drill-to-drill at a much smaller
     # value. pinci shipped 5 vias 0.76-1.13mm from 0.9/1.3mm-override mounting
     # holes, every one satisfying h2h (1.427mm) while KiCad wanted 2.225/2.625mm.
     # Scoped to NPTH like the track arm: a plated pad's own copper obstacle
@@ -2467,7 +2502,7 @@ def add_drill_hole_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
     # block_via_cells_near_drills builds hole_r + clearance + via_drill/2, so
     # passing lc + (via_size - via_drill)/2 yields hole_r + lc + via_size/2 --
     # the via COPPER edge held `lc` off the hole wall (same idiom as the #448
-    # slot band above).
+    # slot band in add_drill_hole_obstacles).
     _via_override: Dict[float, list] = {}
     for _pads in pcb_data.pads_by_net.values():
         for _pad in _pads:
@@ -2476,14 +2511,14 @@ def add_drill_hole_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
             _lc = getattr(_pad, 'local_clearance', 0.0) or 0.0
             if _lc <= 0:
                 continue
-            _via_clr = _lc + (config.via_size - config.via_drill) / 2.0
-            if _via_clr <= config.hole_to_hole_clearance:
+            _via_clr = _lc + (via_size - via_drill) / 2.0
+            if _via_clr <= hole_to_hole_clearance:
                 continue          # the h2h stamp already covers this override
             _via_override.setdefault(round(_via_clr, 9), []).extend(
                 pad_drill_circles(_pad))
     for _clr, _circles in _via_override.items():
-        block_via_cells_near_drills(obstacles, _circles, config.via_drill,
-                                    _clr, config.grid_step)
+        block_via_cells_near_drills(obstacles, _circles, via_drill,
+                                    _clr, grid_step)
 
 
 def add_net_stubs_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,

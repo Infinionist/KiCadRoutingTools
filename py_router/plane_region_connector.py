@@ -25,7 +25,8 @@ from obstacle_map import (add_board_edge_obstacles, add_user_keepout_obstacles,
                           add_rule_area_keepout_obstacles,
                           _batch_cells_one_layer, _batch_vias,
                           block_track_cells_near_drills, resolve_hole_clearance,
-                          block_track_cells_near_override_pad_holes, _pad_has_copper)
+                          block_track_cells_near_override_pad_holes, _pad_has_copper,
+                          block_via_cells_near_npth_floors)
 from plane_obstacle_builder import (
     _precompute_circle_offsets,
     _batch_block_circles_via, _batch_block_circles_cell
@@ -3696,6 +3697,29 @@ def build_base_obstacles(
     block_track_cells_near_override_pad_holes(
         obstacles, pcb_data, track_width, config.clearance,
         config.grid_step, list(range(num_layers)))
+
+    # The VIA arms around no-copper holes (#1038 copper-to-hole floor, #505 pad
+    # override), the same helper the signal map calls. The h2h stamp above only
+    # holds a via's DRILL off a hole, so without these an oracle link or region
+    # join dropped a via's annulus inside an NPTH pad's override (neo6502 MH3,
+    # 1.85 mm) or the board's declared floor. Net-independent like that stamp:
+    # every NPTH hole of every net, plus #441's ring-uncovered plated holes
+    # foreign to the nets this map routes -- the same population
+    # add_drill_hole_obstacles hands it.
+    _via_npth = []
+    for _nid, _pads in pcb_data.pads_by_net.items():
+        for _pad in _pads:
+            if _pad.drill <= 0:
+                continue
+            if not _pad_has_copper(_pad):
+                _via_npth.extend(pad_drill_circles(_pad))
+            elif (max(_pad.size_x, _pad.size_y) < _pad.drill
+                  and _nid not in exclude_net_ids):
+                _via_npth.extend(pad_drill_circles(_pad))
+    block_via_cells_near_npth_floors(
+        obstacles, pcb_data, _via_npth, config.via_size, config.via_drill,
+        config.clearance, hole_to_hole_clearance,
+        resolve_hole_clearance(pcb_data, config), config.grid_step)
 
     # Block areas outside the board outline (supports non-rectangular boards).
     # #447: size the edge band at the width this map is stamped at (track_width =
