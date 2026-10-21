@@ -44,7 +44,10 @@ The tools are of two kinds, and the difference decides how you use one:
 `tests/stress/kicad_drc_compare.py` grades the board with KiCad's own DRC beside
 `check_drc` and names the copper findings only one of them makes. It was never run
 in run 29, where KiCad's DRC was the only channel that saw copper against a
-part's own net-0 tab (#962, #994). It needs `kicad-cli`,
+part's own net-0 tab (#962, #994). It also reports KiCad's `connection_width`
+webs and `starved_thermal` spokes on lines of their own (`connwidth=`,
+`thermal=`; #406, #1334). Neither is part of its CONSISTENT verdict or its
+exit code, so read them before calling a board done. It needs `kicad-cli`,
 and `krt_registry` does not list it because it lives under `tests/`. Without
 `kicad-cli` it prints SKIP and `NOT RUN`, compares 0 boards and exits 2: record
 that as NOT RUN, never as agreement.

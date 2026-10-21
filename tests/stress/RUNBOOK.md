@@ -469,6 +469,15 @@ harmless.
    as `kicad_connection_width` (None = not graded: no recorded floor) +
    `connection_width_min`; ab_replay_grade compares the count per board (connw
    column) and gates the A/B verdict on its delta.
+   STARVED_THERMAL (#1334): a pad whose thermal relief resolves fewer spokes
+   than `min_resolved_spokes` is reported as its own channel too
+   (`kicad_starved_thermal`, `thermal=N` on the board line, a
+   `STARVED-THERMAL REF.PAD` line per item), at the PROJECT's severity --
+   staging leaves it as the author set it, KiCad's default is error -- and
+   baseline-subtracted. Report only: it was filtered as benign, so a DONE
+   board shipped two starved-thermal errors nothing named. It is not in the
+   copper match, the CONSISTENT verdict or the exit code; read it before
+   calling a board done.
 8. OOM REGRESSION CHECK (issue #81, fixed): the obstacle-map polygon pass is
    now chunked; DEFAULT grids should stay well under the 12 GB cap on every
    board. Use the default --grid-step unless component pitch demands finer.

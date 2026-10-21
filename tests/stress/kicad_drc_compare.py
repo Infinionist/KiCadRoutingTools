@@ -17,8 +17,8 @@ classifies every discrepancy:
                       structurally blind to overlaps it merged into one net).
 
 Known-benign asymmetries filtered out:
-  * KiCad classes we deliberately do not grade (annular width, courtyard,
-    silkscreen, starved thermals, text/edge, footprint checks, ...).
+  * KiCad classes we deliberately do not grade (annular width,
+    silkscreen, text/edge, footprint checks, ...).
   * KiCad "unconnected_items" (that is check_connected's job, not check_drc's).
   * check_drc warnings (same-net copper classes + sub-coincidence gaps) --
     KiCad permits same-net overlap outright.
@@ -30,6 +30,13 @@ Graded SEPARATELY (#406, never matched against check_drc): KiCad's
 lifts the severity; the count is reported as kicad_connection_width (None =
 not graded -- no recorded floor). check_drc has no counterpart by design:
 the flagged artifact lives in KiCad's own float-borderline web measurement.
+
+Graded SEPARATELY too (#1334): KiCad's `starved_thermal` -- a pad whose
+thermal relief resolves fewer spokes than `min_resolved_spokes` -- at the
+PROJECT's severity (staging leaves it as the author set it; KiCad's default
+is error). Reported as kicad_starved_thermal with the pads it names, never
+matched against check_drc (which has no thermal model) and never part of the
+CONSISTENT verdict or the exit code.
 
 Usage:
   python3 tests/stress/kicad_drc_compare.py <board.kicad_pcb> [...]
@@ -115,6 +122,14 @@ KICAD_WEB_TYPES = {"connection_width"}
 # Never enters the copper match.
 KICAD_COURTYARD_TYPES = {"courtyards_overlap"}
 
+# Thermal-relief spokes (#1334): a fourth LABELED channel. It was filtered as
+# "known-benign", so a DONE board shipped two starved_thermal ERRORS (gp14
+# 04_multichannel_mixer: IC1.4 and IC2.4 GND, 1 spoke of 2) that no grader in
+# the repo named. Graded at the project's severity, like the copper classes
+# before #526 lifted them, and never in the copper match.
+KICAD_THERMAL_TYPES = {"starved_thermal"}
+_THERMAL_PAD_RE = re.compile(r"Pad\s+(\S+)\s+\[[^\]]*\]\s+of\s+(\S+)")
+
 MATCH_RADIUS_MM = 0.5
 
 
@@ -156,6 +171,12 @@ def run_kicad_drc(board: str):
             os.unlink(out_json)
         except OSError:
             pass
+    return parse_kicad_report(data), None
+
+
+def parse_kicad_report(data):
+    """The graded items of one kicad-cli DRC JSON report: the courtyard
+    class at any severity, the copper, web and thermal classes at error."""
     out = []
     for v in data.get("violations", []):
         vtype = v.get("type", "")
@@ -173,7 +194,8 @@ def run_kicad_drc(board: str):
                         "kinds": tuple(sorted(refs)[:2]),
                         "severity": v.get("severity", "")})
             continue
-        if vtype not in KICAD_COPPER_TYPES and vtype not in KICAD_WEB_TYPES:
+        if (vtype not in KICAD_COPPER_TYPES and vtype not in KICAD_WEB_TYPES
+                and vtype not in KICAD_THERMAL_TYPES):
             continue
         if v.get("severity") == "warning":
             # copper/web channels keep their historical error-only
@@ -206,12 +228,26 @@ def run_kicad_drc(board: str):
                 copper_pos = (float(p.get("x", 0.0)), float(p.get("y", 0.0)))
         if vtype in EDGE_KICAD_TYPES and copper_pos is not None:
             pos = copper_pos
-        out.append({"type": vtype, "nets": frozenset(nets),
-                    "pos": pos or (0.0, 0.0),
-                    "desc": v.get("description", ""),
-                    "kinds": tuple(sorted(kinds)),
-                    "graphic_owners": owners})
-    return out, None
+        row = {"type": vtype, "nets": frozenset(nets),
+               "pos": pos or (0.0, 0.0),
+               "desc": v.get("description", ""),
+               "kinds": tuple(sorted(kinds)),
+               "graphic_owners": owners}
+        if vtype in KICAD_THERMAL_TYPES:
+            # The starved PAD, as REF.PAD: what a reader goes to fix.
+            pad_items = [(m, i) for i in v.get("items", [])
+                         for m in [_THERMAL_PAD_RE.search(
+                             i.get("description", "") or "")] if m]
+            row["pads"] = tuple(f"{m.group(2)}.{m.group(1)}"
+                                for m, _i in pad_items)
+            # At the PAD, not the zone's anchor (one point for every pad
+            # the pour starves).
+            _pp = pad_items[0][1].get("pos") if pad_items else None
+            if _pp:
+                row["pos"] = (float(_pp.get("x", 0.0)), float(_pp.get("y", 0.0)))
+            row["severity"] = v.get("severity", "")
+        out.append(row)
+    return out
 
 
 # "Polygon [<no net>] of U2 on F.Cu" -- a footprint's own graphic copper. A
@@ -862,6 +898,9 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
             web_min = None
     web_items = [v for v in kicad if v["type"] in KICAD_WEB_TYPES]
     kicad = [v for v in kicad if v["type"] not in KICAD_WEB_TYPES]
+    # #1334: thermal spokes split out the same way, for the same reason.
+    thermal_items = [v for v in kicad if v["type"] in KICAD_THERMAL_TYPES]
+    kicad = [v for v in kicad if v["type"] not in KICAD_THERMAL_TYPES]
     # Run-6: the courtyard channel splits out the same way (never enters the
     # copper match), then reconciles against check_assembly's class-waiver
     # verdicts by ref pair. `unmatched` on either side is the alarm.
@@ -910,14 +949,20 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
                      "pairs": rows}
     except Exception as e:  # noqa: BLE001 -- reporting channel, not a gate
         courtyard = {"error": str(e)[:150], "kicad": len(court_items)}
-    pre = web_pre = 0
+    pre = web_pre = thermal_pre = 0
     if baseline and os.path.exists(baseline):
         base_items, berr = kicad_items_for(baseline, clearance)
         if not berr and base_items:
             base_web = [v for v in base_items if v["type"] in KICAD_WEB_TYPES]
-            base_items = [v for v in base_items if v["type"] not in KICAD_WEB_TYPES]
+            base_thermal = [v for v in base_items
+                            if v["type"] in KICAD_THERMAL_TYPES]
+            base_items = [v for v in base_items
+                          if v["type"] not in KICAD_WEB_TYPES
+                          and v["type"] not in KICAD_THERMAL_TYPES]
             kicad, pre = _subtract_baseline(kicad, base_items)
             web_items, web_pre = _subtract_baseline(web_items, base_web)
+            thermal_items, thermal_pre = _subtract_baseline(thermal_items,
+                                                            base_thermal)
     # #962: the unrouted input doubles as check_drc's --baseline, so a
     # footprint-graphic graze a PART MOVE created is graded (not accepted) and
     # cannot consume KiCad's matching finding below.
@@ -1052,6 +1097,10 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
             "connection_width_min": web_min,
             "connection_width_preexisting": web_pre,
             "connection_width_items": web_items,
+            # #1334: thermal spokes, at the project's severity (report only)
+            "kicad_starved_thermal": len(thermal_items),
+            "starved_thermal_preexisting": thermal_pre,
+            "starved_thermal_items": thermal_items,
             # run-6: the labeled courtyard channel (never silently filtered)
             "courtyard": courtyard,
             # #962 D6: check_drc-only by construction (KiCad has no check)
@@ -1066,6 +1115,7 @@ _SUMMARY_KEYS = ("board", "kicad", "kicad_preexisting", "check_drc",
                  "matched", "kicad_only", "checkdrc_only",
                  "pairs_kicad_only", "pairs_checkdrc_only",
                  "kicad_connection_width", "connection_width_min",
+                 "kicad_starved_thermal",
                  "courtyard", "via_in_paste")
 
 
@@ -1095,6 +1145,11 @@ def compare_board(board: str, label: str = None, clearance: float = None,
     cw_pre_note = f" (+{cw_pre} pre-existing, subtracted)" if cw_pre else ""
     cw_note = (f" connwidth={cw}@<{cw_min}mm{cw_pre_note}" if cw is not None
                else " connwidth=not-graded")
+    _st = data.get("kicad_starved_thermal", 0)
+    _st_pre = data.get("starved_thermal_preexisting", 0)
+    cw_note += (f" thermal={_st}"
+                + (f" (+{_st_pre} pre-existing, subtracted)" if _st_pre
+                   else ""))
     print(f"{label}: kicad={data['kicad']}{pre_note} check_drc={data['check_drc']}{cd_pre_note} "
           f"matched={data['matched']} kicad_only={data['kicad_only']} checkdrc_only={data['checkdrc_only']}{ie_note} | "
           f"net-pairs: both={data['pairs_both']} kicad_only={data['pairs_kicad_only']} "
@@ -1106,6 +1161,9 @@ def compare_board(board: str, label: str = None, clearance: float = None,
     for wv in data.get("connection_width_items", []):
         print(f"    CONNWIDTH   {'/'.join(wv.get('kinds', ())) or '?':16s} "
               f"{sorted(wv['nets'])} @ {wv['pos']}  {wv.get('desc', '')[:60]}")
+    for tv in data.get("starved_thermal_items", []):
+        print(f"    STARVED-THERMAL {','.join(tv.get('pads', ())) or '?':12s} "
+              f"{sorted(tv['nets'])} @ {tv['pos']}  {tv.get('desc', '')[:60]}")
     vip = data.get("via_in_paste")
     if vip and any(vip.get(k) for k in ("check_drc", "protected", "inherited",
                                         "undeclarable")):
@@ -1177,6 +1235,10 @@ def main():
     print(f"connection_width: {sum(r['kicad_connection_width'] for r in cw_rows)} "
           f"item(s) on {len(cw_rows)} graded board(s) "
           f"({len(rows) - len(cw_rows)} not graded: no recorded min floor)")
+    # #1334: report only -- never part of the verdict or the exit code.
+    print(f"starved_thermal: "
+          f"{sum(r.get('kicad_starved_thermal') or 0 for r in rows)} item(s) "
+          f"at the project's severity on {len(rows)} board(s)")
     # #995: a board that was never compared is not a board that agreed. With
     # no kicad-cli every board SKIPs, and this used to print "0 boards
     # compared" and exit 0, which a caller reading the exit code took as
