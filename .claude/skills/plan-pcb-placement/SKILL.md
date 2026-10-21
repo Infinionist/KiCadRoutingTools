@@ -824,8 +824,14 @@ does not come, classify the failure (§4).
   vias, a cheaper ground-plane layer cost (`--layer-costs`). Both go below
   the board's authored floors, so disclose that (§6). On later steps of a
   chain, pass `--clearance-ceiling`, not `--clearance`.
-- **Hand-written copper:** stage each join with `py_tools/check_join.py`
-  and stamp it `(locked yes)`; a lock freezes the WHOLE net.
+- **Hand-written copper:** check each join with
+  `python3 -X utf8 py_tools/check_join.py <board> <NET> x,y,layer x,y,layer [via:x,y] --keep-staged <out>`.
+  On `CLEAN` (exit 0), `<out>` is the board plus that join, siblings
+  copied: continue from it. No tool here locks a track or via, so the join
+  stays rippable, and a later route step may rip its net and route it
+  again. Write joins after the last route step, re-run `check_connected`
+  and `check_drc` on the result (new copper changes how the pours fill),
+  and list each join in REPORT.md.
 
 ## 5. Rules
 
