@@ -777,6 +777,31 @@ included, never a `--quick` run (the judging chain is a starting point it may
 use). Then `board_score` and `check_complete` with every spec flag. If DONE
 does not come, classify the failure (§4).
 
+### 3.9 Finish the board (both modes)
+
+Once, on the board you will hand back (`wk/<run>/final.kicad_pcb` in `place`
+mode, the routed board in `full` mode), before the verifier (§5, rule 5).
+
+1. **Tidy the reference labels, and keep the tidy only if KiCad agrees.**
+   Placing moved the parts and left their labels where the library put
+   them, and no DONE grader reads silk (`kicad_drc_compare` drops the silk
+   classes by design). Tidy them into a new file and grade both with
+   KiCad's own silk classes:
+   ```bash
+   python3 -X utf8 py_placer/beautify_labels.py <board> wk/<run>/labelled.kicad_pcb
+   kicad-cli pcb drc <board> --severity-all --format json -o wk/<run>/silk_before.json
+   kicad-cli pcb drc wk/<run>/labelled.kicad_pcb --severity-all --format json -o wk/<run>/silk_after.json
+   python3 -c "import json,sys,collections;[print(f,dict(collections.Counter(x['type'] for x in json.load(open(f))['violations'] if x['type'].startswith('silk')))) for f in sys.argv[1:]]" wk/<run>/silk_before.json wk/<run>/silk_after.json
+   ```
+   `beautify_labels` moves reference labels clear of pads, holes, the edge
+   and each other and touches nothing else (copper byte for byte, siblings
+   copied). It does not see drawn silk, a part's own outline included, so
+   it can trade one overlap for another: one board went from 4 KiCad silk
+   errors to 0, another from 54 to 76. Keep `labelled.kicad_pcb` as the
+   board only when its silk count is lower, and put both counts in
+   REPORT.md. Without `kicad-cli`, keep the board as it was and say the
+   silk is ungraded.
+
 ## 4. Traps measured in real runs
 
 **Placement**
@@ -885,6 +910,8 @@ does not come, classify the failure (§4).
      measurement;
    - **floors:** where the run went below the board's authored or fab floors
      (route.py's `Design rules [...]` line, `check_complete --authored-from <input>`);
+   - **silkscreen:** KiCad's silk counts before and after the label tidy
+     (§3.9), and which board was kept;
    - **a timeline** and **where the time went**;
    - **tool gaps**, including any tool that said "fine" about something that
      was not;
