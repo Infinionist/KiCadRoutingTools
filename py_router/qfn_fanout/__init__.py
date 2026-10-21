@@ -1917,18 +1917,35 @@ def generate_qfn_fanout(footprint: Footprint,
     # for this by accident: its square-cornered box kept a fan far enough off
     # the neighbour pad's corner that it also missed the neighbour's fan; the
     # exact pad gap does not, so adjacent fans are checked here directly.
-    _own_straights = [(s.pad_pos, s.corner_pos, s.net_id) for s in stubs]
+    #
+    # The square box also kept every TIP `track_width + extension` off its
+    # neighbours', the spacing check_endpoint_spacing validates below and
+    # reports as failed nets: ft2232h U4 (--extension 0.3) shipped /OSCO's
+    # longer fan 0.447 mm from /OSCI's tip and failed both. So a fan's tip
+    # also keeps that spacing from every other-net tip already kept and from
+    # every other-net straight end (where a fan that collapses ends). Under
+    # the default extension the clearance test above already implies it.
+    _tip_spacing = track_width + extension - 1e-6
 
     def _hits_own_stubs(p1, p2, net_id, cl):
         lim = track_width + cl - 1e-6
-        for a, b, rn in _own_straights:
-            if rn != net_id and segment_to_segment_distance(
+        for s in stubs:
+            if s.net_id == net_id:
+                continue
+            a, b = s.pad_pos, s.corner_pos
+            if segment_to_segment_distance(
                     p1[0], p1[1], p2[0], p2[1], a[0], a[1], b[0], b[1]) < lim:
                 return True
+            if math.hypot(p2[0] - b[0], p2[1] - b[1]) < _tip_spacing:
+                return True
         for s in kept_stubs:
-            if s.net_id != net_id and segment_to_segment_distance(
+            if s.net_id == net_id:
+                continue
+            if segment_to_segment_distance(
                     p1[0], p1[1], p2[0], p2[1], s.corner_pos[0], s.corner_pos[1],
                     s.stub_end[0], s.stub_end[1]) < lim:
+                return True
+            if math.hypot(p2[0] - s.stub_end[0], p2[1] - s.stub_end[1]) < _tip_spacing:
                 return True
         return False
 
