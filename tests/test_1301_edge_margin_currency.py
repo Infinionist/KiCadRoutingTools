@@ -134,6 +134,27 @@ class UnsetEdgeIsTheFloorRoutingWrites(unittest.TestCase):
             self.assertEqual((edge, knobs['board_edge_clearance']['source']),
                              (0.55, 'fixed default'))
 
+    def test_a_value_under_the_floor_is_raised_as_routing_raises_it(self):
+        from fix_kicad_drc_settings import effective_board_edge_clearance
+        from list_nets import board_floor_knobs
+        with tempfile.TemporaryDirectory() as td:
+            path = _board(td, BODY, size=(40, 30))
+            _project(path, {'min_copper_edge_clearance': 0.01})   # sonde's
+            _c, edge, knobs = board_floor_knobs(path)
+            self.assertAlmostEqual(edge, effective_board_edge_clearance(path, 0.0))
+            self.assertAlmostEqual(edge, 0.2)
+            k = knobs['board_edge_clearance']
+            self.assertEqual((k['source'], k['declared'], k['raised_to']),
+                             ('board constraint', 0.01, FAB_SOURCE))
+            _c, edge, knobs = board_floor_knobs(path, None, 0.1)
+            self.assertAlmostEqual(edge, effective_board_edge_clearance(path, 0.1))
+            self.assertEqual((knobs['board_edge_clearance']['source'],
+                              knobs['board_edge_clearance']['declared']), ('cli', 0.1))
+            _project(path, {'min_copper_edge_clearance': 0.3})
+            _c, edge, knobs = board_floor_knobs(path)
+            self.assertEqual(edge, 0.3)
+            self.assertNotIn('declared', knobs['board_edge_clearance'])
+
     def test_no_board_file_reads_the_same_floor(self):
         from list_nets import unset_board_edge_clearance
         self.assertEqual(unset_board_edge_clearance(None), (0.2, FAB_SOURCE))

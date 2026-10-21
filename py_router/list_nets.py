@@ -415,7 +415,11 @@ def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
     unset clearance falls back to ``clearance_default``. An unset edge
     clearance resolves to the fab edge floor routing writes back
     (`unset_board_edge_clearance`, #1301), unless the caller passes its own
-    ``edge_default`` (then labelled ``'fixed default'``). Grading a board at
+    ``edge_default`` (then labelled ``'fixed default'``). A declared or
+    explicit edge clearance under that floor is raised to it, as routing
+    raises it (`fix_kicad_drc_settings.effective_board_edge_clearance`); its
+    knob keeps the source and adds ``declared`` (the value raised) and
+    ``raised_to``. Grading a board at
     a fixed constant tighter than its own floor manufactures phantom
     violations (S1: check_floorplan oob), and one LOOSER lets real ones
     pass; the same mistake vetoed legal poses in converge (S4).
@@ -459,6 +463,21 @@ def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
         src = 'cli'
     knobs['board_edge_clearance'] = {'value': board_edge_clearance,
                                      'source': src}
+    if src in ('board constraint', 'cli'):
+        # Routing pins a declared or requested edge clearance UP to the fab
+        # floor (`effective_board_edge_clearance`) and writes that floor
+        # back, so a value under it is read as the floor here too: sonde
+        # declares 0.01 and its J2 was seated with pads 0.01 mm from the
+        # edge, which every routed copy then graded at 0.20.
+        # Only a real distance: a non-finite or negative request is left for
+        # the caller's own refusal (place_pose exits 2 on `-inf`).
+        floor, _ = unset_board_edge_clearance(pcb_path)
+        if (isinstance(board_edge_clearance, (int, float))
+                and 0.0 <= board_edge_clearance < floor):
+            knobs['board_edge_clearance'].update(
+                value=floor, declared=board_edge_clearance,
+                raised_to=UNSET_EDGE_SOURCE)
+            board_edge_clearance = floor
     return clearance, board_edge_clearance, knobs
 
 
