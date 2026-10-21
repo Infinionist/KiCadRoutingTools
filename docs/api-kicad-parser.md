@@ -312,7 +312,9 @@ off-outline grade (`check_drc.footprint_graphic_outline_census`, #962) reads
 `Segment.graphic_filled` to look inside a filled shape, and another part's
 PADS on the copper (`check_drc.footprint_graphic_pad_census`, #1266) are
 measured the same way -- strokes, then the interior -- for check_drc, the
-placement gate and check_assembly.
+placement gate and check_assembly. A footprint's OWN pads against each other
+are `check_drc.footprint_own_pad_census` (#1306), keyed by the index into
+`footprint.pads`, so a pair can be found again on a `--baseline` board.
 
 ### `Zone`
 

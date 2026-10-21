@@ -1020,6 +1020,11 @@ def write_placed_output(input_file: str, output_file: str,
 
     placement_by_ref = {p['reference']: p for p in placements}
     modified_count = 0
+    # #1322: a placement at the block's own pose rewrites the block and moves
+    # nothing; counted apart, so `rotate R2 180` on a part already at 180 no
+    # longer reports "Modified 1 footprint positions" beside place_pose's
+    # "unmoved".
+    unchanged_count = 0
     matched = set()
     unapplied_blocks = []
 
@@ -1195,7 +1200,13 @@ def write_placed_output(input_file: str, output_file: str,
         pieces.append(content[end:tail])
         pieces.append(new_fp_text)
         tail = start
-        modified_count += 1
+        if (abs(new_x - float(at_match.group(1))) > _POSE_EPS
+                or abs(new_y - float(at_match.group(2))) > _POSE_EPS
+                or abs((new_rot - old_rot + 180) % 360 - 180) > _POSE_EPS
+                or side_change):
+            modified_count += 1
+        else:
+            unchanged_count += 1
     if pieces:
         pieces.append(content[:tail])
         content = ''.join(reversed(pieces))
@@ -1352,7 +1363,9 @@ def write_placed_output(input_file: str, output_file: str,
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(content)
 
-    print(f"Modified {modified_count} footprint positions")
+    print(f"Modified {modified_count} footprint positions"
+          + (f" ({unchanged_count} placement(s) already at that pose, "
+             f"unchanged)" if unchanged_count else ""))
     _report_unapplied(placement_by_ref, matched, unapplied_blocks,
                       'placement')
     print(f"Successfully wrote {output_file}")

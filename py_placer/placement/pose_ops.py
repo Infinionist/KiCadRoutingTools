@@ -76,7 +76,9 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
                  # #1266: pads against ANOTHER part's graphic copper -- short
                  # of clearance on a net it is not, and touching on any net.
                  'graphic_pad_conflicts', 'graphic_pad_stack_count',
-                 'pad_stack_count')
+                 'pad_stack_count',
+                 # #1306: one footprint's own pads touching on two nets.
+                 'own_pad_short_count')
 
 #: The MAGNITUDES, and they are not a nicety: a count arm alone accepts a
 #: request that keeps the tally and deepens the damage. Measured on the
@@ -95,9 +97,10 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
 #: was no pair at all and this verb wrote a board check_assembly calls NOT
 #: BUILDABLE. The pairs are measured by check_assembly's own function.
 #: #1266: a `[pad part, copper owner]` pair against footprint graphic copper.
+#: #1306: a `["U1.1", "U1.2"]` pair of one footprint's pads shorted.
 PAIR_KEYS = ('pad_conflict_pairs', 'hole_conflict_pairs',
              'graphic_pad_conflict_pairs', 'graphic_pad_stack_pairs',
-             'pad_stack_pairs')
+             'pad_stack_pairs', 'own_pad_short_pairs')
 
 MAGNITUDE_KEYS = ('pad_shortfall', 'oob_pad_amount', 'pad_edge_shortfall',
                   'oob_keepout_copper_amount',
@@ -118,7 +121,9 @@ LEGAL_SCOPE = ('pad-pad clearance', 'hole-hole clearance', 'pad copper vs the '
                "of clearance on a net it is not, or touching on any net "
                "(#1266)",
                "two parts' pad copper overlapping on a shared side, ANY net "
-               "-- a pad stack, check_assembly's pad_intersection (#1064)")
+               "-- a pad stack, check_assembly's pad_intersection (#1064)",
+               "one footprint's own pads touching on two different real nets "
+               "(KiCad's shorting_items; #1306)")
 LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
                     '(disclosed as graphic_edge_shortfall_refs, not gated)',
                     'footprint copper the parser does not model: pad-less '
@@ -134,6 +139,63 @@ LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
                     "parts sharing an origin whose pads do not intersect "
                     "(check_assembly's coincident_origins)")
 MAGNITUDE_EPS = 1e-6
+
+#: How many entries of each per-pad / per-pair list the stdout JSON_SUMMARY
+#: carries (#1352) -- board_score's cap (#1194). On a 97-part pile
+#: (pico_ice_rev3) the summary line was 291 KB, 245 KB of it the pad-edge
+#: findings and unmeasured rows before and after, and a refusal's one-line
+#: reason was buried in it. `place_pose --json PATH` writes every entry.
+STDOUT_LIST_CAP = 20
+
+#: The summary's per-pad and per-pair lists (`_legality_row`), capped on
+#: stdout. The request's own lists (`ops`, `moved`, `locked`) are not.
+SUMMARY_LISTS = ('pad_clearance_required', 'worst',
+                 'oob_pad_copper_refs_after',
+                 'oob_graphic_copper_refs_after',
+                 'oob_graphic_copper_waived_after',
+                 'oob_graphic_copper_unmeasured_after',
+                 'graphic_edge_shortfall_refs_after',
+                 'keepout_copper_pads_after', 'keepout_copper_tht_refs_after',
+                 'keepout_copper_unmeasured_after', 'pad_stack_pairs_after',
+                 'graphic_pad_conflict_pairs_after',
+                 'graphic_pad_stack_pairs_after', 'graphic_pad_rows_after',
+                 'graphic_pad_unmeasured_after', 'own_pad_short_pairs_after')
+
+#: ...and the lists inside each pad-edge grade (`pad_edge_before/_after`).
+PAD_EDGE_LISTS = ('findings', 'unmeasured', 'rules_unmeasured')
+
+
+def _cap_lists(doc: Dict, keys, cap: int) -> Dict:
+    """`doc` with each list in `keys` longer than `cap` cut to `cap`, and
+    `<key>_count` / `<key>_truncated` beside it; `doc` itself is untouched."""
+    long_ = [k for k in keys if isinstance(doc.get(k), list) and len(doc[k]) > cap]
+    if not long_:
+        return doc
+    out = dict(doc)
+    for k in long_:
+        out[k] = doc[k][:cap]
+        out[k + '_count'] = len(doc[k])
+        out[k + '_truncated'] = len(doc[k]) - cap
+    return out
+
+
+def stdout_summary(summary: Dict, cap: int = STDOUT_LIST_CAP) -> Dict:
+    """The JSON_SUMMARY copy of a place_pose summary (#1352): every list in
+    SUMMARY_LISTS, and each pad-edge grade's PAD_EDGE_LISTS, capped at `cap`
+    entries, `<list>_count` the full length and `<list>_truncated` how many
+    were left out. The counts and magnitudes the verdict reads are scalars
+    and are never cut. `summary` itself -- what `--json` writes -- is not
+    touched. Pure."""
+    out = _cap_lists(summary, SUMMARY_LISTS, cap)
+    for ch in ('pad_edge_before', 'pad_edge_after'):
+        g = out.get(ch)
+        if isinstance(g, dict):
+            capped = _cap_lists(g, PAD_EDGE_LISTS, cap)
+            if capped is not g:
+                if out is summary:
+                    out = dict(summary)
+                out[ch] = capped
+    return out
 
 #: `replicate --search`'s default lattice pitch, mm (#1211). Coarser than
 #: the snap's 0.25: every candidate is a written, re-parsed, re-graded board
@@ -174,11 +236,16 @@ def resolve_knobs(board_path: str, clearance=None, board_edge_clearance=None,
     netclass / constraint > the fixed default. A fixed 0.25/0.55 on a board
     routed to 0.15/0.3 vetoes poses the router would happily route, which is
     the run-7 S4 finding this exists to avoid.
+
+    The clearance is read as KiCad GRADES it (`grading=True`, #1338): the
+    class floored at Board Setup `min_clearance`. This verb's verdict is a
+    grade, and on multichannel_mixer (class 0.2, min_clearance 0.3) the class
+    alone called `legal` a pose KiCad reports two pad clearance errors on.
     """
     import list_nets
     import routing_defaults as defaults
     clr, edge, knobs = list_nets.board_floor_knobs(
-        board_path, clearance, board_edge_clearance)
+        board_path, clearance, board_edge_clearance, grading=True)
     if not math.isfinite(edge) or edge < 0:
         raise PoseRefusal('board-edge-clearance must be finite and nonnegative (mm); '
                           'got %r' % edge, code=2)
@@ -471,6 +538,15 @@ def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
 
         note['to'] = [round(x, 4), round(y, 4), rot]
         note['moved'] = note['to'] != note['from']
+        if not note['moved']:
+            # #1322: say WHY nothing moved. `rotate R2 180` on a part already
+            # at 180 reads as a turn to anyone who meant one.
+            note['unmoved_why'] = (
+                "already at %g degrees: `rotate` sets an ABSOLUTE angle; "
+                "`rotate %s %g --relative` turns it by %g about its origin"
+                % (rot, ref, float(op['rot']), float(op['rot']))
+                if kind == 'rotate' and not op.get('relative')
+                else 'already at this pose')
         notes.append(note)
         placements.append({'reference': ref, 'new_x': x, 'new_y': y,
                            'new_rotation': rot})
@@ -572,7 +648,8 @@ PAIR_OF = {'pad_conflicts': 'pad_conflict_pairs',
            'hole_conflicts': 'hole_conflict_pairs',
            'graphic_pad_conflicts': 'graphic_pad_conflict_pairs',
            'graphic_pad_stack_count': 'graphic_pad_stack_pairs',
-           'pad_stack_count': 'pad_stack_pairs'}
+           'pad_stack_count': 'pad_stack_pairs',
+           'own_pad_short_count': 'own_pad_short_pairs'}
 
 
 def regrade_refusal(before: Dict, after: Dict, bad: List[str],
@@ -656,6 +733,9 @@ def _legality_row(before: Dict, after: Dict) -> Dict:
                 'graphic_pad_rows', 'graphic_pad_unmeasured'):
         row[key + '_after'] = after.get(key)
     row['graphic_pad_basis'] = after.get('graphic_pad_basis')
+    # #1306: which of one footprint's own pads are shorted together.
+    row['own_pad_short_pairs_after'] = after.get('own_pad_short_pairs')
+    row['own_pad_basis'] = after.get('own_pad_basis')
     return row
 
 
@@ -1605,7 +1685,9 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 for p in after.get(pk) or ():
                     if tuple(p[:2]) in had:
                         continue
-                    for r in p[:2]:
+                    # An own-pad pair names two PADS of one part (#1306).
+                    for r in ({p[0].partition('.')[0]}
+                              if pk == 'own_pad_short_pairs' else p[:2]):
                         fresh.setdefault(r, []).append(
                             '%s %s/%s' % (pk, p[0], p[1]))
             # ...and the per-PART channels, so a member the copy put past the

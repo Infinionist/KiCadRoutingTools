@@ -6332,6 +6332,8 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
     # #1266: pads against ANOTHER part's footprint graphic copper.
     graphic.update(_graphic_pad_channel(pcb_data, clearance, model,
                                         routing_layers))
+    # #1306: one footprint's own pads touching on two different nets.
+    graphic.update(own_pad_channel(pcb_data, routing_layers))
     # #1098: parts inside a PCB-edge plug's mating region, on either face.
     # `declared_keepouts` is the intent's `keepouts`: a declared
     # `mating:<ref>` replaces the derived region here as it does in the
@@ -6541,6 +6543,50 @@ def _graphic_pad_channel(pcb_data, clearance: float, model,
         'graphic_pad_rows': census['rows'],
         'graphic_pad_unmeasured': census['unmeasured'],
         'graphic_pad_basis': census['basis'],
+    }
+
+
+def own_pad_channel(pcb_data, routing_layers=None) -> Dict[str, object]:
+    """One footprint's OWN pads touching on two different nets, as placement
+    keys (#1306). check_drc's `footprint_own_pad_census` at contact, so
+    check_drc, place_pose and check_assembly count the same pairs.
+
+    Every other pad channel here is between two parts, so steppenprobe U1 --
+    164 of its pad pairs shorted, its pads left at their old angle by the
+    placement writer (#1305) -- graded `pad_conflicts 0`, `pad_stack_count 0`
+    and buildable, while KiCad reported 176 shorting_items.
+
+    - `own_pad_short_count/_pairs`: contacts between two REAL nets (KiCad's
+      shorting_items), `["U1.1", "U1.2"]` per pair. What place_pose refuses
+      to worsen and check_assembly gates on. Two pins' `unconnected-(...)`
+      nets are left out (`floating`): nothing is wired to either, so the
+      contact shorts no signal -- cm4_edge_ai's USB-C VBUS pads A4/B9, one
+      pin drawn as four pads, which KiCad still reports.
+    - `own_pad_contact_rows`: every contact, a no-net pad's included (KiCad
+      grades those `clearance` at actual 0: a shield tab or a thermal-via pad
+      the library left without a net), with the indices into
+      `footprint.pads` that let check_assembly find the pair on --baseline.
+    """
+    from check_drc import footprint_own_pad_census
+    census = footprint_own_pad_census(pcb_data, contacts_only=True,
+                                      routing_layers=routing_layers or None)
+    rows = []
+    for r in census['rows']:
+        row = {k: r[k] for k in ('ref', 'pad_a', 'pad_b', 'index_a',
+                                 'index_b', 'net_a', 'net_b', 'layer',
+                                 'no_net')}
+        row['floating'] = all((n or '').startswith('unconnected-(')
+                              for n in (r['net_a'], r['net_b']))
+        row['short'] = r['short'] and not row['floating']
+        rows.append(row)
+    shorts = sorted({('%s.%s' % (r['ref'], r['pad_a']),
+                      '%s.%s' % (r['ref'], r['pad_b']))
+                     for r in rows if r['short']})
+    return {
+        'own_pad_short_count': len(shorts),
+        'own_pad_short_pairs': [list(p) for p in shorts],
+        'own_pad_contact_rows': rows,
+        'own_pad_basis': census['basis'],
     }
 
 

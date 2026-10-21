@@ -34,7 +34,9 @@ Every exit THIS TOOL decides prints exactly one `JSON_SUMMARY:` line, refusals
 included -- the board gate and the unreadable-input path as well as the pose
 refusals. The exception is argparse's own usage errors, which exit 2 from
 inside argparse before there is a board, a grade or a summary to print; if you
-are parsing output, treat "exit 2 with no summary line" as a usage error.
+are parsing output, treat "exit 2 with no summary line" as a usage error. The
+line caps each per-pad and per-pair list at 20 entries, `<list>_count` and
+`<list>_truncated` beside a capped one (#1352); `--json PATH` writes it whole.
 
 WHAT IS GRADED, and what "illegal" means. The verdict is
 `placement.legality.grade_pad_legality` -- the same numbers `check_assembly`
@@ -174,9 +176,10 @@ def build_parser(with_verbs=True):
                         'path)')
     p.add_argument('--clearance', type=float, default=None, metavar='MM',
                    help="Pad clearance the grade runs at. Omitted, it comes "
-                        "from the BOARD (its Default netclass / constraints) "
-                        "-- a fixed 0.25 on a board routed to 0.15 vetoes "
-                        "poses the router would happily route")
+                        "from the BOARD as KiCad grades it: its Default "
+                        "netclass, floored at Board Setup min_clearance "
+                        "(#1338) -- a fixed 0.25 on a board routed to 0.15 "
+                        "vetoes poses the router would happily route")
     p.add_argument('--board-edge-clearance', type=float, default=None,
                    metavar='MM',
                    help="Edge clearance for the pose ranking. Omitted, from "
@@ -227,6 +230,12 @@ def build_parser(with_verbs=True):
     p.add_argument('--dry-run', action='store_true',
                    help='Grade the request and print the summary; write '
                         'nothing')
+    p.add_argument('--json', default=None, metavar='PATH',
+                   help='also write the FULL summary here. The stdout '
+                        'JSON_SUMMARY line caps each per-pad and per-pair '
+                        'list at 20 entries and says so in <list>_count / '
+                        '<list>_truncated (#1352); this file carries every '
+                        'entry')
     if with_verbs:
         _verb_parsers(p.add_subparsers(dest='verb', metavar='VERB'))
     return p
@@ -617,8 +626,7 @@ def main(argv=None):
             # refused run carried the "did nothing" note in the JSON alone.
             print("note: --snap/--near did not apply -- %s" % _sc['skipped'],
                   file=sys.stderr)
-        print('JSON_SUMMARY: ' + json.dumps(refused, sort_keys=True,
-                                            default=str), flush=True)
+        _emit_summary(args, refused)
         # 2 = the request names something that is not there (a typo the caller
         # rewrites); 4 = the request is well formed and the BOARD said no (a
         # measurement the caller acts on). One code for both would make them
@@ -626,9 +634,19 @@ def main(argv=None):
         return exc.code
 
     _report(summary)
-    print('JSON_SUMMARY: ' + json.dumps(summary, sort_keys=True, default=str),
-          flush=True)
+    _emit_summary(args, summary)
     return 0
+
+
+def _emit_summary(args, doc):
+    """The one JSON_SUMMARY line, its per-pad and per-pair lists capped
+    (`pose_ops.stdout_summary`, #1352), and the whole document in `--json`."""
+    from placement.pose_ops import stdout_summary
+    if getattr(args, 'json', None):
+        with open(args.json, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh, indent=1, sort_keys=True, default=str)
+    print('JSON_SUMMARY: ' + json.dumps(stdout_summary(doc), sort_keys=True,
+                                        default=str), flush=True)
 
 
 def _refuse(args, reason, code, **extra):
@@ -644,8 +662,7 @@ def _refuse(args, reason, code, **extra):
            'dry_run': bool(args.dry_run), 'refused': reason,
            'exit_code': code, 'moved': [], 'ops': [], 'legal': None}
     doc.update(extra)
-    print('JSON_SUMMARY: ' + json.dumps(doc, sort_keys=True, default=str),
-          flush=True)
+    _emit_summary(args, doc)
     return code
 
 
@@ -656,7 +673,9 @@ def _report(summary):
         summary['board_edge_clearance'],
         summary['knobs']['board_edge_clearance']['source']))
     for n in summary['ops']:
-        arrow = ('%s -> %s' % (n['from'], n['to'])) if n['moved'] else 'unmoved'
+        arrow = (('%s -> %s' % (n['from'], n['to'])) if n['moved']
+                 else 'unmoved' + (' -- %s' % n['unmoved_why']
+                                   if n.get('unmoved_why') else ''))
         extra = ''
         if n['kind'] == 'face':
             extra = (" [%s row aimed %s, landed %d/%d]"
@@ -715,9 +734,13 @@ def _report(summary):
                             summary['pad_edge_conflicts_after'],
                             summary['pad_edge_shortfall_after'],
                             'complete' if edge['complete'] else 'partial/unmeasured'))
-    for finding in edge['findings']:
+    # The first 5, as the stacks below (#1352): a pile prints hundreds.
+    for finding in edge['findings'][:5]:
         print("  %s: edge shortfall %.6g mm (required %g mm)" % (
             finding['pad_ref'], finding['shortfall_mm'], finding['required_mm']))
+    if len(edge['findings']) > 5:
+        print("  ... and %d more (--json PATH lists every one)"
+              % (len(edge['findings']) - 5))
     # #1064: same-net pads are not a pad CONFLICT above, and a stack of them
     # is still unbuildable -- check_assembly's pad_intersection, measured by
     # its own function.
@@ -727,6 +750,12 @@ def _report(summary):
              summary.get('pad_stack_count_after')))
     for a, b, area, side in (summary.get('pad_stack_pairs_after') or [])[:5]:
         print("  %s/%s %.4fmm2 side %s" % (a, b, area, side or '-'))
+    # #1306: one footprint's own pads shorted together (KiCad shorting_items).
+    print("one part's own pads touching on two nets: %s -> %s"
+          % (summary.get('own_pad_short_count_before'),
+             summary.get('own_pad_short_count_after')))
+    for a, b in (summary.get('own_pad_short_pairs_after') or [])[:5]:
+        print("  %s/%s" % (a, b))
     # #1266: a pad on another part's footprint graphic copper (a SOT-89 tab).
     print("pads on another part's graphic copper (touching, any net): "
           "%s -> %s; short of clearance: %s -> %s"

@@ -161,7 +161,7 @@ The DRC checker validates:
 3. **Via-to-track clearance** - Vias maintain clearance from tracks on other nets. A via KiCad types blind, buried or micro is graded only on the copper layers between its end layers, here, in check 5 and inside a filled copper graphic (#1268); a via with no type word is a through via whatever its `(layers ...)` pair, as KiCad loads it
 4. **Via-to-via clearance** - Vias maintain clearance from each other
 5. **Pad-to-via clearance** - Vias maintain clearance from pads on other nets (an SMD pad off a blind/micro via's span is not graded against it)
-6. **Pad-to-pad clearance** - Pads of different nets on a shared copper layer maintain clearance (catches overlaps/shorts, e.g. a placement step nudging a part onto a foreign pad). Pads of the *same* footprint are skipped — a component's own fine-pitch pin gaps are fixed library geometry, not a pipeline-introduced defect.
+6. **Pad-to-pad clearance** - Pads of different nets on a shared copper layer maintain clearance (catches overlaps/shorts, e.g. a placement step nudging a part onto a foreign pad). Two pads of ONE footprint that TOUCH on different nets are a `pad-pad` violation too (#1306, `check_drc.footprint_own_pad_census`, which check_assembly and place_pose read): KiCad reports them as `shorting_items`, or as `clearance` at actual 0 against a no-net pad. Exempt as KiCad exempts them: one net, one pad number (unless it carries two different real nets), one `net_tie_pad_groups` group; two no-net pads are not graded. With `--baseline BOARD`, a contact the baseline's same footprint already had is accepted `inherited-own-pad-contact`. Two of a footprint's pads closer than clearance without touching are library pad geometry no step changes; KiCad reports each as `clearance`, and check_drc counts them on a console line without grading them.
 7. **Copper-to-hole clearance** - Tracks maintain clearance from NPTH (no-copper) drill holes of other nets — a real fab short the via-drill hole check misses (e.g. a track across a mounting hole)
 8. **Hole-to-hole clearance** - Drill holes (via drills and through-hole pad drills) maintain edge-to-edge clearance, even on the same net (manufacturing constraint)
 9. **Board edge clearance** - Tracks and vias maintain clearance from the real `Edge.Cuts` outline (outer ring **plus interior cutouts/slots**), so copper routed into a cutout — which sits inside the bounding box — is caught. Falls back to the bounding box when the parser finds no usable outline. With `--check-pad-edge`, pads are checked too.
@@ -177,7 +177,7 @@ Same-net copper overlaps -- a track crossing its own net on one layer, two same-
 
 Checks 11–12 are on by default; pass `--no-size-checks` to skip them, or override the floors with `--min-track-width` / `--min-via-diameter` / `--min-via-drill`. The floor is derived from the board's copper-layer count unless overridden.
 
-`--baseline BOARD` is the board this one was derived from (the unrouted input, or the placement run's starting board). It is a checker option, not a routing parameter; pass it whenever you have that board, or pre-existing vias in paste openings read as violations against the run.
+`--baseline BOARD` is the board this one was derived from (the unrouted input, or the placement run's starting board). It is a checker option, not a routing parameter; pass it whenever you have that board, or pre-existing vias in paste openings and a footprint's own touching pads read as violations against the run.
 
 ### Clearance Margin
 
@@ -408,6 +408,16 @@ python3 py_placer/place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3
 python3 py_placer/place_pose.py BOARD OUT --intent intent.json replicate   # the intent's replicate[]
 ```
 
+`rotate REF DEG` sets an ABSOLUTE angle and `--relative` adds DEG; both turn
+about the footprint ORIGIN, which is pad 1 on a through-hole axial, so a half
+turn there swings the body by the pitch. To swap a two-pad part's pads in
+place, `set` it at the pose a half turn about the midpoint of its pads gives
+(origin `2*M - origin`, rotation + 180). An op that leaves its part where it
+was says why (`ops[].unmoved_why`: "already at 180 degrees: `rotate` sets an
+ABSOLUTE angle ..."), and the writer counts only changed poses ("Modified 0
+footprint positions (1 placement(s) already at that pose, unchanged)",
+#1322).
+
 Several verbs in one call describe ONE arrangement: every op is resolved
 against the INPUT board and written in a single pass, so no op sees another's
 effect, and the arrangement is graded at the exact points given -- so a snap
@@ -442,7 +452,12 @@ input. A request is refused when it makes a category worse:
   antenna, its filled interior included): `graphic_pad_conflicts` short of
   clearance on a net the copper is not, `graphic_pad_stack_count` touching on
   any net but a net tie's own, `graphic_pad_shortfall`, and their `_pairs`,
-  measured by `check_drc.footprint_graphic_pad_census`.
+  measured by `check_drc.footprint_graphic_pad_census`;
+- **one part's own pads touching on two real nets** (#1306):
+  `own_pad_short_count` and `own_pad_short_pairs` (`["U1.1", "U1.2"]`), by
+  `check_drc.footprint_own_pad_census`. Every other channel is between two
+  parts, so a footprint whose pads the writer left at their old angle read
+  clean.
 
 A request is **never refused for damage the board already had**: an absolute
 gate is False for a large share of parts on a real board before anything
@@ -560,14 +575,24 @@ tool whose job is to refuse, so it is disclosed on stderr — and the siblings
 are carried. The snap sweep's lattice step is `--snap-step` (0.25 mm) and it
 re-grades at most `--snap-tries` (6) ranked poses. `--dry-run` grades the
 request and prints the summary without writing (OUT is still required; the
-summary names it under `would_write`).
+summary names it under `would_write`). The clearance is the one KiCad
+grades the board at (#1338, `list_nets.board_grading_clearance`): the Default
+class floored at Board Setup `min_clearance`, as check_drc reads it since
+#1210, source `board minimum clearance` when the floor binds. check_assembly
+grades at the same value, and its `--clearance` note compares against it.
 Exit 0 written; 2 the request does not name a thing on this board (a typo you
 rewrite); 3 the board carries copper (`--allow-routed` to override); 4 well
 formed, and the board said no (a measurement you act on), nothing written —
 note that 4 departs from `place_simple`, where it means "written, with parts
 left illegal". Every exit the tool itself decides prints one `JSON_SUMMARY:`
 line; argparse's own usage errors exit 2 from inside argparse, before there is
-a board to summarise. There is no `--allow-unplaced`: this tool has no
+a board to summarise. That line caps each per-pad and per-pair list (the
+pad-edge findings and unmeasured rows, pad stacks, graphic-copper rows,
+`pad_clearance_required`, ...) at 20 entries, with `<list>_count` and
+`<list>_truncated` beside a capped one, as board_score does (#1352: a 97-part
+pile printed a 291 KB line); the counts and magnitudes the verdict reads are
+never cut. `--json PATH` writes the whole summary, and the text report lists 5
+pad-edge findings and says how many more. There is no `--allow-unplaced`: this tool has no
 unplaced gate, because arranging a pile one decision at a time is what it is
 for.
 

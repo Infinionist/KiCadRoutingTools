@@ -408,7 +408,7 @@ def unrouted_shape(board: str, unrouted_names, pcb=None) -> dict:
             'open': sorted(open_nets)}
 
 
-#: check_assembly's ten `not_buildable` conjuncts, by the JSON key each one
+#: check_assembly's twelve `not_buildable` conjuncts, by the JSON key each one
 #: publishes (check_assembly's `not_buildable = ...` line). `blocking` -- pad INTERSECTIONS -- is
 #: the first of them and is the only one this component used to read (#918).
 #:
@@ -448,11 +448,16 @@ def unrouted_shape(board: str, unrouted_names, pcb=None) -> dict:
 #: `graphic_pad_gating` (#1266) is the courtyard currency again -- a pad a
 #: moved member put on another part's footprint graphic copper -- and is
 #: null when unarmed.
+#:
+#: `own_pad_shorts` (#1306) is two of ONE part's pads touching on two real
+#: nets. Always measured; `--baseline` only exempts the pairs its footprint
+#: already had.
 ASSEMBLY_CONJUNCTS = ('blocking', 'locked_contacts', 'coincident_origins',
                       'containment_blocking', 'courtyard_blocking_gating',
                       'oob_pad_copper_gating_count', 'mating_keepout_count',
                       'pin_in_courtyard', 'testpoint_covered_gating',
-                      'body_edge_band_gating', 'graphic_pad_gating')
+                      'body_edge_band_gating', 'graphic_pad_gating',
+                      'own_pad_shorts')
 
 #: The conjuncts that can ACTUALLY flip the verdict while `blocking` is 0, in
 #: this scorer's invocation. Not every conjunct can:
@@ -477,11 +482,13 @@ ASSEMBLY_CONJUNCTS = ('blocking', 'locked_contacts', 'coincident_origins',
 #: `blocking` 0.
 #: #1266 added `graphic_pad_gating`: a pad on another part's footprint
 #: GRAPHIC copper is no pad intersection, so it fires at `blocking` 0.
+#: #1306 added `own_pad_shorts`: two pads of ONE part are no pair of parts,
+#: so it fires at `blocking` 0 too.
 ASSEMBLY_LIVE_CONJUNCTS = ('coincident_origins', 'containment_blocking',
                            'oob_pad_copper_gating_count', 'mating_keepout_count',
                            'pin_in_courtyard', 'courtyard_blocking_gating',
                            'testpoint_covered_gating', 'body_edge_band_gating',
-                           'graphic_pad_gating')
+                           'graphic_pad_gating', 'own_pad_shorts')
 
 
 def assembly_component(doc: dict, rc: int) -> dict:

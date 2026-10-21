@@ -31,7 +31,10 @@ body-to-edge band the --intent DECLARES (`assembly.body_edge_mm`; see
 BODY-TO-EDGE BAND, #1255 -- undeclared, it reports against JLCPCB's 2.5 mm
 and never gates) OR a pad touching another part's footprint graphic copper
 with a member moved vs --baseline (see PAD ON ANOTHER PART'S COPPER, #1266;
-armed by --baseline like the courtyard gate).
+armed by --baseline like the courtyard gate) OR two of one part's own pads
+touching on two different real nets, KiCad's shorting_items (see OWN PADS
+TOUCHING, #1306; with --baseline a pair the baseline's footprint already had
+does not gate).
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -122,18 +125,24 @@ def main():
     # clearance is right HERE because this tool grades existing geometry --
     # a tool that PREDICTS routability needs a fab floor instead (see
     # list_nets.board_floor, grade-vs-predict).
+    #
+    # #1338: "the board's own clearance" is what KiCad grades -- the Default
+    # class floored at Board Setup min_clearance, as check_drc has read it
+    # since #1210 -- not the class alone. multichannel_mixer declares class
+    # 0.2 and min_clearance 0.3; at 0.2 this tool called a board buildable
+    # with no pad pair while kicad-cli and check_drc reported two at 0.24 and
+    # 0.25 mm, and `--clearance 0.3` was told it was STRICTER than the board.
     _board_clr = None
     _decl = None
+    from list_nets import board_grading_clearance
     try:
-        from list_nets import (board_default_netclass_clearance,
-                               board_floor_declaration)
-        _board_clr = board_default_netclass_clearance(args.board)
+        from list_nets import board_floor_declaration
+        _board_clr, _board_src = board_grading_clearance(args.board)
         _decl = board_floor_declaration(args.board)
     except Exception:                                          # noqa: BLE001
         pass
-    from list_nets import board_floor
-    clearance, _src = board_floor(args.board, 'clearance', args.clearance,
-                                  defaults.CLEARANCE)
+    clearance, _src = board_grading_clearance(args.board, args.clearance,
+                                              defaults.CLEARANCE)
     print(f"  grading at clearance {clearance}mm  [{_src}]")
     # A board that declares NOTHING is a DIFFERENT case from one whose Default
     # class happens to match (run-12 Tier 1.3). The comparison below can only
@@ -154,10 +163,10 @@ def main():
     # can, and they should be told they did.
     if args.clearance is not None and _board_clr is not None \
             and abs(_board_clr - clearance) > 1e-9:
-        print(f"  NOTE: --clearance {clearance}mm overrides this board's own "
-              f"Default net-class clearance of {_board_clr}mm, so this grade "
-              f"is {'STRICTER' if clearance > _board_clr else 'LOOSER'} than "
-              f"the board asks for. Drop --clearance to grade at the board's "
+        print(f"  NOTE: --clearance {clearance}mm overrides the clearance KiCad "
+              f"grades this board at, {_board_clr}mm [{_board_src}], so this "
+              f"grade is {'STRICTER' if clearance > _board_clr else 'LOOSER'} "
+              f"than the board asks for. Drop --clearance to grade at the board's "
               f"floor. Expect the pad/hole ECHO counts to move; `blocking` "
               f"usually will not, because blocking pairs are pad "
               f"intersections rather than clearance grazes.")
@@ -257,6 +266,7 @@ def main():
     new_advisory = None
     moved_refs = None
     base_pile = False
+    own_pad_inherited = None
     if args.baseline:
         try:
             base_pcb = parse_kicad_pcb(args.baseline)
@@ -292,6 +302,11 @@ def main():
         # currency (`legality.moved_refs` says why membership is not enough).
         # A function in legality, so a mover can ask the same question.
         moved_refs = legality.moved_refs(pcb, base_pcb)
+        # #1306: the own-pad shorts the baseline's footprints already had.
+        own_pad_inherited = {
+            (r['ref'], r['index_a'], r['index_b'])
+            for r in legality.own_pad_channel(base_pcb)['own_pad_contact_rows']
+            if r['short']}
 
     print(f"Assembly audit of {args.board} (clearance {clearance}):")
     if dup_refs:
@@ -862,6 +877,48 @@ def main():
         print("    footprint copper NOT measured against other parts' pads: "
               + ', '.join(f"{u['owner_ref']} ({u['kind']})"
                           for u in _gp_un[:6]))
+    # #1306, the TWELFTH: two of ONE part's pads touching on two different
+    # real nets -- KiCad's shorting_items. Every channel above is between two
+    # parts, so steppenprobe U1, whose pads the placement writer left at
+    # their old angle (#1305), read `buildable` with 164 such pairs. Measured
+    # by check_drc's `footprint_own_pad_census`, which place_pose reads too.
+    # Absolute without --baseline: over the stress corpus's 478 human boards
+    # one ships any (bldc_tester's two Kelvin shunts, which declare no
+    # net-tie group), and with --baseline a pair its footprint already had
+    # there is that board's own and does not gate. A contact with a no-net
+    # pad (a shield tab, a thermal-via pad: 21 pairs on 3 of those boards)
+    # or between two pins' `unconnected-(...)` nets (cm4_edge_ai's USB-C
+    # VBUS, one pin drawn as four pads) is listed and never gates: it
+    # shorts no signal.
+    own_contacts = leg.get('own_pad_contact_rows') or []
+    own_shorts = [r for r in own_contacts if r['short']]
+    own_gating = [r for r in own_shorts
+                  if own_pad_inherited is None
+                  or (r['ref'], r['index_a'], r['index_b'])
+                  not in own_pad_inherited]
+    if own_contacts:
+        print(f"  OWN PADS TOUCHING ({len(own_contacts)} pair(s) of one part's "
+              f"pads on two nets; {len(own_shorts)} short two real nets "
+              f"(KiCad: shorting_items), {len(own_gating)} GATE"
+              + (" -- a pair the --baseline footprint did not have"
+                 if own_pad_inherited is not None
+                 else "; pass --baseline to exempt a pair the board started "
+                      "with")
+              + ")" + (" -- NOT BUILDABLE" if own_gating else ''))
+        _gate_ids = {id(r) for r in own_gating}
+        for r in (own_gating + [r for r in own_contacts
+                                if id(r) not in _gate_ids])[:20]:
+            _why = ('' if id(r) in _gate_ids
+                    else '  [a no-net pad: shorts no net, never gates]'
+                    if r['no_net']
+                    else '  [two unconnected pins: shorts no signal, never '
+                         'gates]' if r['floating'] else "  baseline's own")
+            print(f"    {r['ref']}.{r['pad_a']} ({r['net_a'] or 'no net'}) <-> "
+                  f"{r['ref']}.{r['pad_b']} ({r['net_b'] or 'no net'}), "
+                  f"{r['layer']}{_why}")
+        if len(own_contacts) > 20:
+            print(f"    ... and {len(own_contacts) - 20} more (--json lists "
+                  f"every one)")
     # #1250, the NINTH: a test point a move left under another part's body
     # (`tp_gating`, above). #1255, the TENTH: a body inside the body-to-edge
     # band the intent DECLARES (`edge_band_gating`, empty when undeclared).
@@ -869,7 +926,8 @@ def main():
                          or g['containment_blocking']
                          or courtyard_gating or off_outline_pads or mating
                          or graphic_gating
-                         or pin_hits or tp_gating or edge_band_gating)
+                         or pin_hits or tp_gating or edge_band_gating
+                         or own_gating)
     verdict = 'NOT BUILDABLE' if not_buildable else 'buildable (blocking 0)'
     print(f"  VERDICT: {verdict}")
 
@@ -1038,6 +1096,18 @@ def main():
                                          if moved_refs is not None else None),
             'graphic_pad_unmeasured': _gp_un,
             'graphic_pad_basis': leg.get('graphic_pad_basis'),
+            # #1306: one part's own pads touching on two real nets -- a
+            # conjunct, measured (an int) with or without --baseline, which
+            # only exempts the pairs its footprint already had.
+            'own_pad_shorts': len(own_gating),
+            'own_pad_short_pairs': [[f"{r['ref']}.{r['pad_a']}",
+                                     f"{r['ref']}.{r['pad_b']}"]
+                                    for r in own_shorts],
+            'own_pad_gating_pairs': [[f"{r['ref']}.{r['pad_a']}",
+                                      f"{r['ref']}.{r['pad_b']}"]
+                                     for r in own_gating],
+            'own_pad_contacts': own_contacts,
+            'own_pad_basis': leg.get('own_pad_basis'),
             # #1031: pads in a board rule-area keep-out band -- the same
             # non-gating contract as the two off-outline channels.
             'oob_keepout_copper_count': leg.get('oob_keepout_copper_count', 0),
