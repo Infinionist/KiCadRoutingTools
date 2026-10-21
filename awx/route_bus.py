@@ -705,10 +705,21 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
 
     # 7. handed on: OUT, its routed nets protected in its project (#521) -- route.py's rip candidacy and the plane
     # finalize leave them alone
-    from copy_board import copy_board
+    from copy_board import SIBLING_EXTS, copy_board
     from protected_nets import persist_protected_nets, pro_path_for_board, read_protected_nets
     with contextlib.redirect_stdout(sys.stderr):
         copy_board(routed_pcb, out)
+    # ...with the board's own siblings: the step changes none of its rules (.kicad_dru), its brief or its local
+    # settings, and a work board on the way lost them -- OUT went on with its .kicad_pro alone, and KiCad graded it
+    # without the length windows its rules declare (#1316). The project stays the routed board's: its DRC floor is
+    # the one the step routed to
+    import shutil
+    for ext in SIBLING_EXTS:
+        if ext == '.kicad_pro':
+            continue
+        src_ = board[:-len('.kicad_pcb')] + ext
+        if os.path.isfile(src_):
+            shutil.copyfile(src_, out[:-len('.kicad_pcb')] + ext)
     if held:
         # (the pull pads back on their nets: the rest of the chain connects each to its lane)
         with open(out, encoding='utf-8') as f:

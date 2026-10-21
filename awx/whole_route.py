@@ -1650,8 +1650,12 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
         g = f"WHOLE K={K} round={r} lanes=0/0 vias=0 copper=0mm connected=0 drc=0 secs={secs()} open={len(nets_all)}"
         say(g)
         return 2, g
-    # the best round's board, where a caller finds it (route_bus, modal_whole): OUTDIR/best.kicad_pcb
-    for ext in ('.kicad_pcb', '.kicad_pro'):
+    # the best round's board, where a caller finds it (route_bus, modal_whole): OUTDIR/best.kicad_pcb, with every
+    # sibling the round's board has (copy_board.SIBLING_EXTS) -- the .kicad_dru's rules and the brief too, which the
+    # board route_bus grades and hands on would otherwise go without (#1316)
+    sys.path.insert(0, PYR)
+    from copy_board import SIBLING_EXTS
+    for ext in ('.kicad_pcb',) + tuple(SIBLING_EXTS):
         src_ = best['board'][:-len('.kicad_pcb')] + ext
         if os.path.isfile(src_):
             shutil.copyfile(src_, os.path.join(o, 'best' + ext))
