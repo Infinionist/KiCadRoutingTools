@@ -181,6 +181,13 @@ recorded-manifest A/B switch).
     Keep-out disks are stamped against the pad/via's true coordinate, so a
     clear grid cell genuinely guarantees the clearance (no more few-µm
     VIA-SEGMENT quantization grazes).
+  - **Existing tracks are obstacles whichever way they were drawn** (#1315):
+    a board segment counts when its extent, grown by its keep-out, reaches the
+    escape window, so a foreign track running INTO the ball field from outside
+    blocks the escapes it crosses (on a layer this fanout routes) and the via
+    sites it passes (on any copper layer, since a barrel spans the stack). The
+    test used to be the segment's start point, which made such a track
+    invisible or not depending on which end KiCad wrote first.
 
 ```bash
 # Dense BGA that the channel router can't fully escape (diff pairs escaped coupled)
