@@ -3402,10 +3402,10 @@ class _Ctx:
         #961: TWO readings, on purpose. "Counted" is still the census number
         described below; "inside the band" is the band's own currency -- the
         drawn body where it can be measured (what `rule_edge_connector`
-        grades), else that census number. Where no body is measured the "one
-        number" below holds as it did before, including its old caveat: the
-        census skips the part's own milled rings and the rule does not, so
-        the two differ for a part that owns milled rings.
+        grades), else the same courtyard reading at ZERO margin (#1301: the
+        band is a mechanical measure, while the census counts a margin
+        graze). Both skip the part's own milled rings here, and the rule
+        does not, so they differ for a part that owns milled rings.
 
         Measured, run 26: an intent declaring `CON1 east overhang 0..0.5` and
         `legality_budget {oob_count: 0}` (the emitter bakes the pile's own 0)
@@ -3424,6 +3424,7 @@ class _Ctx:
         names it, two rules reporting one fact.
         """
         if self._oob_exempt is None:
+            from .connector_geometry import courtyard_overhang, geometry_for
             out: Dict[str, float] = {}
             for c in self.intent.edge_claims():
                 ref = c['ref']
@@ -3433,14 +3434,18 @@ class _Ctx:
                     continue
                 lo = float(lim.get('min', 0.0))
                 hi = float(lim['max'])
-                amt = self.gate.rect_outside_amount(
-                    part.rect, skip_rings=self.state._owned_rings(ref))  # noqa: SLF001
+                own = self.state._owned_rings(ref)  # noqa: SLF001
+                amt = self.gate.rect_outside_amount(part.rect,
+                                                    skip_rings=own)
                 # #961: "exempt" is decided on the band's OWN currency, the
                 # one `rule_edge_connector` grades -- the drawn body where it
-                # can be measured, this very reading where it cannot. `amt`
-                # still decides whether the census counted the part at all.
-                band, _basis, _body = _band_amount(self, ref, c.get('edge'),
-                                                   amt)
+                # can be measured, the courtyard at zero margin where it
+                # cannot (#1301). `amt` still decides whether the census
+                # counted the part at all.
+                band, _basis, _body = _band_amount(
+                    self, ref, c.get('edge'), courtyard_overhang(
+                        geometry_for(self, self.pcb, self.pcb_file),
+                        part.rect, skip_rings=own))
                 # The same body path that must still see copper off the
                 # outline (`rule_edge_connector`): a part with pads past the
                 # edge stays counted, whatever its body reads.
@@ -4873,6 +4878,7 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
     reporting it as a defect forever -- kept by `rule_legality` through
     `_Ctx.oob_exempt()`, for a declared part inside its own overhang band
     (it was a promise with no implementation until run 26 measured it)."""
+    from .connector_geometry import courtyard_overhang, geometry_for
     for c in ctx.intent.edge_connectors:
         ref = c['ref']
         part = ctx.parts.get(ref)
@@ -4896,20 +4902,26 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
                          f"place_simple.py applies the declared face "
                          f"before placing"),
                 measured={'side': part.side}, expected={'side': c['side']})
-        amount = ctx.gate.rect_outside_amount(part.rect)
+        # #1301: the COURTYARD's overhang at ZERO margin. It was the occupancy
+        # reading at the gate's margin -- `margin - gap` inside the board,
+        # `overhang + margin` outside -- and the margin is max(clearance, edge
+        # clearance), which every routing step's DRC writeback rewrites, so
+        # one pose graded differently placed and routed (daplink: 3 errors
+        # after routing, nothing moved).
+        amount = courtyard_overhang(geometry_for(ctx, ctx.pcb, ctx.pcb_file),
+                                    part.rect)
         lim = c.get('overhang_mm') or {}
         lo = float(lim.get('min', 0.0))
         hi = lim.get('max')
         # #961: the band is graded on the DRAWN BODY's overhang past the
         # outline -- summed over the sides it crosses, the form of the reading
         # it replaces -- at zero margin, wherever that body can be measured.
-        # `amount` is the occupancy reading at the gate's margin -- `margin -
-        # gap` inside the board, `overhang + margin` outside -- and graded
-        # alone it let esp_prog's USB1, 0.15 mm INSIDE its edge, read 0.10 and
-        # satisfy a band `check_drc --check-pad-edge` failed. Where no body
-        # can be read `band` IS `amount`, and `overhang_basis` says which it
-        # was. `amount` keeps its other job: the setback conjunct's
-        # no-overhang gate below, which #961 does not change.
+        # Graded at a margin, the courtyard let esp_prog's USB1, 0.15 mm
+        # INSIDE its edge, read 0.10 and satisfy a band `check_drc
+        # --check-pad-edge` failed. Where no body can be read `band` IS
+        # `amount`, and `overhang_basis` says which it was. `amount` keeps its
+        # other job: the setback conjunct's no-overhang gate below, which
+        # reads the courtyard on either basis.
         band, overhang_basis, body = _band_amount(ctx, ref, c.get('edge'),
                                                   amount)
         if band < lo - legality.EPS:
@@ -5054,6 +5066,9 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
             setback = INTERIOR_AFFINITY_MM
             _sev = WARN
         if setback is not None and amount <= legality.EPS:
+            # "No overhang" is the courtyard at ZERO margin (#1301): at the
+            # gate's margin a receptacle 0.52 mm inside read as overhanging
+            # at 0.55 and was never held to its seat, then failed it at 0.2.
             # The SEAT is a question about the part's BODY -- does its
             # mating face reach the edge -- on `seat_rect`, the basis
             # decided above. Measured on run 26's board: USB1's drawn fab
@@ -5137,12 +5152,13 @@ def _facing_tail(f) -> str:
             f"{f['disposition'].upper() if f['disposition'] == 'fail' else 'pass'}")
 
 
-def _band_amount(ctx, ref, edge, legacy_amount):
+def _band_amount(ctx, ref, edge, courtyard_amount):
     """`connector_geometry.band_amount` for a grade context: one geometry per
-    context, the gate's own margin named in the legacy basis."""
+    context, `courtyard_amount` the courtyard's reading at ZERO margin
+    (`connector_geometry.courtyard_overhang`, #1301)."""
     from .connector_geometry import band_amount, geometry_for
     return band_amount(geometry_for(ctx, ctx.pcb, ctx.pcb_file), ref, edge,
-                       legacy_amount, ctx.gate.margin)
+                       courtyard_amount, 0.0)
 
 
 def _unmodellable_pads(ctx, ref):

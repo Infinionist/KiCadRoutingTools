@@ -381,14 +381,45 @@ def board_floor_declaration(pcb_path, design_rules=None):
             'declares_nothing': not classes and not constraints}
 
 
+#: The source an UNSET edge clearance names (#1301). It is not a "fixed
+#: default": it is the floor every routing step's DRC writeback records.
+UNSET_EDGE_SOURCE = 'fab edge floor (what routing writes)'
+
+
+def unset_board_edge_clearance(pcb_path=None):
+    """``(mm, source)`` for a board whose ``min_copper_edge_clearance`` is
+    unset (0 or absent): the fab copper-to-edge floor
+    (`fix_kicad_drc_settings.fab_edge_floor`, 0.20 on every fab tier), which
+    is exactly the value every routing step's DRC writeback records there
+    (`compute_targets`' ``edge_target = max(routed edge, fab_edge)``, the
+    "fab-edge pin").
+
+    #1301: placement used to read an unset rule as a fixed 0.55, and routing
+    then wrote 0.20 into the same field, so one placed pose was graded at an
+    edge margin of 0.55 before routing and 0.20 after it -- daplink passed
+    placed and failed routed with nothing moved. Reading the floor routing
+    writes makes the placed board and the routed board the same board to
+    every placement grade. ``pcb_path`` may be None (no board file): the
+    floor of a 2-layer board, which is the same 0.20 on every tier."""
+    from fix_kicad_drc_settings import fab_edge_floor
+    return float(fab_edge_floor(pcb_path or None)), UNSET_EDGE_SOURCE
+
+
 def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
-                      clearance_default=0.25, edge_default=0.55,
+                      clearance_default=0.25, edge_default=None,
                       design_rules=None):
     """Resolve grading/legality knobs BOARD-first (run-7 S1/S4).
 
     An explicit value wins; an unset one resolves from the board's own
-    Default netclass clearance / min_copper_edge_clearance constraint; only
-    a project-less board falls back to the fixed default. Grading a board at
+    Default netclass clearance / min_copper_edge_clearance constraint. An
+    unset clearance falls back to ``clearance_default``. An unset edge
+    clearance resolves to the fab edge floor routing writes back
+    (`unset_board_edge_clearance`, #1301), unless the caller passes its own
+    ``edge_default`` (then labelled ``'fixed default'``). A declared or
+    explicit edge clearance under that floor is raised to it, as routing
+    raises it (`fix_kicad_drc_settings.effective_board_edge_clearance`); its
+    knob keeps the source and adds ``declared`` (the value raised) and
+    ``raised_to``. Grading a board at
     a fixed constant tighter than its own floor manufactures phantom
     violations (S1: check_floorplan oob), and one LOOSER lets real ones
     pass; the same mistake vetoed legal poses in converge (S4).
@@ -403,7 +434,7 @@ def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
     Returns ``(clearance, board_edge_clearance, knobs)`` where ``knobs``
     records each value's source (``'cli'`` | ``'board netclass'`` |
     ``'board minimum clearance'`` | ``'board constraint'`` |
-    ``'fixed default'``) for JSON disclosure.
+    ``UNSET_EDGE_SOURCE`` | ``'fixed default'``) for JSON disclosure.
     """
     # A non-positive declared value is UNSET, not a floor of zero -- KiCad
     # writes 0 into these fields for "not configured", and reading it as a real
@@ -411,7 +442,7 @@ def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
     # below encodes the same rule; this helper predates it and did NOT, so a
     # project declaring `min_copper_edge_clearance: 0.0` silently gave
     # render_placement a 0.0 edge floor (every edge-halo and oob term
-    # vanishing) where it had previously used 0.55.
+    # vanishing). Unset now reads the floor routing writes (#1301).
     knobs = {}
     if clearance is None:
         clearance, src = board_grading_clearance(
@@ -422,13 +453,31 @@ def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
     if board_edge_clearance is None:
         v = board_constraint(pcb_path, 'min_copper_edge_clearance',
                              design_rules)
-        board_edge_clearance, src = ((v, 'board constraint')
-                                     if v is not None and v > 0
-                                     else (edge_default, 'fixed default'))
+        if v is not None and v > 0:
+            board_edge_clearance, src = v, 'board constraint'
+        elif edge_default is not None:
+            board_edge_clearance, src = float(edge_default), 'fixed default'
+        else:
+            board_edge_clearance, src = unset_board_edge_clearance(pcb_path)
     else:
         src = 'cli'
     knobs['board_edge_clearance'] = {'value': board_edge_clearance,
                                      'source': src}
+    if src in ('board constraint', 'cli'):
+        # Routing pins a declared or requested edge clearance UP to the fab
+        # floor (`effective_board_edge_clearance`) and writes that floor
+        # back, so a value under it is read as the floor here too: sonde
+        # declares 0.01 and its J2 was seated with pads 0.01 mm from the
+        # edge, which every routed copy then graded at 0.20.
+        # Only a real distance: a non-finite or negative request is left for
+        # the caller's own refusal (place_pose exits 2 on `-inf`).
+        floor, _ = unset_board_edge_clearance(pcb_path)
+        if (isinstance(board_edge_clearance, (int, float))
+                and 0.0 <= board_edge_clearance < floor):
+            knobs['board_edge_clearance'].update(
+                value=floor, declared=board_edge_clearance,
+                raised_to=UNSET_EDGE_SOURCE)
+            board_edge_clearance = floor
     return clearance, board_edge_clearance, knobs
 
 
@@ -593,7 +642,8 @@ def resolve_cli_floor(pcb_path, name, explicit, fallback, flag):
     So on a board declaring ``min_copper_edge_clearance: 0.0`` the two halves
     of the place/route loop read one declared floor two ways: the placement
     half (render_placement, check_floorplan, converge -- all via
-    board_floor_knobs) resolved 0.55 ``[fixed default]``, while the routing
+    board_floor_knobs) resolved 0.55 ``[fixed default]`` (since #1301 the
+    fab edge floor routing writes back, 0.20), while the routing
     half took a REAL floor of 0.0 and printed *"using the board
     min_copper_edge_clearance 0.0mm"* -- claiming the board had declared what
     it had in fact left unset. The plane engines were worse than misleading:
@@ -605,7 +655,7 @@ def resolve_cli_floor(pcb_path, name, explicit, fallback, flag):
     deliberate sentinel meaning "no edge rule declared, use the copper-copper
     clearance instead" (obstacle_map's ``board_edge_clearance > 0`` tests), while the plane
     mains fall back to PLANE_EDGE_CLEARANCE 0.5 and the placement model to
-    0.55. What must agree -- and now does -- is whether the board declared
+    the fab edge floor (`unset_board_edge_clearance`). What must agree -- and now does -- is whether the board declared
     anything at all, and what the tool SAYS about where its number came from.
 
     The source tag is printed in the same ``[board constraint]`` /

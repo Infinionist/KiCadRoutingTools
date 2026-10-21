@@ -172,11 +172,13 @@ class PlacementModel:
         # 0.5, not 0.25 and 0.55.
         #
         # An explicit --clearance still wins: board_floor_knobs takes a non-None
-        # value as 'cli' and returns it unchanged.
+        # value as 'cli' and returns it unchanged. An unset edge clearance
+        # reads the fab edge floor routing writes back (#1301), as every
+        # placement grade does.
         clr, edge, self.floor_knobs = board_floor_knobs(
             self.pcb_file, clearance=kw.get('clearance'),
             board_edge_clearance=kw.get('board_edge_clearance'),
-            clearance_default=defaults.CLEARANCE, edge_default=0.55)
+            clearance_default=defaults.CLEARANCE)
         args = dict(clearance=clr, board_edge_clearance=edge)
         args.update({k: v for k, v in kw.items() if v is not None})
         try:

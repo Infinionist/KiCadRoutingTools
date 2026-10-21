@@ -798,7 +798,11 @@ def build_brief(pcb, pcb_file, *, clearance=None, board_edge_clearance=None,
             board_edge_clearance=board_edge_clearance)
     except Exception as e:                       # noqa: BLE001 - disclosed
         clr = 0.25 if clearance is None else clearance
-        edge = 0.55 if board_edge_clearance is None else board_edge_clearance
+        edge = board_edge_clearance
+        if edge is None:
+            # The floor routing writes back for an unset rule (#1301).
+            from list_nets import unset_board_edge_clearance
+            edge = unset_board_edge_clearance(pcb_file)[0]
         skipped['floors'] = f"{type(e).__name__}: {e}"
 
     brief = {'schema': SCHEMA, 'kind': 'board-brief',

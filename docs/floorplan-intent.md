@@ -650,21 +650,41 @@ is a real conjunct. The graded number is summed over every side the body
 crosses, so a corner part counts both sides; for a body that crosses only its
 declared edge, it is exactly that edge's overhang.
 
-When no body can be measured, the band is graded on the occupancy reading
-instead: the courtyard's (or, with none, the pad box's) clearance shortfall at
-the gate's margin. Unmeasurable cases include a courtyard-only part, an arc in
-the Fab drawing, a non-rectangular outline, an entry with no `edge`, and a
+When no body can be measured, the band is graded on the courtyard (or, with
+none, the pad box) instead, also at zero margin (basis
+`legacy_occupancy@margin=0`, #1301 below). Unmeasurable cases include a
+courtyard-only part, an arc in the Fab drawing, a non-rectangular outline, an
+entry with no `edge`, and a
 drawn envelope that does not enclose the centroid of its own pads (a pin-1
 marker is not a body). On that path nothing here grades pad copper against the
 outline, so a part whose courtyard does not enclose its pads can carry copper
 past the edge unnamed; `check_drc --check-pad-edge` is the channel that names
-it. The basis says which reading was used, and `_Ctx.oob_exempt` grades the
-band in the same currency as the rule.
+it. The basis says which reading was used, and `_Ctx.oob_exempt` and the
+edge seat (`edge_seat._Probe`) read the band in the same currency as the rule.
+
+**The band takes no margin (#1301).** The courtyard reading used to be the
+occupancy reading at the gate's margin, `max(clearance, board edge
+clearance)`: `overhang + margin` outside the board. Every routing step's DRC
+writeback rewrites both inputs, so one pose read differently placed and
+routed. On daplink, with nothing moved, J2/J3 read 7.0062 placed (margin
+0.55) and 6.6562 routed (margin 0.2), and P1 read 1.0500 and 0.7000; three
+band errors appeared after routing. An overhang of x now reads x at any
+margin, so write a band as the distance the part reaches past the edge, and
+never add the board's edge margin to it. A band written in the old currency
+reads the margin too high: daplink's hand-written J2/J3 `{7.0, 7.4}` and P1
+`{1.05, 1.35}` added 0.55, and now read 6.4562 and 0.5000 placed and routed
+alike. The setback conjunct's "no overhang" test reads the courtyard at zero
+margin too. It used to let a receptacle 0.52 mm inside its edge count as
+overhanging at a 0.55 margin, skipping its seat tolerance, and then fail it at
+0.2. The pad-copper edge clearance and the `oob_count` census still read the
+board's edge floor. When `min_copper_edge_clearance` is unset, that floor is
+the fab edge floor every routing step writes back (0.20 mm, source `fab edge
+floor (what routing writes)`), not a fixed 0.55 mm.
 
 Every declared connector on the board gets a row in `edge_connector_evidence`
 (`--json`), including passing ones. Each row carries:
 - `overhang_mm` and `overhang_basis` (`body:<layer>`, e.g. `body:F.Fab`,
-  `body:B.Fab`, `body:F.SilkS`, or `legacy_occupancy@margin=<m>`), plus the
+  `body:B.Fab`, `body:F.SilkS`, or `legacy_occupancy@margin=0`), plus the
   limit and a disposition;
 - the body's signed position, setback and other-edge overhang, or
   `body_unmeasured_reason`;

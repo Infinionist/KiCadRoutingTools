@@ -601,6 +601,17 @@ Setup `min_clearance`, as check_drc reads it since #1210, source `board
 minimum clearance` when the floor binds. check_assembly, check_floorplan,
 render_placement, converge and the placers resolve the same value, so a
 pose the placer seats is graded at the clearance it was seated at.
+The edge clearance is the board's `min_copper_edge_clearance`; when that is
+unset (0 or absent) it is the fab edge floor every routing step writes back
+there (0.20 mm, `fix_kicad_drc_settings.fab_edge_floor`, source `fab edge
+floor (what routing writes)`, #1301), no longer a fixed 0.55 mm. The placed
+board and the routed board are therefore graded at the same edge margin. A
+declared value, or an explicit `--board-edge-clearance`, under that floor is
+raised to it, as routing raises it
+(`fix_kicad_drc_settings.effective_board_edge_clearance`): sonde declares
+0.01, and every routed copy is graded at 0.20. Its knob keeps its source and
+adds `declared` and `raised_to`. A value at or above the floor is read as
+given.
 Exit 0 written; 2 the request does not name a thing on this board (a typo you
 rewrite); 3 the board carries copper (`--allow-routed` to override); 4 well
 formed, and the board said no (a measurement you act on), nothing written —
