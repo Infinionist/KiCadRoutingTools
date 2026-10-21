@@ -781,6 +781,8 @@ does not come, classify the failure (§4).
 
 Once, on the board you will hand back (`wk/<run>/final.kicad_pcb` in `place`
 mode, the routed board in `full` mode), before the verifier (§5, rule 5).
+In `full` mode `/plan-pcb-routing` ends with the same two steps (After
+Routing Completes): run them once, here, not again inside the routing.
 
 1. **Tidy the reference labels, and keep the tidy only if KiCad agrees.**
    Placing moved the parts and left their labels where the library put
@@ -801,6 +803,21 @@ mode, the routed board in `full` mode), before the verifier (§5, rule 5).
    board only when its silk count is lower, and put both counts in
    REPORT.md. Without `kicad-cli`, keep the board as it was and say the
    silk is ungraded.
+2. **`full` mode: deliver a filled copy, last (#910).** A routed board
+   carries its zones as outlines with no fill: KiCad shows the planes empty
+   until they are refilled (press B), and a DRC that does not refill reads
+   plane-net opens that are not real. `check_connected`, `check_complete`
+   and `board_score` refill on their own and never see it. From the board
+   step 1 kept:
+   ```bash
+   python3 -X utf8 py_tools/fill_for_delivery.py <board> -o wk/<run>/delivered.kicad_pcb
+   ```
+   It fills with KiCad's own zone filler, copies the siblings and keeps the
+   net classes. `delivered.kicad_pcb` is the board you hand back and the
+   verifier grades; route nothing further from it, since a fill stored
+   before more copper is laid is stale. On exit 1 (no KiCad python, or a
+   net class went missing), hand back the unfilled board and say in
+   REPORT.md that it must be refilled before it is plotted.
 
 ## 4. Traps measured in real runs
 
@@ -900,8 +917,9 @@ mode, the routed board in `full` mode), before the verifier (§5, rule 5).
 
 ## 6. Hand-back
 
-1. **The board**, with its `.kicad_pro`, its sha256, `groups.json` and the
-   intent.
+1. **The board** §3.9 finished (in `full` mode the filled
+   `delivered.kicad_pcb`), with its `.kicad_pro`, its sha256, `groups.json`
+   and the intent.
 2. **`wk/<run>/REPORT.md`**, containing:
    - **the result first:** a table of the mode's DONE conditions with measured
      values, the `blocking_by` breakdown, and vias / copper_mm / segments;
@@ -912,6 +930,8 @@ mode, the routed board in `full` mode), before the verifier (§5, rule 5).
      (route.py's `Design rules [...]` line, `check_complete --authored-from <input>`);
    - **silkscreen:** KiCad's silk counts before and after the label tidy
      (§3.9), and which board was kept;
+   - **fill** (`full` mode): whether `fill_for_delivery` ran, and if not,
+     that the board must be refilled before plotting;
    - **a timeline** and **where the time went**;
    - **tool gaps**, including any tool that said "fine" about something that
      was not;
