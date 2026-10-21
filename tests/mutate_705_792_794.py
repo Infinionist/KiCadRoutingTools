@@ -293,10 +293,12 @@ ROWS = [
      (T792S, T792P), 'KILLED'),
 
     # The gate the review added, given its own row so it cannot rot either.
+    # RE-ANCHORED (#1351): `passive_by_role` now follows the gate, so the row
+    # deletes the gate's two lines and leaves that clause standing.
     ('the-owner-test-drops-the-copper-pad-gate', 'grp',
      "            and _copper_pads(pcb_data.footprints.get(c.reference))\n"
-     "            >= DECAP_MIN_IC_PADS]\n",
-     "            ]\n",
+     "            >= DECAP_MIN_IC_PADS\n",
+     "",
      (T792P,), 'KILLED'),
 ]
 
