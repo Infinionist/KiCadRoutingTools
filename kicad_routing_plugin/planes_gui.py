@@ -1862,6 +1862,15 @@ class PlanesTab(wx.Panel):
         # Make the live board's DRC constraints consistent with the plane routing
         # floors (issue #160), mirroring route_planes.py's auto-fix. Best-effort.
         cfg = getattr(self, "_plane_drc_config", None)
+        # #1319: only the floors of copper this step drew -- route_planes'
+        # main makes the same decision (plane_fix_kwargs) from its files.
+        from fix_kicad_drc_settings import plane_fix_kwargs
+        _pkw = plane_fix_kwargs(
+            tracks_added, vias_added, clearance=(cfg or {}).get('clearance'),
+            hole_to_hole=(cfg or {}).get('hole_to_hole_clearance'),
+            track_width=(cfg or {}).get('track_width'),
+            via_size=(cfg or {}).get('via_size'),
+            via_drill=(cfg or {}).get('via_drill'))
         if cfg and cfg.get('fix_drc_settings', True):
             try:
                 from fix_kicad_drc_settings import (compute_targets, severity_plan,
@@ -1873,12 +1882,13 @@ class PlanesTab(wx.Panel):
                     if cfg.get('clearance') else cfg.get('clearance')
                 targets = compute_targets(
                     clearance=eff_clearance,
-                    hole_to_hole=cfg.get('hole_to_hole_clearance'),
+                    hole_to_hole=_pkw['hole_to_hole'],
                     edge_clearance=cfg.get('board_edge_clearance'),
-                    track_width=cfg.get('track_width'),
-                    via_diameter=cfg.get('via_size'),
-                    via_drill=cfg.get('via_drill'),
+                    track_width=_pkw['track_width'],
+                    via_diameter=_pkw['via_diameter'],
+                    via_drill=_pkw['via_drill'],
                     fab_edge=fab_edge_floor(),
+                    copper_holes=_pkw['copper_holes'],
                     # #530: caps min_clearance at the smallest pad override
                     minima=board_minima_from_live(board))
                 # #856: severities only on explicit request; {} = untouched.
@@ -1910,10 +1920,10 @@ class PlanesTab(wx.Panel):
             update_live_drc_floors(
                 board,
                 clearance=_cfg.get('clearance'),
-                track_width=_cfg.get('track_width'),
-                via_size=_cfg.get('via_size'),
-                via_drill=_cfg.get('via_drill'),
-                hole_to_hole=_cfg.get('hole_to_hole_clearance'),
+                track_width=_pkw['track_width'],
+                via_size=_pkw['via_diameter'],
+                via_drill=_pkw['via_drill'],
+                hole_to_hole=_pkw['hole_to_hole'],
                 # #581: recorded as route_planes.py records it
                 same_net_pad_clearance=_cfg.get('same_net_pad_clearance'))
 

@@ -960,23 +960,41 @@ def plan_steps_from_manifest(manifest, keep_files=False):
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'py_router'))  # #522/py_placer layout
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'py_placer'))  # #522/py_placer layout
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'py_tools'))  # #522/py_placer layout
-    from redo_stress_test import parse_manifest, is_check_cmd
+    from redo_stress_test import parse_manifest, is_check_cmd, split_env_prefix
 
     cmds = parse_manifest(manifest)
     keep, rejected = prune_manifest(cmds, manifest)
+    # #1337: a rejected command writes no board, so the chain breaks at it
+    # and everything that fed ONLY it falls out of the prune too. Those are
+    # named and counted with it: daplink's one rejected cap pass took the
+    # plane, fanout and copy steps with it while the summary said "1
+    # command(s) skipped".
+    lost = []
+    if rejected:
+        from redo_stress_test import compute_prune_keep
+        plain, _ = compute_prune_keep(cmds)
+        lost = sorted(i for i in plain - keep - set(rejected)
+                      if not is_check_cmd(cmds[i][1]))
 
     steps = []
-    skipped = len(rejected)
+    skipped = len(rejected) + len(lost)
     refused = []
     noops = []
+    env_dropped = []
     for i, (_cwd, argv) in enumerate(cmds):
         if i not in keep or is_check_cmd(argv):
             continue  # pruned out, or a check/grade command (no GUI step)
+        # #1302: a recorded `NAME=value` prefix is the step's environment. A
+        # plan step has nowhere to carry it (#670), so the GUI runs the step
+        # at the defaults; converted without it, and named below.
+        _env, argv = split_env_prefix(argv)
         if any(os.path.basename(a) == CAP_TOOL for a in argv):
             # standalone optimize_caps step, matching the live GUI plan (see above)
             step = cap_optimization_step(argv, cwd=_cwd)
             step['_files'] = [a for a in argv if a.endswith('.kicad_pcb')]
             steps.append(step)
+            if _env:
+                env_dropped.append((i, _env))
             continue
         # A relative file the command named was opened from its recorded cwd
         # (else the manifest's own folder, where the harness ran it).
@@ -1009,6 +1027,8 @@ def plan_steps_from_manifest(manifest, keep_files=False):
                     step['assignments'] = [dict(a) for a in prev['assignments']]
                     break
         steps.append(step)
+        if _env:
+            env_dropped.append((i, _env))
 
     if not keep_files:
         for s in steps:
@@ -1021,6 +1041,14 @@ def plan_steps_from_manifest(manifest, keep_files=False):
               f"them -- and are not plan steps:", file=sys.stderr)
         for i, why in sorted(rejected.items()):
             print(f"  - command {i + 1}: {why}", file=sys.stderr)
+        if lost:
+            print(f"  ...and {len(lost)} command(s) upstream of them are not "
+                  f"plan steps either: the boards they wrote reach the final "
+                  f"board only through a rejected command:", file=sys.stderr)
+            for i in lost:
+                tool = next((os.path.basename(a) for a in cmds[i][1]
+                             if a.endswith('.py')), cmds[i][1][0])
+                print(f"  - command {i + 1}: {tool}", file=sys.stderr)
     if refused:
         # Loud, on stderr, every time -- never a silent drop.
         print(f"WARNING: {len(refused)} command(s) have NO faithful plan "
@@ -1029,6 +1057,23 @@ def plan_steps_from_manifest(manifest, keep_files=False):
             print(f"  - {r}", file=sys.stderr)
         print("  The replayed plan will DIVERGE from the recorded chain at "
               "these steps. Run them on the CLI.", file=sys.stderr)
+    if env_dropped:
+        # #1302: loud, like the refusals -- the plan step runs, but not as
+        # the recorded one did.
+        # One line per distinct knob set: a plan.sh `export` puts the same
+        # set on every step after it (#1337).
+        print(f"WARNING: {len(env_dropped)} plan step(s) ran with env knobs "
+              f"a plan step cannot carry (#670); the GUI runs them at the "
+              f"defaults, so the replayed plan may route a different board:",
+              file=sys.stderr)
+        groups = {}
+        for i, env in env_dropped:
+            groups.setdefault(tuple(env.items()), []).append(i + 1)
+        for env, nums in groups.items():
+            print(f"  - {' '.join(f'{k}={v}' for k, v in env)}: command(s) "
+                  f"{', '.join(map(str, nums))}", file=sys.stderr)
+        print("  Export them in the KiCad session's environment, or replay "
+              "the manifest on the CLI.", file=sys.stderr)
     if noops:
         counts = {n: noops.count(n) for n in sorted(set(noops))}
         print("NOTE: no plan step for " + ", ".join(
@@ -1074,8 +1119,8 @@ def main():
     with open(out, 'w', encoding='utf-8') as f:
         json.dump({'steps': steps}, f, indent=2)
     print(f"{len(steps)} step(s) written to {out} "
-          f"({skipped} command(s) skipped: kept but not GUI steps, or "
-          f"rejected by their tool's parser)")
+          f"({skipped} command(s) skipped: kept but not GUI steps, "
+          f"rejected by their tool's parser, or upstream of a rejected one)")
     print("Load it in the AI tab (Load... next to 'Parsed result') and "
           "press 'Run Selected Steps'.")
     return 0

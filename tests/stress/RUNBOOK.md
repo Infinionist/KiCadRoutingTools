@@ -478,6 +478,12 @@ harmless.
    copper_edge_clearance on edge-connector fingers is design intent, not a
    routing defect. The no-LLM replay grader (ab_replay_grade.py) now records
    the same fields automatically.
+   `--baseline <unrouted input>` subtracts the input's items from both
+   engines, one for one, matched by position and then by (type, net pair).
+   It cancels only what both boards report identically, so a PILE is a poor
+   baseline: its pad-on-pad items are not the placed board's, and KiCad
+   reports a part's footprint-inherent items (pads against its own net-less
+   EP) in different numbers there (#1333).
    CONNECTION_WIDTH (#406): the cross-check also grades KiCad's min-copper-web
    class, SEPARATELY from the copper classes (check_drc has no counterpart --
    the artifact lives in KiCad's own float-borderline web measurement, so web
@@ -488,6 +494,15 @@ harmless.
    as `kicad_connection_width` (None = not graded: no recorded floor) +
    `connection_width_min`; ab_replay_grade compares the count per board (connw
    column) and gates the A/B verdict on its delta.
+   STARVED_THERMAL (#1334): a pad whose thermal relief resolves fewer spokes
+   than `min_resolved_spokes` is reported as its own channel too
+   (`kicad_starved_thermal`, `thermal=N` on the board line, a
+   `STARVED-THERMAL REF.PAD` line per item), at the PROJECT's severity --
+   staging leaves it as the author set it, KiCad's default is error -- and
+   baseline-subtracted. Report only: it was filtered as benign, so a DONE
+   board shipped two starved-thermal errors nothing named. It is not in the
+   copper match, the CONSISTENT verdict or the exit code; read it before
+   calling a board done.
 8. OOM REGRESSION CHECK (issue #81, fixed): the obstacle-map polygon pass is
    now chunked; DEFAULT grids should stay well under the 12 GB cap on every
    board. Use the default --grid-step unless component pitch demands finer.
@@ -702,7 +717,11 @@ python3 tests/stress/placement_survey.py report rows.jsonl
 
 Each board's `runs_set*/<board>/redo_commands.sh` records every board-mutating
 command (fully-quoted argv + `# cwd=`), so a run replays deterministically with no
-LLM. Manifests reference tools by **absolute repo path**, so a replay always runs
+LLM. A step run under env knobs carries them as a leading `NAME=value` prefix
+(#1302; interpreter, kicad-cli, directory and harness variables are left out,
+`env_knobs.replay_env_knobs`), which `redo_stress_test.py` applies as the
+replayed step's environment; a manifest recorded before #1302 has no prefix
+and replays at the defaults. Manifests reference tools by **absolute repo path**, so a replay always runs
 whatever is checked out — this is how you A/B an engine change. DRC is always
 graded at each board's own routed `--clearance` (parsed from the manifest); never
 grade stricter or you manufacture phantom grazes.

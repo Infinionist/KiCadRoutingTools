@@ -193,6 +193,43 @@ READER_VERSION = 13
 #: The reader version that first reads `templates[]`.
 TEMPLATES_READER = 13
 
+#: #1357. A row's FREE TEXT -- the author's reason for it, which no rule
+#: grades -- has ONE meaning and three spellings. `why` is canonical;
+#: `note` and `reason` are aliases, accepted on EVERY row type below. The
+#: spelling used to depend on the row (fixed_poses and assembly took `why`;
+#: proximity, blocks, edge_connectors, keepouts and keep_away `note`;
+#: arrays and replicate both; overlap_waivers `reason`), and the #710 gate
+#: refused the others, so `why` on a proximity row cost a run its intent.
+#: Readers take the text through `free_text`, never one key. The emitter
+#: keeps writing `note` for its own remarks, which is an alias, not a
+#: second slot. No READER_VERSION bump: free text grades nothing.
+FREE_TEXT_KEY = 'why'
+FREE_TEXT_ALIASES = ('note', 'reason')
+_FREE_TEXT_KEYS = frozenset((FREE_TEXT_KEY,) + FREE_TEXT_ALIASES)
+
+
+def free_text(row) -> str:
+    """A row's free text, whichever spelling carries it (#1357): the values
+    of `why`, `note` and `reason`, in that order, joined with '; ' when a
+    row carries more than one (an emitted array row may carry a `why` and a
+    `note`). '' when there is none."""
+    if not isinstance(row, dict):
+        return ''
+    parts = []
+    for k in (FREE_TEXT_KEY,) + FREE_TEXT_ALIASES:
+        v = row.get(k)
+        if v is not None and str(v).strip() and str(v) not in parts:
+            parts.append(str(v))
+    return '; '.join(parts)
+
+
+def _free_text_strings(row, where: str) -> None:
+    """Every free-text spelling a row carries is a string (#1357)."""
+    for k in (FREE_TEXT_KEY,) + FREE_TEXT_ALIASES:
+        if row.get(k) is not None and not isinstance(row[k], str):
+            raise IntentError(f"{where}.{k}: expected a string")
+
+
 _TOP_LEVEL_KEYS = {
     'schema', 'kind', 'board', 'units', 'envelope', 'defaults', 'blocks',
     'keepouts', 'edge_connectors', 'decaps', 'must_lock', 'legality_budget',
@@ -210,7 +247,9 @@ _TOP_LEVEL_KEYS = {
 #: safe direction.
 _DISPOSITION_KEYS = {'rules', 'withheld', 'refs', 'contradictions'}
 _BLOCK_KEYS = {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
-               'tolerance_mm', 'note', 'context',
+               'tolerance_mm', 'context',
+               # #1357: the free text, under any of its three spellings.
+               *_FREE_TEXT_KEYS,
                # #893. `rotation` is a DECISION (this angle);
                # `rotation_candidates` is a SET a search may choose from.
                # Declaring both on one block is refused -- see `_rotation`.
@@ -229,7 +268,7 @@ _RETIRED_BLOCK_KEYS = {
 #: `order: "pin"` follows); `"unknown"` for either enum is first-class and
 #: distinct from an absent key.
 _ARRAY_KEYS = {'name', 'members', 'serves', 'order', 'rotation', 'pitch_mm',
-               'axis', 'allow_mixed', 'why', 'note', 'source', 'context'}
+               'axis', 'allow_mixed', 'source', 'context'} | _FREE_TEXT_KEYS
 #: #1054. An exact pose a part is to be seated at. `basis` says whose fact it
 #: is: `declared` (the design brief), `mechanical` (mechanical.json), or
 #: `derived_default` -- nobody's: a pose a planner chose because nothing
@@ -238,8 +277,8 @@ _ARRAY_KEYS = {'name', 'members', 'serves', 'order', 'rotation', 'pitch_mm',
 #: nobody said.
 #: `accept_courtyard_overlap` (#1060): the refs whose COURTYARD this pose may
 #: overlap -- a named waiver, carrying its `why`, of courtyard overlap only.
-_FIXED_POSE_KEYS = {'ref', 'x', 'y', 'rot', 'side', 'basis', 'why',
-                    'context', 'accept_courtyard_overlap'}
+_FIXED_POSE_KEYS = {'ref', 'x', 'y', 'rot', 'side', 'basis', 'context',
+                    'accept_courtyard_overlap'} | _FREE_TEXT_KEYS
 _FIXED_POSE_BASES = ('declared', 'mechanical', 'derived_default')
 #: #837. The board-level assembly policy: which faces the fab will populate.
 #: `blocks[].side` is a claim about ONE subsystem; this is a claim about the
@@ -252,7 +291,7 @@ _FIXED_POSE_BASES = ('declared', 'mechanical', 'derived_default')
 #: census reports against JLCPCB's 2.5 mm, labelled `derived_default`, and
 #: never gates. Spelled `body_edge_mm`, not "...band", so it cannot be read as
 #: `edge_connectors[].along_edge_band`, which is a position ALONG an edge.
-_ASSEMBLY_KEYS = {'sides', 'why', 'context', 'body_edge_mm'}
+_ASSEMBLY_KEYS = {'sides', 'context', 'body_edge_mm'} | _FREE_TEXT_KEYS
 #: Named faces, not "single". `"sides": "single"` is under-specified, and the
 #: corpus says so: ulx3s is BACK-dominant (163 of its 226 pad-bearing parts),
 #: so a rule reading "single implies F.Cu" would flag most of a shipping
@@ -279,8 +318,8 @@ _ASSEMBLY_SIDES = ('F', 'B', 'both')
 # pinned against them by tests/test_549_floorplan_grade.py -- so a new emitted
 # key fails there, rather than as an artifact that stops loading months later.
 _ENVELOPE_KEYS = {'rect', 'tolerance_mm'}
-_KEEPOUT_KEYS = {'name', 'rect', 'circle', 'sides', 'allow', 'note',
-                 'context'}
+_KEEPOUT_KEYS = {'name', 'rect', 'circle', 'sides', 'allow',
+                 'context'} | _FREE_TEXT_KEYS
 #: `source`, `suspect`, `suspect_reason`, `overhang_capped` and
 #: `observed_overhang_mm` are emitter-written and read by nothing today; they
 #: are accepted because `emit_intent` writes them and the round trip must
@@ -289,10 +328,10 @@ _KEEPOUT_KEYS = {'name', 'rect', 'circle', 'sides', 'allow', 'note',
 #: edge claim. Absent by default and NEVER written by `emit_intent`, so every
 #: intent that existed before them grades identically.
 _EDGE_CONNECTOR_KEYS = {'ref', 'edge', 'overhang_mm', 'max_setback_mm',
-                        'class', 'source', 'note', 'suspect', 'suspect_reason',
+                        'class', 'source', 'suspect', 'suspect_reason',
                         'overhang_capped', 'observed_overhang_mm', 'context',
                         'center_on_edge', 'along_edge_band', 'side',
-                        'mating_face'}
+                        'mating_face'} | _FREE_TEXT_KEYS
 #: `edge_connectors[].mating_face`: the side of the footprint, in its OWN
 #: unrotated frame, its mating face opens on -- declared for a part whose body
 #: names none (`mating.mating_face_local` abstains: a side-entry JST drawn
@@ -322,11 +361,11 @@ _DECAP_KEYS = {'max_distance_mm', 'exempt', 'search_radius_mm',
 #: sugar that `compile_brief` expands, so the intent carries one row per claim
 #: and `Violation.ref` always has a ref to name.
 #:
-#: No `why` / `requirement`: prose lives in `context`, which is this schema's
-#: own rule, and the brief compiler moves them there exactly as it does for
-#: `interfaces[]`.
-_PROXIMITY_KEYS = {'ref', 'near', 'max_mm', 'basis', 'pads', 'note', 'source',
-                   'context'}
+#: The free text is `why` (or its alias `note` / `reason`, #1357). The
+#: brief's own `requirement` and `why` still compile into `context`, as for
+#: `interfaces[]`; an intent author writes the reason on the row.
+_PROXIMITY_KEYS = {'ref', 'near', 'max_mm', 'basis', 'pads', 'source',
+                   'context'} | _FREE_TEXT_KEYS
 #: Which geometry the gap is measured between.
 #:
 #: `pad_edge` is pad copper to pad copper -- the currency `decap_pin_distance`
@@ -359,15 +398,15 @@ def derived_claim(claim) -> bool:
 #: same declaration the same way. NOT a `min_mm` on `proximity[]`, which the
 #: brief refuses by name: this is a relation between two NET groups at a
 #: functional distance, not a copper clearance between two parts.
-_KEEP_AWAY_KEYS = {'rule', 'note', 'source', 'context'}
+_KEEP_AWAY_KEYS = {'rule', 'source', 'context'} | _FREE_TEXT_KEYS
 #: #1211. One declared channel copy: `from` and `to` name sheet INSTANCES
 #: (a sheet name or a path, as `place_pose replicate` takes them); the rest
 #: are that verb's own flags, so a declaration and a command line read
 #: alike. `tolerance_mm` is the grade's: how far a target part may sit from
 #: the source arrangement before it is reported.
 _REPLICATE_KEYS = {'from', 'to', 'anchor', 'allow_net_mismatch', 'only',
-                   'skip', 'search_mm', 'tolerance_mm', 'why', 'note',
-                   'source', 'context'}
+                   'skip', 'search_mm', 'tolerance_mm', 'source',
+                   'context'} | _FREE_TEXT_KEYS
 #: The default `replicate[].tolerance_mm`: the writer's coordinates are
 #: exact to 1e-6 mm, so a copy the tools made reads 0; this is room for a
 #: designer's hand copy snapped to a 0.05 mm grid.
@@ -383,7 +422,7 @@ _HEALTH_KEYS = {'bus_corridors', 'classes', 'zoned_blocks',
                 'plane_layers'}
 _CORRIDOR_KEYS = {'name', 'nets', 'width_mm'}
 _BUDGET_KEYS = {'overlap_area', 'oob_count', 'oob_amount'}
-_WAIVER_KEYS = {'pair', 'reason', 'context'}
+_WAIVER_KEYS = {'pair', 'context'} | _FREE_TEXT_KEYS
 # `context` deliberately has NO key set of its own, at the top level or on an
 # entry: it is the read-only slot where a run records provenance no rule will
 # ever grade. The four objects a human AUTHORS entry-by-entry accept one --
@@ -698,6 +737,10 @@ def _reject_unknown(obj, allowed, where: str) -> None:
     if bad:
         raise IntentError(f"{where}: unknown key(s) {', '.join(bad)}. "
                           f"Known: {', '.join(sorted(map(str, allowed)))}")
+    # #1357: a row that takes free text takes it as a string, under any of
+    # its spellings -- checked here so no row type can forget.
+    if _FREE_TEXT_KEYS <= set(allowed):
+        _free_text_strings(obj, where)
 
 
 def _entry_context(entry, where: str) -> None:
@@ -1117,8 +1160,6 @@ def _fixed_pose_entries(raw: Dict, conns, must_lock) -> List[Dict]:
                 f"{where}.basis: {basis!r}, expected one of "
                 f"{', '.join(map(repr, _FIXED_POSE_BASES))} -- whose fact the "
                 f"pose is decides what a contradiction means")
-        if f.get('why') is not None and not isinstance(f['why'], str):
-            raise IntentError(f"{where}.why: expected a string")
         # #1060: a NAMED courtyard waiver. Literal refs (a glob would waive
         # parts nobody looked at), never the entry's own ref, no repeats, and
         # a `why` -- a waiver is a claim the author must be able to defend.
@@ -1143,11 +1184,12 @@ def _fixed_pose_entries(raw: Dict, conns, must_lock) -> List[Dict]:
             if len(set(acc)) != len(acc):
                 raise IntentError(
                     f"{where}.accept_courtyard_overlap repeats a reference")
-            if acc and not str(f.get('why') or '').strip():
+            if acc and not free_text(f).strip():
                 raise IntentError(
-                    f"{where}: accept_courtyard_overlap needs a `why` -- it "
-                    f"accepts a finding KiCad's DRC reports, so it must say "
-                    f"why the overlap is the design")
+                    f"{where}: accept_courtyard_overlap needs a `why` (or its "
+                    f"alias `note` / `reason`) -- it accepts a finding "
+                    f"KiCad's DRC reports, so it must say why the overlap "
+                    f"is the design")
         if ref in edge_refs:
             raise IntentError(
                 f"{where}: {ref} is also an `edge_connectors` entry. An edge "
@@ -1264,9 +1306,8 @@ def _array_entries(raw: Dict, conns, must_lock, fixed_refs) -> List[Dict]:
                               f"{', '.join(map(repr, arr.AXES))}")
         if 'allow_mixed' in a and not isinstance(a['allow_mixed'], bool):
             raise IntentError(f"{where}.allow_mixed: expected true or false")
-        for k in ('why', 'note', 'source'):
-            if a.get(k) is not None and not isinstance(a[k], str):
-                raise IntentError(f"{where}.{k}: expected a string")
+        if a.get('source') is not None and not isinstance(a['source'], str):
+            raise IntentError(f"{where}.source: expected a string")
         out.append(dict(a))
     return out
 
@@ -1407,7 +1448,7 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
             tolerance_mm=b.get('tolerance_mm'),
             rotation=rot,
             rotation_candidates=rot_cands,
-            note=b.get('note', '') or '',
+            note=free_text(b),
             context=b.get('context') or {},
         ))
         if not blocks[-1].refs and not blocks[-1].group:
@@ -1954,7 +1995,7 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
         poses[ref] = {'x': float(f['x']), 'y': float(f['y']),
                       'rot': (None if rot is None or rot == 'unknown'
                               else float(rot) % 360.0),
-                      'reason': str(f.get('why') or '')
+                      'reason': free_text(f)
                       or f"a {f.get('basis')} fixed pose"}
     if not poses:
         return out
@@ -2002,7 +2043,7 @@ def _fixed_pose_waiver_findings(intent: Intent, pcb_data, pcb_file: str, *,
     with `overlap_mm2: 0`), since a stale waiver is how a real overlap is
     later waved through."""
     out: List[Violation] = []
-    todo = [(str(f['ref']), str(o), str(f.get('why') or ''))
+    todo = [(str(f['ref']), str(o), free_text(f))
             for f in intent.fixed_poses
             for o in (f.get('accept_courtyard_overlap') or ())]
     if not todo:

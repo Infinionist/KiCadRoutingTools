@@ -523,6 +523,14 @@ plane nets inside its scope, and in `--power-nets` for their width): pour-launch
 and the in-run plane finalize taps whatever the fill cannot reach. Rip-up
 of blockers, when needed, happens there too -- never in this script.
 
+The `.kicad_pro` writeback follows the copper the step drew (#1319). A pour
+that placed no via writes no via, drill or hole-to-hole floor. One that laid
+no track writes no track floor. One that drew neither (the line `Bare pour (no
+track or via drawn)`) writes no copper-to-hole floor either. It writes only
+the copper clearance, which the pour's KiCad refill needs. The Planes tab
+makes the same decision (`fix_kicad_drc_settings.plane_fix_kwargs`) from the
+copper it applied.
+
 ## Post-Processing
 
 After running the tool:

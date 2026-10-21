@@ -99,9 +99,29 @@ def effective_floors(constraints, copper_layers):
     def floor(constraint_val, fab_val):
         return max(constraint_val or 0.0, fab_val)
 
+    # #1349: the diameter and the drill are floored separately, so a board
+    # whose hole minimum is large and whose via minimum is small got a via
+    # whose drill is wider than the via (One-Air-Max: min_via_diameter 0.3,
+    # min_through_hole_diameter 0.508 -> "0.45/0.508"). The diameter must hold
+    # the drill plus a ring each side: the board's min_via_annular_width (KiCad
+    # grades it), and never less than the ring of the smallest via the active
+    # tier can make (the fab table's 'annular' is the PTH-pad ring, which no
+    # tier's via meets). That changes nothing on a board whose working via
+    # already met both: over the corpus, the 58 of 437 projects it moves are
+    # exactly those whose old suggestion failed their own annular rule.
+    via_drill = floor(constraints.get('min_through_hole_diameter'), fab['via_drill'])
+    via_ring = max(constraints.get('min_via_annular_width') or 0.0,
+                   (fmin['via_diameter'] - fmin['via_drill']) / 2.0)
+    via_dia = floor(constraints.get('min_via_diameter'), fab['via_diameter'])
+    via_held = round(via_drill + 2.0 * via_ring, 4)
+
     return {
-        'working_via_diameter': floor(constraints.get('min_via_diameter'), fab['via_diameter']),
-        'working_via_drill':    floor(constraints.get('min_through_hole_diameter'), fab['via_drill']),
+        'working_via_diameter': max(via_dia, via_held),
+        'working_via_drill':    via_drill,
+        # The ring the working via was sized with, and whether the drill (not
+        # a diameter minimum) set its diameter -- print_design_rules says so.
+        'working_via_ring':     round(via_ring, 4),
+        'working_via_from_drill': via_held > via_dia + 1e-9,
         # Advanced small via for fine-pitch escape only. The fab's smallest reachable
         # via (the rung 'standard' escalates to), not floored by the board's nominal.
         'fine_via_diameter':    fmin['via_diameter'],
@@ -139,9 +159,11 @@ def effective_floors(constraints, copper_layers):
 def read_design_rules(pcb_path):
     """Read net-class design rules so a skill can pass them to the routing CLIs.
 
-    Net classes live in the sibling .kicad_pro (KiCad 8+, JSON under
-    net_settings.classes) or, for KiCad 6/7, in (net_class ...) blocks inside
-    the .kicad_pcb. The router itself does not read these - it defaults to
+    Net classes live in the sibling .kicad_pro (KiCad 6+, JSON under
+    net_settings.classes; membership through
+    design_rules.project_class_membership, KiCad 6's classes[].nets included)
+    or, failing that, in (net_class ...) blocks inside the .kicad_pcb. The
+    router itself does not read these - it defaults to
     routing_defaults.CLEARANCE etc. - so the analysis step should read them
     here and pass --clearance/--track-width/--via-size/--via-drill (and the
     diff-pair gap) explicitly, instead of over-/under-clearancing the board.
@@ -171,32 +193,19 @@ def read_design_rules(pcb_path):
                                  ('clearance', 'track_width', 'via_diameter',
                                   'via_drill', 'diff_pair_gap', 'diff_pair_width')
                                  if k in c}
-            # net -> class assignment (dict in newer files; list of pairs in some).
-            # KiCad 9 values can be a LIST of class names (a net may belong to
-            # several classes); normalize to a single class name (prefer the first
-            # non-Default) so downstream consumers see {net: classname}.
-            na = ns.get('netclass_assignments') or {}
-            if isinstance(na, dict):
-                # KiCad 9 values can be a LIST of class names (a net may belong to
-                # several classes); normalize to a single class name (prefer the
-                # first non-Default) so downstream consumers see {net: classname}.
-                for _net, _cls in na.items():
-                    if isinstance(_cls, list):
-                        _nd = [c for c in _cls if c and c != 'Default']
-                        assignments[_net] = _nd[0] if _nd else (_cls[0] if _cls else 'Default')
-                    elif _cls:
-                        assignments[_net] = _cls
-            # Wildcard assignments / net-name -> class glob patterns (KiCad 8+
-            # net_settings.netclass_patterns): the primary membership mechanism on
-            # many boards (explicit assignments are often empty). Consumers fnmatch
-            # net names against it; explicit assignment wins. Kept as (pattern,
-            # class) pairs, in file order.
-            for pe in ns.get('netclass_patterns') or []:
-                try:
-                    if pe.get('netclass'):
-                        patterns.append((pe.get('pattern', ''), pe['netclass']))
-                except (KeyError, TypeError, AttributeError):
-                    continue
+            # Membership, every form KiCad reads, through the ONE parser
+            # DesignRules.from_project uses too: explicit netclass_assignments,
+            # KiCad 6's classes[].nets (#1304), and the netclass_patterns globs
+            # (the primary mechanism on many boards; consumers fnmatch net
+            # names against them, explicit assignment wins). A net may belong
+            # to several classes (KiCad 9 lists); normalize to a single class
+            # name (prefer the first non-Default) so downstream consumers see
+            # {net: classname}.
+            from design_rules import project_class_membership
+            _members, patterns = project_class_membership(ns)
+            for _net, _cls in _members.items():
+                _nd = [c for c in _cls if c and c != 'Default']
+                assignments[_net] = _nd[0] if _nd else (_cls[0] if _cls else 'Default')
             # DRC-enforced Board Constraints (what humans actually route against).
             rules = ((pro.get('board', {}) or {}).get('design_settings', {}) or {}).get('rules', {}) or {}
             constraints = {k: rules[k] for k in _CONSTRAINT_FIELDS if k in rules}
@@ -374,7 +383,7 @@ def board_floor_declaration(pcb_path, design_rules=None):
 
 def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
                       clearance_default=0.25, edge_default=0.55,
-                      design_rules=None, grading=False):
+                      design_rules=None):
     """Resolve grading/legality knobs BOARD-first (run-7 S1/S4).
 
     An explicit value wins; an unset one resolves from the board's own
@@ -384,9 +393,12 @@ def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
     violations (S1: check_floorplan oob), and one LOOSER lets real ones
     pass; the same mistake vetoed legal poses in converge (S4).
 
-    `grading=True` resolves an unset clearance the way KiCad grades it,
-    floored at Board Setup ``min_clearance`` (`board_grading_clearance`,
-    #1338) -- place_pose's verdict. The placers keep the class.
+    An unset clearance resolves the way KiCad GRADES the board: the Default
+    class floored at Board Setup ``min_clearance`` (`board_grading_clearance`,
+    #1338). Every caller is a placement grade or a placer, and a part seated
+    at the class alone on multichannel_mixer (class 0.2, min_clearance 0.3)
+    is one KiCad reports pad clearance errors on, so the placers obey the
+    floor too. A tool that PREDICTS routability reads `board_floor` instead.
 
     Returns ``(clearance, board_edge_clearance, knobs)`` where ``knobs``
     records each value's source (``'cli'`` | ``'board netclass'`` |
@@ -401,13 +413,9 @@ def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
     # render_placement a 0.0 edge floor (every edge-halo and oob term
     # vanishing) where it had previously used 0.55.
     knobs = {}
-    if clearance is None and grading:
+    if clearance is None:
         clearance, src = board_grading_clearance(
             pcb_path, None, clearance_default, design_rules)
-    elif clearance is None:
-        v = board_default_netclass_clearance(pcb_path, design_rules)
-        clearance, src = ((v, 'board netclass') if v is not None and v > 0
-                          else (clearance_default, 'fixed default'))
     else:
         src = 'cli'
     knobs['clearance'] = {'value': clearance, 'source': src}
@@ -837,6 +845,13 @@ def print_design_rules(pcb_path):
     # a board minimum ABOVE the JLC figure is exactly the case where the two
     # disagreed: the printed 0.2 went into every command and check_drc graded at
     # the board's 0.25 anyway.
+    if eff.get('working_via_from_drill'):
+        print(f"  - working via {eff['working_via_diameter']}/{eff['working_via_drill']}: "
+              f"the drill {eff['working_via_drill']} is the board's "
+              f"min_through_hole_diameter (or the fab drill), so the diameter is that "
+              f"drill plus a {eff['working_via_ring']} ring each side (the board's "
+              f"min_via_annular_width, at least the ring of the fab tier's smallest "
+              f"via), not the smaller via minimum (#1349).")
     _h2h_con = float((dr['constraints'] or {}).get('min_hole_to_hole') or 0.0)
     if _h2h_con > eff['fab']['hole_to_hole']:
         print(f"  - hole-to-hole {eff['drc_hole_to_hole']} comes from the BOARD's "

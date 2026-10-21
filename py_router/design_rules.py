@@ -60,7 +60,7 @@ __all__ = [
     'Constraint', 'RuleItem', 'Rule', 'DesignRules', 'Unsupported',
     'parse_dru', 'parse_condition', 'CLEARANCE_KINDS', 'SIZE_KINDS',
     'BOARD_MIN_KEYS', 'NETCLASS_OPT_KEYS', 'FAB_FLOOR_KEYS',
-    'install_design_rules', 'KIND_ALIASES',
+    'install_design_rules', 'KIND_ALIASES', 'project_class_membership',
 ]
 
 # --------------------------------------------------------------------------
@@ -866,6 +866,75 @@ def _rule_matches(rule: Rule, a: RuleItem, b: Optional[RuleItem],
 
 
 # --------------------------------------------------------------------------
+# Net-class membership as the .kicad_pro declares it
+# --------------------------------------------------------------------------
+
+# The newest net_settings schema whose ``classes[].nets`` lists are
+# membership. KiCad 6 kept a class's members inside the class; KiCad 7's
+# schema 2 -> 3 migration turns each name into a ``netclass_patterns`` entry,
+# and it runs on every load of a file still at schema 0-2. Probed on pcbnew
+# 10.0.0 with steppenprobe's KiCad-6 project (#1304): meta.version 0, 1 or 2
+# resolves the listed nets to their class, 3 and 4 leave them Default (the key
+# is no longer read), and a file with no ``meta`` loads no net_settings at all.
+KICAD6_MEMBERS_MAX_SCHEMA = 2
+
+
+def project_class_membership(net_settings) -> Tuple[Dict[str, List[str]],
+                                                      List[Tuple[str, str]]]:
+    """Net-class MEMBERSHIP from a .kicad_pro ``net_settings`` dict, in every
+    form KiCad reads -- the one parser both project readers
+    (``list_nets.read_design_rules`` and ``DesignRules.from_project``, so the
+    router, the graders, the placer and the GUI's design-rule table) go
+    through, so none of them can miss a form the others honour.
+
+    Returns ``(assignments, patterns)``:
+
+    * ``assignments`` -- {net name: [class, ...]} in file order: the explicit
+      ``netclass_assignments`` (KiCad 7+; a value is one name or, KiCad 9+, a
+      list), then the KiCad-6 ``classes[].nets`` lists when the schema is at
+      most ``KICAD6_MEMBERS_MAX_SCHEMA`` (#1304). Those are exact net names:
+      KiCad's migration makes each a pattern, and a pattern spelled as a whole
+      net name matches that net.
+    * ``patterns`` -- [(glob, class)] from ``netclass_patterns``, file order.
+    """
+    ns = net_settings if isinstance(net_settings, dict) else {}
+    assignments: Dict[str, List[str]] = {}
+
+    def _add(net, cls):
+        if not net or not cls:
+            return
+        lst = assignments.setdefault(str(net), [])
+        if cls not in lst:
+            lst.append(str(cls))
+
+    na = ns.get('netclass_assignments') or {}
+    if isinstance(na, dict):
+        for net, cl in na.items():
+            for c in (cl if isinstance(cl, list) else [cl]):
+                _add(net, c)
+    meta = ns.get('meta')
+    version = meta.get('version') if isinstance(meta, dict) else None
+    if (isinstance(version, int) and not isinstance(version, bool)
+            and version <= KICAD6_MEMBERS_MAX_SCHEMA):
+        for c in ns.get('classes') or []:
+            if not isinstance(c, dict):
+                continue
+            members = c.get('nets')
+            if isinstance(members, list):
+                for net in members:
+                    if isinstance(net, str):
+                        _add(net, c.get('name') or 'Default')
+    patterns: List[Tuple[str, str]] = []
+    for pe in ns.get('netclass_patterns') or []:
+        try:
+            if pe.get('netclass'):
+                patterns.append((pe.get('pattern', ''), pe['netclass']))
+        except (AttributeError, TypeError):
+            continue
+    return assignments, patterns
+
+
+# --------------------------------------------------------------------------
 # The resolver
 # --------------------------------------------------------------------------
 
@@ -1008,20 +1077,9 @@ class DesignRules:
                 d['priority'] = int(c.get('priority', _DEFAULT_PRIORITY
                                           if name == 'Default' else 0))
                 self.classes[name] = d
-            na = ns.get('netclass_assignments') or {}
-            if isinstance(na, dict):
-                for net, cl in na.items():
-                    if isinstance(cl, list):
-                        assignments[net] = [c for c in cl if c]
-                    elif cl:
-                        assignments[net] = [cl]
-            for pe in ns.get('netclass_patterns') or []:
-                try:
-                    if pe.get('netclass'):
-                        patterns.append((pe.get('pattern', ''), pe['netclass']))
-                except (AttributeError, TypeError):
-                    continue
-            rules = ((proj.get('board', {}) or {}).get('design_settings', {}) or {}).get('rules', {}) or {}
+            # every membership form, KiCad 6's classes[].nets included (#1304)
+            assignments, patterns = project_class_membership(ns)
+            rules =((proj.get('board', {}) or {}).get('design_settings', {}) or {}).get('rules', {}) or {}
             for k, v in rules.items():
                 if k.startswith('min_') and isinstance(v, (int, float)) and v > 0:
                     self.board_min[k] = float(v)

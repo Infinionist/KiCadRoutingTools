@@ -211,8 +211,10 @@ def process_board(set_board, manifest, work_root, out_dir, drc_size_checks):
     # rather than by an allow-list of the flags we happen to record today: the
     # list missed `-u` the moment recordings gained it (#599), leaving `-u -X
     # utf8 ...` in front of the argv.
+    # A recorded `NAME=value` env prefix (#1302) leads the line too.
     while rd_argv and (rd_argv[0].endswith(("python", "python3"))
-                       or rd_argv[0].startswith("-") or rd_argv[0] == "utf8"):
+                       or rd_argv[0].startswith("-") or rd_argv[0] == "utf8"
+                       or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", rd_argv[0])):
         rd_argv.pop(0)
     out_board, _rd_clearance = resolve_diff_output(rd_argv)
     # grade DRC at the floor the board must meet (min --clearance over the whole

@@ -376,6 +376,10 @@ which every placement tool keeps, and `emit_intent` writes the key empty: a
 lock list in the intent would be a second, disagreeing record of it. A
 connector whose pose is a fact is declared with a `pose`, which compiles to a
 `fixed_poses[]` entry that `place_simple` seats and holds.
+`board_brief` used to recommend `place_fixed`, a plan op that does not exist
+in this repository; it now names the tools that do (#1353): an intent
+`fixed_poses[]` row (or a brief `fixed[]` row's `pose`), or `place_pose set`
+and `lock`.
 
 So every `fixed[]` row reaches `context.brief.fixed`, where a reader and a
 later tool can see it; only a `pose` reaches an engine, through `fixed_poses[]`.

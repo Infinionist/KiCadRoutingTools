@@ -1189,8 +1189,12 @@ def _fab_floor_disclosure(output_pcb: str, rules_before: dict, proj: dict,
         was, now = rules_before.get(key), rules_after.get(key)
         # Baseline is the board's ORIGINAL declaration where we know it, and
         # the immediate input otherwise (first step of a chain, or a project
-        # that predates the origin key).
-        base = origin.get(key, was)
+        # that predates the origin key). Once an origin is recorded, a key it
+        # lacks is one the board never declared: the input's value is then
+        # one an earlier step wrote, and reporting it as "the ORIGINAL" is
+        # how a bare pour's invented min_via_drill 0.6 became route.py's
+        # "via drill: 0.6 -> 0.5 ... ORIGINAL 0.6mm" (#1319).
+        base = origin.get(key) if origin else was
         if not isinstance(now, (int, float)) or not isinstance(base, (int, float)):
             continue
         if now < base - _FLOOR_EPS:
@@ -1322,11 +1326,16 @@ def scan_board_minima(pcb_path: str):
 
 def compute_targets(clearance=None, hole_clearance=None, hole_to_hole=None,
                     edge_clearance=None, track_width=None, via_diameter=None,
-                    via_drill=None, minima=None, fab_edge=None):
+                    via_drill=None, minima=None, fab_edge=None, copper_holes=True):
     """Map KiCad rule keys -> target floor (mm) from the routing parameters.
     Each value, when given, becomes a floor; sizes fall back to the board's
     smallest such object (``minima`` from :func:`scan_board_minima`) when the
     param is None. Keys absent from the result => leave that rule alone.
+
+    ``copper_holes`` False: the step laid no track or via (a bare pour,
+    :func:`plane_fix_kwargs`), so no copper of its own sits at copper
+    clearance from a hole and the copper-to-hole floor does NOT follow
+    ``clearance`` -- only an explicit ``hole_clearance`` is written (#1319).
 
     One key is NOT a rule: ``class_clearance`` (#900), the net-class clearance,
     which is the routed value and never carries the ``min_clearance`` caps.
@@ -1353,8 +1362,10 @@ def compute_targets(clearance=None, hole_clearance=None, hole_to_hole=None,
         _ovr = minima.get("min_pad_clearance_override")
         if _ovr is not None and _ovr > 0 and clearance > _ovr:
             targets["min_clearance"] = round(float(_ovr), 6)
-    # Hole/copper clearance: explicit value, else the copper-clearance floor.
-    hole_clr = hole_clearance if hole_clearance is not None else clearance
+    # Hole/copper clearance: explicit value, else the copper-clearance floor
+    # when the step drew copper that sits at it (copper_holes).
+    hole_clr = (hole_clearance if hole_clearance is not None
+                else clearance if copper_holes else None)
     if hole_clr is not None:
         targets["min_hole_clearance"] = hole_clr
     if hole_to_hole is not None:
@@ -1994,6 +2005,70 @@ def fanout_fix_kwargs(kind, tracks, vias, *, clearance, track_width,
             "clamp_nondefault_netclasses": True}
 
 
+def plane_fix_kwargs(tracks, vias, *, clearance, hole_to_hole, track_width,
+                     via_size, via_drill):
+    """THE plane-step writeback: the floors a pour step writes, from the
+    copper it drew (#1319, #1195's rule for a fanout applied to a pour).
+
+    route_planes' main passes these to :func:`fix_project_for_output` for the
+    file and the Planes tab to ``compute_targets`` / ``update_live_drc_floors``
+    for the live board, so the two fronts write the same floors. ``tracks`` and
+    ``vias`` count what the step ADDED (:func:`drawn_copper` on the CLI, the
+    tab's applied lists in the GUI):
+
+    * the via floors (diameter, drill) and hole-to-hole only when it placed a
+      via, and the track floor only when it laid a track. A bare pour passed
+      the run's sizes anyway, so interf_u's GND pour wrote min_via_drill
+      None -> 0.6 for vias that do not exist, and multichannel_mixer's took
+      min_track_width 0.3 -> 0.2 and min_via_diameter 1.5 -> 0.6;
+    * the copper-to-hole floor only when it laid either (``copper_holes``): a
+      pour keeps the board's hole clearance itself (its fill and KiCad's refill
+      knock out at it), so daplink's pour lowering it 0.25 -> 0.2 bought nothing;
+    * the copper clearance always: a KiCad refill regrows the pour at
+      max(zone clearance, net class), so a pour laid below its class keeps its
+      corridors only if the floor drops with it (route_planes'
+      ``_resolve_zone_clearance``).
+
+    A size the step leaves out still falls back to the board's own smallest
+    object in ``compute_targets``, as every writeback does."""
+    drew = bool(tracks or vias)
+    return {"clearance": clearance,
+            "hole_to_hole": hole_to_hole if vias else None,
+            "track_width": track_width if tracks else None,
+            "via_diameter": via_size if vias else None,
+            "via_drill": via_drill if vias else None,
+            "copper_holes": drew}
+
+
+def drawn_copper(input_pcb, output_pcb):
+    """``(tracks, vias)``: how many track segments and vias ``output_pcb``
+    carries that ``input_pcb`` does not, matched by position, layer and net
+    (graphic copper is not a track). What a file-writing step drew, for
+    :func:`plane_fix_kwargs`. ``(None, None)`` when either board cannot be
+    read -- the caller then keeps the sizes it would have written."""
+    try:
+        from kicad_parser import parse_kicad_pcb
+        a, b = parse_kicad_pcb(input_pcb), parse_kicad_pcb(output_pcb)
+    except Exception:                                           # noqa: BLE001
+        return None, None
+
+    def _seg(s):
+        p, q = ((round(s.start_x, 4), round(s.start_y, 4)),
+                (round(s.end_x, 4), round(s.end_y, 4)))
+        return (min(p, q), max(p, q), s.layer, s.net_id, round(s.width, 4))
+
+    def _via(v):
+        return (round(v.x, 4), round(v.y, 4), v.net_id, round(v.size, 4),
+                round(v.drill, 4))
+
+    old_s = {_seg(s) for s in a.segments if not getattr(s, 'graphic', False)}
+    old_v = {_via(v) for v in a.vias}
+    tracks = sum(1 for s in b.segments
+                 if not getattr(s, 'graphic', False) and _seg(s) not in old_s)
+    vias = sum(1 for v in b.vias if _via(v) not in old_v)
+    return tracks, vias
+
+
 def apply_fix_to_board(board, *, minima, clearance=None, hole_clearance=None,
                        hole_to_hole=None, edge_clearance=None, track_width=None,
                        via_diameter=None, via_drill=None, diff_pair_gap=None,
@@ -2032,7 +2107,7 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
                            keep_thermal=False, enable_layers=False,
                            clamp_nondefault_netclasses=True,  # #439: clamp by default
                            extra_ignore=(), verbose=True, minima=None,
-                           relax_severities=False):
+                           relax_severities=False, copper_holes=True):
     """Make the DRC settings of a freshly written board consistent with the
     routing floors (issue #160 auto-invoke). Ensures ``output_pcb`` has a sibling
     ``.kicad_pro`` -- copying the input board's project if the output is a new
@@ -2106,7 +2181,8 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
                               hole_to_hole=hole_to_hole, edge_clearance=edge_clearance,
                               track_width=track_width, via_diameter=via_diameter,
                               via_drill=via_drill, minima=minima,
-                              fab_edge=fab_edge_floor(output_pcb))
+                              fab_edge=fab_edge_floor(output_pcb),
+                              copper_holes=copper_holes)
     # #498: a .kicad_dru rule may legally RELAX clearance on its layer, and
     # KiCad's rules.min_clearance is an ABSOLUTE floor that outranks custom
     # rules -- cap the recorded floor at the smallest rule value, or the ruled

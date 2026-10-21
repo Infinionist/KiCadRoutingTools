@@ -3542,6 +3542,9 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                      If provided, only checks involving at least one matching net are reported.
         debug_output: If True, write debug lines to User.7 layer showing violation locations
         quiet: If True, only print a summary line unless there are violations
+        print_summary: With quiet=True, False prints NOTHING at all, OK or
+            FAILED, listing included (#383, #1333): for an in-process caller
+            that reports the returned violations itself.
         hole_to_hole_clearance: Minimum clearance between drill hole edges in mm
             (default: the fab floor, routing_defaults.HOLE_TO_HOLE_CLEARANCE)
         board_edge_clearance: Minimum clearance from board edge in mm (0 = use clearance)
@@ -5528,10 +5531,20 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
     # violations back WITHOUT this quiet-summary print -- the old caller wrapped
     # the call in a process-global redirect_stdout, which under concurrency
     # swallowed other worker threads' result lines into its buffer.
+    # #1333: SILENT in the failure path too. It used to skip only the OK
+    # line and then fall through to the full listing below, so
+    # kicad_drc_compare --baseline printed the BASELINE board's listing,
+    # unlabelled, at the head of the graded board's report (a pile: 729
+    # pad-pad items over a graded board that was clean). The caller owns
+    # the report; it has the violations it was handed.
     if quiet:
         if violations:
             if print_summary:
                 print(f"FAILED ({len(violations)} violations)")
+            else:
+                if debug_output:
+                    write_debug_lines(pcb_file, violations, clearance)
+                return violations + _accepted_edge
         else:
             if print_summary:
                 _notes = ([f"{len(warnings)} same-net copper warning(s)"] if warnings else []) \

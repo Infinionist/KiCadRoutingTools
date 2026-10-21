@@ -575,11 +575,13 @@ tool whose job is to refuse, so it is disclosed on stderr — and the siblings
 are carried. The snap sweep's lattice step is `--snap-step` (0.25 mm) and it
 re-grades at most `--snap-tries` (6) ranked poses. `--dry-run` grades the
 request and prints the summary without writing (OUT is still required; the
-summary names it under `would_write`). The clearance is the one KiCad
-grades the board at (#1338, `list_nets.board_grading_clearance`): the Default
-class floored at Board Setup `min_clearance`, as check_drc reads it since
-#1210, source `board minimum clearance` when the floor binds. check_assembly
-grades at the same value, and its `--clearance` note compares against it.
+summary names it under `would_write`).
+The clearance is the one KiCad grades the board at (#1338,
+`list_nets.board_grading_clearance`): the Default class floored at Board
+Setup `min_clearance`, as check_drc reads it since #1210, source `board
+minimum clearance` when the floor binds. check_assembly, check_floorplan,
+render_placement, converge and the placers resolve the same value, so a
+pose the placer seats is graded at the clearance it was seated at.
 Exit 0 written; 2 the request does not name a thing on this board (a typo you
 rewrite); 3 the board carries copper (`--allow-routed` to override); 4 well
 formed, and the board said no (a measurement you act on), nothing written —
@@ -1595,10 +1597,18 @@ python3 py_router/list_nets.py board.kicad_pcb --design-rules
 
 It reads two tiers of rules and combines them with the JLCPCB fab floor:
 
-- **Net-class values** from the sibling `.kicad_pro` (KiCad 8+,
-  `net_settings.classes`) or `(net_class …)` blocks (KiCad 6/7): `clearance`,
+- **Net-class values** from the sibling `.kicad_pro` (KiCad 6+,
+  `net_settings.classes`) or, failing that, `(net_class …)` blocks in the board
+  file (the pre-KiCad-6 form): `clearance`,
   `track_width`, `via_diameter`, `via_drill`, `diff_pair_gap`, `diff_pair_width`.
   These are KiCad *drawing defaults*; only `clearance` is a DRC minimum.
+  Membership is read in every form KiCad reads: explicit
+  `netclass_assignments`, `netclass_patterns` globs, and a KiCad 6 project's
+  `classes[].nets` lists, which count while the project's `net_settings` schema
+  is 0-2 (KiCad migrates them on load; from schema 3 it no longer reads the
+  key, #1304). `design_rules.project_class_membership` is the one parser, so
+  the router, the graders and the GUI's design-rule table agree on who is in
+  a class.
 - **Board Constraints** from `board.design_settings.rules`: `min_clearance`,
   `min_track_width`, `min_via_diameter`, `min_via_annular_width`,
   `min_hole_to_hole`, `min_through_hole_diameter`, `min_hole_clearance`,
@@ -1620,7 +1630,14 @@ is the value to route *and* grade at (#603 — printing the bare fab 0.2 while
 toolchain would not honour). Where an explicit `--hole-to-hole-clearance` /
 `--board-edge-clearance` is below such a minimum, `check_drc` now says it is
 being clamped (on stderr, so it survives `--quiet`) instead of substituting
-silently. The floor spells out
+silently. The **working via** is the board's `min_via_diameter` /
+`min_through_hole_diameter` (or the fab via, where larger). Its diameter is
+always at least the drill plus a ring each side: the board's
+`min_via_annular_width`, never less than the ring of the active tier's
+smallest via. A board whose hole minimum is large and whose via minimum is
+small used to be suggested a drill wider than its via (#1349, One-Air-Max:
+`0.45/0.508`, now `0.608/0.508`), and a line says when the drill set the
+diameter. The floor spells out
 two distinct rules the router honours: **hole-to-hole** (drill-to-drill) is
 net-INDEPENDENT and applies to via/via and via/pad-drill on *all* nets including
 same-net (pad-drill/pad-drill is JLC's larger pad hole-to-hole, 0.45 mm, fixed
@@ -1817,6 +1834,13 @@ Escape stub ends are snapped to the `--grid-step` grid, and the decorative
 end-jog is validated against the full obstacle map (foreign pads + tracks +
 vias): a jog that would extend into a foreign obstacle is dropped, leaving an
 on-grid stub end the router can launch from (issue #149).
+
+A pad or footprint clearance override above `--clearance` is honoured. The
+underpad and dog-bone escapes keep their tracks and vias that far from the
+part's own balls and from immovable foreign pads, as `qfn_fanout` and the
+router's obstacle map do. imx6ulz's U1 declares 0.12 over a 0.1 run, and its
+dog-bone escapes used to slide to 0.115 from neighbouring balls (#1317). An
+override below `--clearance` leaves `--clearance` in force here.
 
 ### Example
 
@@ -2575,6 +2599,18 @@ mid-run copy of it, the #650 in-run floor sync, is skipped with it, #1285), or
 default, #856; `--keep-thermal` is accepted as a deprecated no-op). Every routing step
 that writes the project prints one `PROJECT_WRITES_JSON: {...}` line listing
 what it changed, so a harness can see it without grepping prose.
+
+A step writes only the floors of copper it drew. A fanout writes its via
+floors only when it placed a via and nothing when it drew nothing (#1195,
+`fanout_fix_kwargs`). A pour (`route_planes.py`, the Planes tab) writes its
+via floors and hole-to-hole only when it placed a via, its track floor only
+when it laid a track, and its copper-to-hole floor only when it drew either
+(#1319, `plane_fix_kwargs`). A bare pour writes the copper clearance alone,
+because a KiCad refill regrows the pour at max(zone clearance, net class). The
+`FAB FLOOR RELAXED` disclosure compares against the floors the board declared
+before the chain began (`kicad_routing_tools.fab_floor_origin`). A floor that
+origin does not carry was never declared, so nothing is reported as its
+"ORIGINAL".
 
 When routing used `--clearance-ceiling` (#530; formerly the implicit meaning of
 `--clearance`, #439), the writeback also **clamps** each NON-Default net class'

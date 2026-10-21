@@ -309,6 +309,19 @@ def assess_placement(pcb_data, pcb_file: Optional[str] = None,
     return st
 
 
+def footprints_outside(pcb_data, pcb_file, refs) -> Optional[Dict[str, bool]]:
+    """`{ref: its courtyard leaves the outline}` for `refs`, measured as
+    `assess_placement`'s S3 measures it; None when the board has no usable
+    outline. On a pile this is what tells a STAGED pose (off the board)
+    from one a stager kept (#1353)."""
+    fps = [pcb_data.footprints[r] for r in refs
+           if r in (pcb_data.footprints or {})]
+    flags: Dict[str, bool] = {}
+    if _outside_fraction(pcb_data, pcb_file, fps, flags) is None:
+        return None
+    return flags
+
+
 def _outside_fraction(pcb_data, pcb_file, fps,
                       flags_out: Optional[Dict[str, bool]] = None
                       ) -> Optional[float]:
@@ -376,11 +389,19 @@ def _global_rect(fp, side_boxes, rotate_local_bounds):
 
 
 def format_report(state: PlacementState, tool: str = 'placement', *,
-                  allow_unplaced: bool = False, allow_routed: bool = False) -> str:
+                  allow_unplaced: bool = False, allow_routed: bool = False,
+                  warn_only: bool = False) -> str:
     """Human text for a refusal or a warning. A condition the caller already
     overrides gets no "Override with" advice (#1202: beautify_labels and
     check_floorplan always pass allow_routed=True, ran and exited 0, and still
-    printed the refusal and its override)."""
+    printed the refusal and its override).
+
+    `warn_only` is the renderer's mode, which refuses nothing: it gets no
+    override advice at all, and no advice to run the renderer (#1354:
+    render_placement told the user to "Override with --allow-unplaced", a
+    flag it does not have and exits 2 on, then rendered anyway)."""
+    allow_unplaced = allow_unplaced or warn_only
+    allow_routed = allow_routed or warn_only
     lines = []
     if state.unplaced:
         lines.append(
@@ -392,9 +413,11 @@ def format_report(state: PlacementState, tool: str = 'placement', *,
         lines.append(
             "  Its poses are not a placement yet: py_placer/place_simple.py "
             "places a board from a pile.")
-        lines.append(
-            "  To see what the file currently contains:  "
-            "python3 py_tools/render_placement.py <board> -o state.png")
+        if not warn_only:
+            lines.append(
+                "  To see what the file currently contains:  "
+                "python3 -X utf8 py_tools/render_placement.py <board> "
+                "-o state.png")
         if not allow_unplaced:
             lines.append("  Override with --allow-unplaced.")
     elif state.partially_unplaced:
@@ -424,7 +447,7 @@ def gate_or_exit(pcb_data, pcb_file, tool: str, *, allow_unplaced: bool = False,
     import sys
     st = assess_placement(pcb_data, pcb_file)
     msg = format_report(st, tool, allow_unplaced=allow_unplaced,
-                        allow_routed=allow_routed)
+                        allow_routed=allow_routed, warn_only=warn_only)
     blocking = (st.unplaced and not allow_unplaced) or (st.has_copper and not allow_routed)
     if msg:
         print(msg, file=sys.stderr if (blocking and not warn_only) else sys.stdout)

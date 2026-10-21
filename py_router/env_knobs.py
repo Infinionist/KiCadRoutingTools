@@ -635,6 +635,41 @@ def active_env_knobs() -> dict:
     return dict(sorted(out.items()))
 
 
+#: #1302: what a REPLAY must not inherit. A variable that LOCATES something on
+#: the recording machine (an interpreter, kicad-cli, a directory) or belongs
+#: to a harness (the cloud sweep, a timing ledger, a GUI-gate save log) says
+#: nothing about the copper, and replayed on another machine it points at a
+#: path that is not there.
+_NOT_REPLAYED = __import__('re').compile(
+    r'^(KICAD|KRT)_(\w*PYTHON\w*|CLI(_\w+)?|SWEEP_\w+|\w+_DIR)$')
+_NOT_REPLAYED_NAMES = frozenset({'KICAD_SAVELOG', 'KICAD_IMAGE',
+                                 'KRT_CMD_TIMING_LEDGER'})
+
+
+def is_replay_knob(name: str) -> bool:
+    """A KICAD_*/KRT_* knob a replay must reproduce (#1302): not a KiCad
+    install path, and not a machine-local or harness variable."""
+    if not (name.startswith('KICAD') or name.startswith('KRT_')):
+        return False
+    if _INSTALL_PREFIX.match(name) or name in _INSTALL_NAMES:
+        return False
+    return not (_NOT_REPLAYED.match(name) or name in _NOT_REPLAYED_NAMES)
+
+
+def replay_env_knobs() -> dict:
+    """{name: EXACT value} of the knobs a replay must reproduce (#1302).
+
+    `active_env_knobs` minus the machine-local and harness variables above,
+    and with the values whole: that function truncates a long value for the
+    log line, and a truncated knob replays a different run. The redo
+    recorder writes these as the command's `NAME=value` prefix, which is
+    what the routing skill tells an agent to type, so a manifest replays the
+    step as it ran instead of the defaults.
+    """
+    return dict(sorted((k, v) for k, v in os.environ.items()
+                       if is_replay_knob(k)))
+
+
 def env_knobs_line() -> str:
     """One-line, log-greppable inventory of the active knobs."""
     knobs = active_env_knobs()

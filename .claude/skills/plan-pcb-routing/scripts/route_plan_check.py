@@ -148,7 +148,11 @@ class Plan:
 
     @property
     def argvs(self):
-        return [argv for _cwd, argv in self.cmds]
+        """Each command's argv WITHOUT its leading `NAME=value` env prefix,
+        which parse_manifest puts there for an `export`ed or recorded knob
+        (#1302, #1337), so `argv[0]` is the command run."""
+        from redo_stress_test import split_env_prefix
+        return [split_env_prefix(argv)[1] for _cwd, argv in self.cmds]
 
     def by_tool(self, *names):
         return [a for a in self.argvs if tool_of(a) in names]

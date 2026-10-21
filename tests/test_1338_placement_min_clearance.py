@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""#1338: check_assembly and place_pose grade pad clearance where KiCad does
--- the Default class floored at Board Setup `min_clearance` -- not at the
-class alone.
+"""#1338: check_assembly, place_pose and the placers work at the pad clearance
+KiCad grades -- the Default class floored at Board Setup `min_clearance` --
+not at the class alone.
 
 #1210 made check_drc and board_score grade at max(class, min_clearance) and
 left the placement graders on the class. multichannel_mixer declares class
@@ -18,8 +18,9 @@ Checks:
   1. The rule (`fix_kicad_drc_settings.grading_clearance`) and its board
      reader (`list_nets.board_grading_clearance`): the larger of the two, a
      non-positive value unset, an explicit value first.
-  2. `board_floor('clearance')` and `board_floor_knobs` keep the class (what
-     the placers work at); `board_floor_knobs(grading=True)` is the grade.
+  2. `board_floor('clearance')` keeps the class (what a routing prediction
+     works at); `board_floor_knobs`, which every placement grade and placer
+     reads, is the grade.
   3. check_assembly grades at 0.8 [board minimum clearance] and finds the
      pairs; `--clearance 0.8` is not called stricter, `--clearance 0.2` is
      called looser.
@@ -114,15 +115,17 @@ def main():
         check('the reader: the class when the minimum is below it',
               list_nets.board_grading_clearance(lo) == (0.2, 'board netclass'))
 
-        print("2. the working floor keeps the class")
+        print("2. the routing floor keeps the class; the placement knobs grade")
         check("board_floor('clearance') is the class",
               list_nets.board_floor(hi, 'clearance') == (0.2, 'board netclass'))
-        check('board_floor_knobs is the class',
-              list_nets.board_floor_knobs(hi)[0] == 0.2)
-        g = list_nets.board_floor_knobs(hi, grading=True)
-        check('board_floor_knobs(grading=True) is the grade',
+        g = list_nets.board_floor_knobs(hi)
+        check('board_floor_knobs is the grade',
               g[0] == 0.8 and g[2]['clearance']['source']
               == 'board minimum clearance', str(g[2]['clearance']))
+        g = list_nets.board_floor_knobs(lo)
+        check('board_floor_knobs: the class when the minimum is below it',
+              g[0] == 0.2 and g[2]['clearance']['source'] == 'board netclass',
+              str(g[2]['clearance']))
 
         print("3. check_assembly")
         r, doc = assembly(hi, work)

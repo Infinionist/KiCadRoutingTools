@@ -999,9 +999,22 @@ def generate_underpad_escape(footprint: Footprint,
     # rule (in astar) already removes the diagonal clipping that used to need it,
     # so it defaults to 0; raise it only to trade routability for extra slack.
     margin = keepout_margin or 0.0
+
+    # #1317: a pad / footprint clearance OVERRIDE above the run clearance is
+    # the pair clearance KiCad grades a track or via against that pad
+    # (design_rules.override_clearance), and every keep-out below priced the
+    # pads at the scalar --clearance: imx6ulz's U1 (footprint clearance 0.12,
+    # run 0.1) shipped escape stubs 5-7 um inside its balls' 0.12, which
+    # KiCad flags. Raise-only, as qfn_fanout prices it: an override BELOW the
+    # run clearance leaves the run clearance in force.
+    def _ovr_extra(p):
+        lc = getattr(p, 'local_clearance', 0.0) or 0.0
+        return lc - clearance if lc > clearance else 0.0
+
+    own_extra = max((_ovr_extra(p) for p in footprint.pads), default=0.0)
     pad_r = max((max(p.size_x, p.size_y) for p in fp_pads), default=0.4) / 2
     via_r = via_size / 2
-    pad_keep = pad_r + track_width / 2 + clearance + margin
+    pad_keep = pad_r + track_width / 2 + clearance + margin + own_extra
     via_keep = via_r + track_width / 2 + clearance + margin
     trk_keep = track_width + clearance + margin  # other centerlines stay this far
 
@@ -1089,7 +1102,10 @@ def generate_underpad_escape(footprint: Footprint,
     exact_segs: List[Tuple] = []      # (x1, y1, x2, y2, half_w, net_id, layer) - real tracks
     reserved_sites: List[Tuple] = []  # (x, y, ring_r, drill_r, net_id) - pending via-in-pads
     carve_disks: List[Tuple] = []     # (x, y, keep_r, layer_idx_or_None, net_id) - stamps
-    exact_pads = [(p2.global_x, p2.global_y, max(p2.size_x, p2.size_y) / 2.0,
+    # A pad's clearance override (#1317) rides in its half-extent here, so
+    # every `half + clearance` test below prices the pad at its override.
+    exact_pads = [(p2.global_x, p2.global_y,
+                   max(p2.size_x, p2.size_y) / 2.0 + _ovr_extra(p2),
                    (p2.drill or 0.0) / 2.0, p2.net_id,
                    p2.pad_type != 'np_thru_hole')
                   for p2 in footprint.pads]
@@ -1182,14 +1198,16 @@ def generate_underpad_escape(footprint: Footprint,
         if not (bounds[0] - _reach <= p.global_x <= bounds[2] + _reach and
                 bounds[1] - _reach <= p.global_y <= bounds[3] + _reach):
             continue
-        p_keep = p_half + track_width / 2 + clearance + margin
+        p_extra = _ovr_extra(p)                     # #1317
+        p_keep = p_half + track_width / 2 + clearance + margin + p_extra
         if p.drill and p.drill > 0:
             occ.block_all(p.global_x, p.global_y, p_keep)
             carve_disks.append((p.global_x, p.global_y, p_keep, None, p.net_id))
             # TH/NPTH copper + drill for the exact via-site check (#393); the
             # locked-SMD copper stays with via_site_ok's exact rect test.
-            exact_pads.append((p.global_x, p.global_y, p_half, p.drill / 2.0,
-                               p.net_id, p.pad_type != 'np_thru_hole'))
+            exact_pads.append((p.global_x, p.global_y, p_half + p_extra,
+                               p.drill / 2.0, p.net_id,
+                               p.pad_type != 'np_thru_hole'))
             continue
         # Non-custom pads stamp their REAL RECT outline (rect_rotation-aware),
         # not a disk of radius max(size)/2: that disk under-covers a rect's
@@ -1199,7 +1217,7 @@ def generate_underpad_escape(footprint: Footprint,
         # is exact for rect/roundrect and a conservative superset for
         # circle/oval. Stamp radius shrinks to the track/clearance term since
         # the copper extent is now in the polygon itself.
-        _rect_keep = track_width / 2 + clearance + margin
+        _rect_keep = track_width / 2 + clearance + margin + p_extra
         _rect_poly = None
         if not cpolys:
             hx, hy = p.size_x / 2.0, p.size_y / 2.0
