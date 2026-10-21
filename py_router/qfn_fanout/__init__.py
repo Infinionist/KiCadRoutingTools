@@ -2433,8 +2433,18 @@ def main():
     # escapes too -- tracks alone undercounts and grades those pads as failed.
     escaped_net_ids = ({t['net_id'] for t in tracks if t.get('net_id') is not None}
                        | {v['net_id'] for v in vias if v.get('net_id') is not None})
-    unescaped = sorted(set(_failed_nets))
-    escaped = len(escaped_net_ids)
+    # A net is UNESCAPED only while one of its pads has no copper. The engine
+    # also names nets whose stubs escaped but end too close to a neighbour's
+    # (the GUI's "stubs too close" list), or a multi-pad net with one pad's
+    # escape given up and the rest served: those are flagged_escaped_nets, not
+    # failures, and a net is never both escaped and failed.
+    from bga_fanout import unserved_nets
+    unescaped = sorted(unserved_nets(footprint, pcb_data, sorted(set(_failed_nets)),
+                                     tracks, vias, args.width))
+    flagged_escaped = sorted(set(_failed_nets) - set(unescaped))
+    _un = set(unescaped)
+    escaped = len(escaped_net_ids - {nid for nid, net in pcb_data.nets.items()
+                                     if net.name in _un})
     # The CLI never cancels (#621: no --deadline, no other CLI cancel source),
     # so LAST_CANCEL_SKIPPED is empty here by construction and every pad was
     # concluded one way or the other. The partial-ledger arithmetic lives in the
@@ -2505,6 +2515,7 @@ def main():
         'escaped': escaped,
         'failed': len(unescaped),
         'unescaped_nets': unescaped,
+        'flagged_escaped_nets': flagged_escaped,
         # #1342: single-pad (NC) nets the engine skipped, as bga_fanout's key.
         'skipped_nc': len(single_pad_net_ids(footprint, pcb_data)),
         'clearance': args.clearance,

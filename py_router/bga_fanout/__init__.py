@@ -676,6 +676,44 @@ def ball_has_copper(pad, vias, tracks, track_width: float = 0.0) -> bool:
         for t in tracks)
 
 
+
+def unserved_nets(footprint, pcb_data, names, tracks, vias,
+                  track_width: float = 0.0) -> List[str]:
+    """The nets of `names` (a fanout's failed list) still UNESCAPED: one of
+    their pads on `footprint` has no copper (ball_has_copper, over this run's
+    `tracks`/`vias` and the board's own copper of those nets). In first-seen
+    order, once each.
+
+    The engines record a failure per ROUTE, so a multi-ball net (a rail)
+    whose one given-up route's ball is still served -- by another route, a
+    strap, a via -- was reported unescaped: daisho U1's summary listed V1P2,
+    every one of whose 50 balls had copper, and counted it as both escaped
+    and failed. A name with no pad on the part is kept (nothing says it
+    escaped)."""
+    if not names:
+        return []
+    want = set(names)
+    pads: Dict[str, List] = {}
+    for p in footprint.pads:
+        if p.net_id and p.net_name in want:
+            pads.setdefault(p.net_name, []).append(p)
+    ids = {p.net_id for ps in pads.values() for p in ps}
+    t_all = [t for t in tracks if t.get('net_id') in ids] + [
+        {'start': (s.start_x, s.start_y), 'end': (s.end_x, s.end_y),
+         'layer': s.layer, 'net_id': s.net_id}
+        for s in pcb_data.segments if s.net_id in ids]
+    v_all = [v for v in vias if v.get('net_id') in ids] + [
+        {'x': v.x, 'y': v.y, 'size': v.size, 'net_id': v.net_id}
+        for v in pcb_data.vias if v.net_id in ids]
+    out: List[str] = []
+    for n in names:
+        if n in out:
+            continue
+        ps = pads.get(n)
+        if not ps or not all(ball_has_copper(p, v_all, t_all, track_width) for p in ps):
+            out.append(n)
+    return out
+
 def manage_vias(
     routes: List[FanoutRoute],
     pcb_data: 'PCBData',
@@ -4998,6 +5036,16 @@ def generate_bga_fanout(footprint: Footprint,
     _st962, _rec962 = via_protection_stamps(vias_to_add, [], pcb_data)
     apply_stamps_in_memory(_st962)
     print_via_protection_record(_rec962, "BGA fanout")
+    # What both fronts report (the CLI's failed / unescaped_nets, the GUI
+    # tab's failed list) is the nets still unescaped, not every route the
+    # passes gave up: those per-route lists drove the retries above and stay
+    # theirs.
+    if failed_nets:
+        from list_nets import fab_floors as _ffl
+        _ncu = len(pcb_data.board_info.copper_layers or []) or 2
+        failed_nets = unserved_nets(
+            footprint, pcb_data, failed_nets, tracks, vias_to_add,
+            max(track_width, _ffl(_ncu)['track_width']))
     if failed_nets and not _fired[0]:
         try:
             _nb = dropped_ball_neighbourhood(
@@ -5274,7 +5322,11 @@ def main():
                        if t.get('net_id') is not None
                        and t['net_id'] not in _drop_ids}
     unescaped = sorted(set(_failed_nets))
-    escaped = len(escaped_net_ids)
+    # a net with a bare ball is unescaped, not also escaped: requested counts
+    # each net once
+    _un = set(unescaped)
+    escaped = len(escaped_net_ids - {nid for nid, net in pcb_data.nets.items()
+                                     if net.name in _un})
     # The CLI never cancels (#621: no --deadline, no other CLI cancel source),
     # so LAST_CANCEL_SKIPPED is empty here by construction and every ball was
     # concluded one way or the other. The partial-ledger arithmetic lives in the

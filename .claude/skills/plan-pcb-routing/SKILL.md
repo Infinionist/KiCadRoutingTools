@@ -639,7 +639,12 @@ Use the printed flags as-is:
   `bga_fanout.py` and `qfn_fanout.py` both end with a `JSON_SUMMARY: {...}` line
   giving `requested`/`escaped`/`failed`/`unescaped_nets` (a net with one pad on the
   whole board -- an NC pin -- is skipped by both and counted in `skipped_nc`, never
-  in `requested`; #122, #1342). **After every fanout, parse it;
+  in `requested`; #122, #1342). A net counts in `failed`/`unescaped_nets` only
+  while one of its balls/pads has NO escape copper: a multi-ball rail whose one
+  given-up escape's ball is still served (another route, a strap, a via) has
+  escaped. `qfn_fanout.py` lists escaped nets it flagged -- chiefly stub tips that
+  end too close to a neighbour's (its `endpoint pairs too close` WARNING) -- as
+  `flagged_escaped_nets`, not as failures. **After every fanout, parse it;
   if `failed > 0` (escaped < requested), re-run the fanout with `--clearance` at
   the manufacturing floor** (never below it — the floor is the rule the human
   board passes DRC against, so tightening board-wide is manufacturable and needs
