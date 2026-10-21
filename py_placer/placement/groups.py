@@ -261,15 +261,104 @@ def _copper_pads(fp) -> int:
                if any(str(l).endswith('.Cu') for l in (p.layers or ())))
 
 
+#: The roles `roles.infer_role` gives a part that has an IC's pad count and
+#: is still never the IC a cap decouples (#1351): a resistor (a four-terminal
+#: Kelvin shunt, an `R`-referenced array), a diode (an ESD array, a bridge
+#: rectifier, an RGB LED filed under `D`) and an LED.
+_PASSIVE_ROLES = ('resistor', 'diode', 'led')
+
+#: A resistor NETWORK, which `infer_role` leaves `unknown` when its
+#: reference is `RN` rather than `R`: by that reference (every `RN` part of
+#: the stress corpus is one -- 238 owners, `R_Array_*`, `R_Cat16-*`, an
+#: `MSOP-8` matched network), or by a footprint item name KiCad's library
+#: and its look-alikes spell one with. Not `RP`, which is also an RP2040.
+_RESISTOR_NETWORK_REF = re.compile(r'^RN\d', re.I)
+_RESISTOR_NETWORK_FP = re.compile(
+    r'(^|[^a-z0-9])(r_?array|resistor_?array|r_?network|r_?pack|r_cat\d)', re.I)
+
+#: An addressable LED by family name, read off the footprint name and the
+#: value with separators dropped (`APA-104-2020` -> `apa1042020`): an LED
+#: with a controller inside and a VDD pin its datasheet puts a cap at. The
+#: name is the evidence when the board carries no pin types or names
+#: (piunora's `WS2812B3535`, nudac's `APA-104-2020-5mA`).
+_ADDRESSABLE_LED = re.compile(r'ws28\d|sk68|sk98|apa10\d|neopixel|dotstar')
+
+
+def _draws_supply(pcb_data, fp) -> bool:
+    """Whether a copper pad of `fp` on a net other than ground is a SUPPLY
+    pin by the symbol: typed `power_in`/`power_out`, or named as one
+    (`net_queries.is_supply_pinfunction`). Ground is left out because an
+    ESD array's GND pin is typed `power_in` too, and grounding is not being
+    decoupled."""
+    from net_queries import is_ground_net_name, is_supply_pinfunction, \
+        is_supply_pintype
+    for p in fp.pads or ():
+        if p.net_id <= 0 or not any(str(l).endswith('.Cu') for l in (p.layers or ())):
+            continue
+        if is_ground_net_name(_net_name(pcb_data, p.net_id)):
+            continue
+        if (is_supply_pintype(str(getattr(p, 'pintype', '') or ''))
+                or is_supply_pinfunction(str(getattr(p, 'pinfunction', '') or ''))):
+            return True
+    return False
+
+
+def passive_by_role(pcb_data, ref: str) -> Optional[str]:
+    """Why `ref` -- a part with an IC's pad count -- is no decap OWNER, or
+    None (#1351).
+
+    `_ic_list` admits a part on its shape alone, so a resistor array of
+    pull-ups on +3V3 or an RGB LED whose common anode sits on +3V3 was "the
+    IC it decouples": on rp2350 C25 graded 2.54 mm from RN1 and C22 clean at
+    0.97 mm from it, while the nearest real IC on the rail (U2) is 4.85 mm
+    from C22. A part that `infer_role` calls a resistor, a diode or an LED,
+    or that is a resistor network (`_RESISTOR_NETWORK_*`), is not one --
+    UNLESS a pin of it is a supply pin by its symbol (`_draws_supply`) or
+    its name says it is an addressable LED (`_ADDRESSABLE_LED`). That
+    exception is what keeps an addressable LED an owner: an SK6812 or
+    WS2812 is a `D`/`LED` part with a VDD pin its datasheet puts a cap at.
+
+    Measured over the stress corpus (~470 boards), the shape test admits
+    1155 such parts on 140 boards. 757 are dropped: RGB and bicolour LEDs,
+    resistor arrays (`R_Array_*`, `R_Cat16-*`), Kelvin shunts, ESD arrays
+    (USBLC6, SP0503, PESD), bridge rectifiers; 171 of them on 67 boards
+    carry a net some decoupling cap is on. The 398 kept are the
+    addressable LEDs (SK68xx, WS28xx, APA102/104, one on an RGB 5050
+    footprint) and apple1_mainboard's DIP ICs, whose grid references read
+    as `D`. The one known miss is an IC filed under `D` with no pin
+    metadata (fsae_custom_bms's SM91502 LED drivers). `capacitor` is
+    deliberately not a role here: apple1_mainboard references its other
+    ICs `C1`, `C10`, ..."""
+    fp = (pcb_data.footprints or {}).get(ref)
+    if fp is None:
+        return None
+    from .roles import infer_role, _norm
+    role = infer_role(fp, ref, None)['role']
+    name = getattr(fp, 'footprint_name', '') or ''
+    item = name.split(':')[-1]
+    if role not in _PASSIVE_ROLES:
+        if not (_RESISTOR_NETWORK_REF.match(ref)
+                or _RESISTOR_NETWORK_FP.search(item)):
+            return None
+        role = 'resistor network'
+    if _draws_supply(pcb_data, fp):
+        return None
+    if _ADDRESSABLE_LED.search(_norm(name) + ' ' + _norm(getattr(fp, 'value', '') or '')):
+        return None
+    return f"role {role} with no supply pin"
+
+
 def _ic_list(pcb_data):
     """The ChipBoundary objects of the parts that are ICs by SHAPE: >= 4
-    copper pads, not a row. `_chip_list` adds the supply owners to them."""
+    copper pads, not a row, and not a passive by role (`passive_by_role`).
+    `_chip_list` adds the supply owners to them."""
     from chip_boundary import build_chip_list
     return [c for c in build_chip_list(_pads_view(pcb_data),
                                        min_pads=DECAP_MIN_IC_PADS)
             if not _pads_are_collinear(pcb_data.footprints.get(c.reference))
             and _copper_pads(pcb_data.footprints.get(c.reference))
-            >= DECAP_MIN_IC_PADS]
+            >= DECAP_MIN_IC_PADS
+            and passive_by_role(pcb_data, c.reference) is None]
 
 
 #: A supply owner that is not an IC by shape has at least this many copper

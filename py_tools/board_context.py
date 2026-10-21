@@ -473,8 +473,8 @@ def _emc_md(sec) -> List[str]:
         L += [f"NOT MEASURED ({sec['error']}).", '']
         return L
     if not sec.get('roles'):
-        L += ['No switching converter, crystal, oscillator or ESD array is '
-              'named by the pins or the role table here.', '']
+        L += ['No switching converter, crystal, oscillator, ESD array or '
+              'ESD diode is named by the pins or the role table here.', '']
         return L
     L += [sec.get('note', ''), '', f"Legs: {sec.get('basis', '')}.", '']
     for r in sec['roles']:
