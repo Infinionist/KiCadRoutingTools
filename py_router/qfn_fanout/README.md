@@ -20,6 +20,15 @@ Creates escape routing for QFN (Quad Flat No-leads) and QFP (Quad Flat Package) 
   (two RP2040s, pin rows 1.7 mm apart) the second chip's USB pair could not escape
   in one order and coupled in the other. The result is now the same in either
   order (`tests/test_qfn_neighbour_escape_room.py`).
+- **A stub ends on a same-net pad it reaches** (#1332) - every clearance test skips
+  same-net pads, so a fan could clip its pin's own decoupling cap and run on past it,
+  leaving a dangling tail route.py keeps as input copper. Each stub is now walked
+  against the exact pad copper and ends at its deepest contact with the first
+  same-net pad it overlaps. If that contact joins through a web below the board's
+  connection-width floor (a corner graze), a short closing segment runs into the
+  pad -- the same connector close_soft_joints adds (#416), decided by the same
+  KiCad-exact erosion -- and only if it clears every foreign object. Such a stub has
+  no tip for the router to launch from, so it is left out of the endpoint check.
 - **Collision validation** - Checks endpoint spacing after generation
 - **Pad-geometry sanity check** - Runs `check_pads.py` on the component first; if its pads
   overlap (a sign the pad rotation/size is modelled wrong) it warns before escaping.

@@ -190,6 +190,155 @@ def check_endpoint_spacing(stubs: List[FanoutStub], min_spacing: float) -> List[
     return collisions
 
 
+def _terminal_web_target(pcb_data, net_id, layer, legs, q, prev, pad, r, floor):
+    """The point inside `pad` that a connector from the stub's new tip `q`
+    must reach so the joint is a floor-width web -- or None when the joint
+    already is one (#1332). This is close_soft_joints' terminal-web repair
+    (#416), asked before the copper ships rather than after: the same
+    closed-form pre-filter, confirmed by the same KiCad-exact erosion
+    (`terminal_web_neck_exact`, run over the net's existing copper plus this
+    stub's `legs`), and the same target. `prev` is the stub vertex before
+    `q`; `floor` the connection-width floor the board ships graded at."""
+    from types import SimpleNamespace
+    from pcb_modification import (terminal_pad_web_shortfall,
+                                  circular_pad_web_shortfall, _is_round_pad,
+                                  terminal_web_neck_exact)
+    from routing_utils import _to_pad_frame
+    e = floor / 2.0
+    if floor <= 0 or r < e - 1e-9:
+        return None          # no floor-width web can exist through this track
+    if getattr(pad, 'shape', None) not in ('rect', 'roundrect', 'oval', 'circle') \
+            or not pad.size_x or not pad.size_y:
+        return None          # custom-polygon pads have no closed-form web
+    elx, ely = _to_pad_frame(q[0], q[1], pad)
+    nlx, nly = _to_pad_frame(prev[0], prev[1], pad)
+    if _is_round_pad(pad):
+        is_neck, tloc = circular_pad_web_shortfall(elx, ely, pad.size_x / 2.0,
+                                                   r, e)
+    else:
+        is_neck, tloc = terminal_pad_web_shortfall(
+            nlx, nly, elx, ely, pad.size_x / 2.0, pad.size_y / 2.0, r, e)
+    if not is_neck:
+        return None
+    view = SimpleNamespace(
+        segments=[s for s in pcb_data.segments
+                  if s.net_id == net_id and s.layer == layer]
+        + [SimpleNamespace(start_x=a[0], start_y=a[1], end_x=b[0], end_y=b[1],
+                           width=2.0 * r, layer=layer, net_id=net_id)
+           for a, b in legs],
+        pads_by_net=pcb_data.pads_by_net)
+    if terminal_web_neck_exact(view, net_id, layer, q[0], q[1], floor) is False:
+        return None
+    tlx, tly = tloc
+    rad = math.radians(getattr(pad, 'rect_rotation', 0.0) or 0.0)
+    cc, sn = math.cos(rad), math.sin(rad)
+    bx = round(pad.global_x + tlx * cc - tly * sn, 4)
+    by = round(pad.global_y + tlx * sn + tly * cc, 4)
+    if math.hypot(bx - q[0], by - q[1]) < 1e-4:
+        return None
+    return (bx, by)
+
+
+def _end_stubs_at_same_net_pads(stubs: List[FanoutStub], pads, track_width: float,
+                                seg_grazes, pcb_data, floor: float,
+                                step: float = 0.005) -> int:
+    """End every stub at the first SAME-NET pad its copper reaches (#1332).
+
+    The stub geometry and every clearance test before this skip same-net
+    pads, so a fan could clip a same-net pad (a pin's own decoupling cap
+    beside it) and run on past it; the copper beyond the contact is a
+    dangling tail that route.py keeps as input copper. Here each stub's path
+    (pad -> corner -> tip) is walked in `step` samples against the exact pad
+    copper (`check_drc.point_to_pad_distance`: roundrect corners, rotation,
+    custom polygons). At the first sample where the stub's copper overlaps a
+    same-net pad -- centreline within half a track width of it -- the stub
+    is followed to its DEEPEST point of that contact and ends there.
+
+    A corner graze (steppenprobe C11.1: overlap ~0.04 mm on a roundrect
+    corner) joins through a web thinner than the board's connection-width
+    floor, which check_weird reports as narrow-pad-joint. When
+    `_terminal_web_target` finds one, a closing segment runs from the tip
+    into the pad, exactly as close_soft_joints would add it; it is tested
+    with `seg_grazes` (the caller's foreign-copper/edge test) and omitted if
+    it grazes anything, leaving the overlap as the joint.
+
+    The stub's own pad -- any same-net pad its START already touches -- is
+    where it comes from, not where it arrives, and is ignored. Returns the
+    number of stubs changed; each carries `joined_pad` ("REF.PAD").
+    """
+    from check_drc import point_to_pad_distance
+    from geometry_utils import point_to_segment_distance
+    half_w = track_width / 2.0
+    touch = half_w - 1e-6
+    changed = 0
+    for stub in stubs:
+        nid = stub.net_id
+        if not nid:
+            continue
+        legs = [(stub.pad_pos, stub.corner_pos), (stub.corner_pos, stub.stub_end)]
+        x0, y0 = stub.pad_pos
+        cands = []
+        for p in pads:
+            if p.net_id != nid or p.pad_type == 'np_thru_hole':
+                continue
+            if not (p.drill and p.drill > 0) and stub.layer not in (p.layers or []):
+                continue
+            reach = 0.5 * math.hypot(p.size_x or 0.0, p.size_y or 0.0) + half_w
+            if all(point_to_segment_distance(p.global_x, p.global_y,
+                                             a[0], a[1], b[0], b[1]) > reach
+                   for a, b in legs):
+                continue
+            if point_to_pad_distance(x0, y0, p) < touch:
+                continue
+            cands.append(p)
+        if not cands:
+            continue
+
+        def _samples():
+            for li, (a, b) in enumerate(legs):
+                n = max(1, int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1])
+                                         / step)))
+                for k in range(n + 1):
+                    t = k / n
+                    yield li, (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+        hit = best = None
+        for li, (x, y) in _samples():
+            if hit is None:
+                for p in cands:
+                    d = point_to_pad_distance(x, y, p)
+                    if d < touch:
+                        hit = p
+                        best = (d, math.hypot(x - p.global_x, y - p.global_y),
+                                li, (x, y))
+                        break
+                continue
+            d = point_to_pad_distance(x, y, hit)
+            if d >= touch:
+                break
+            key = (d, math.hypot(x - hit.global_x, y - hit.global_y))
+            if key < best[:2]:
+                best = key + (li, (x, y))
+        if hit is None:
+            continue
+        _d, _dc, li, q = best
+        if li == 0:
+            stub.corner_pos = q
+        stub.stub_end = q
+        stub.joined_pad = f"{hit.component_ref}.{hit.pad_number}"
+        kept = ([(stub.pad_pos, q)] if li == 0
+                else [(stub.pad_pos, stub.corner_pos), (stub.corner_pos, q)])
+        kept = [(a, b) for a, b in kept
+                if math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-6]
+        prev = kept[-1][0] if kept else stub.pad_pos
+        target = _terminal_web_target(pcb_data, nid, stub.layer, kept, q, prev,
+                                      hit, half_w, floor)
+        if target is not None and not seg_grazes(q, target, nid):
+            stub.join_end = target
+        changed += 1
+    return changed
+
+
 def _board_edge_model(pcb_data, clearance, board_edge_clearance):
     """Edge.Cuts keep-out for fanout copper (issue #288, picodvi's 0.04mm
     board-edge graze -- qfn_fanout had no edge model at all). Returns
@@ -1638,6 +1787,21 @@ def generate_qfn_fanout(footprint: Footprint,
               f"dropped {len(qfn_dropped)} stub(s) grazing a foreign pad (issue #123)")
     stubs = kept_stubs
 
+    # A stub that REACHES a same-net pad ends there (#1332). Every check above
+    # skips same-net pads, so a fan that clips its own decoupling cap's pad
+    # (steppenprobe U1.64 +1V8 over C11.1) ran on past it, and the copper
+    # beyond the contact shipped as a dangling tail: route.py keeps input
+    # copper, so nothing trimmed it.
+    from fix_kicad_drc_settings import connection_width_floor
+    n_joined = _end_stubs_at_same_net_pads(
+        stubs, foreign_pads, track_width, _seg_grazes, pcb_data,
+        connection_width_floor(pcb_data, track_width, shipped=True) or 0.1)
+    if n_joined:
+        print(f"  Same-net pads: {n_joined} stub(s) end on a same-net pad they "
+              f"reach (#1332): "
+              + ', '.join(f'{s.pad.net_name} at {s.joined_pad}'
+                          for s in stubs if s.joined_pad)[:300])
+
     # Generate tracks - two segments per stub
     tracks = []
     for stub in stubs:
@@ -1660,6 +1824,17 @@ def generate_qfn_fanout(footprint: Footprint,
             tracks.append({
                 'start': stub.corner_pos,
                 'end': stub.stub_end,
+                'width': track_width,
+                'layer': stub.layer,
+                'net_id': stub.net_id
+            })
+
+        # Segment 3 (#1332): close a corner-graze contact into the same-net
+        # pad the stub ends on.
+        if stub.join_end is not None:
+            tracks.append({
+                'start': stub.stub_end,
+                'end': stub.join_end,
                 'width': track_width,
                 'layer': stub.layer,
                 'net_id': stub.net_id
@@ -1689,21 +1864,24 @@ def generate_qfn_fanout(footprint: Footprint,
         print(f"  Suggested: route.py --grid-step 0.05 --clearance {suggest_clear:.2f} "
               f"--track-width {track_width:.2f} for this component's nets.")
 
-    # Validate endpoint spacing
+    # Validate endpoint spacing. A stub that ends on a same-net pad (#1332)
+    # has no tip for the router to launch from -- its net continues from that
+    # pad, which every other stub already clears -- so it is not checked.
     min_spacing = track_width + extension
-    collisions = check_endpoint_spacing(stubs, min_spacing)
+    _tips = [s for s in stubs if not s.joined_pad]
+    collisions = check_endpoint_spacing(_tips, min_spacing)
 
     failed_nets: List[str] = list(qfn_dropped)
     if collisions:
         print(f"  WARNING: {len(collisions)} endpoint pairs too close!")
         for i, j, dist in collisions[:5]:
-            print(f"    {stubs[i].pad.net_name} <-> {stubs[j].pad.net_name}: {dist:.3f}mm")
+            print(f"    {_tips[i].pad.net_name} <-> {_tips[j].pad.net_name}: {dist:.3f}mm")
         print(f"  Consider increasing extension")
         # Collect the deduplicated set of nets involved in any collision -
         # these are the "failed" nets the GUI surfaces.
         seen = set()
         for i, j, _dist in collisions:
-            for name in (stubs[i].pad.net_name, stubs[j].pad.net_name):
+            for name in (_tips[i].pad.net_name, _tips[j].pad.net_name):
                 if name and name not in seen:
                     seen.add(name)
                     failed_nets.append(name)
