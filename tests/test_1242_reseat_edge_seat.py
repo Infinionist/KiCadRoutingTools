@@ -44,7 +44,9 @@ SONDE = os.path.join(ROOT, 'kicad_files', 'sonde_u.kicad_pcb')
 CLAIM = {'ref': 'J2', 'edge': 'east', 'class': 'edge_receptacle',
          'overhang_mm': {'min': 0.0, 'max': 15.15}}
 #: Where `--repair` seats the reversed J2 (#1242's recipe), and so must this.
-REPAIRED = (174.535, 90.119, 270.0)
+#: sonde_u has no project, so its edge clearance is unset: 0.2 fab floor since
+#: #1301 (gate margin max(0.25, 0.2)), 0.3 mm further out than at the old 0.55.
+REPAIRED = (174.835, 90.119, 270.0)
 
 
 def _reversed(td, x):
