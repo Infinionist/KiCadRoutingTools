@@ -224,7 +224,8 @@ def _route_jog_clears_pads(route: 'FanoutRoute', obstacles, cfg,
 def clear_escapes_of_foreign_pads(routes: List['FanoutRoute'], tracks: List[Dict],
                                   grid: 'BGAGrid', track_width: float, clearance: float,
                                   foreign_pads, layer_map: Dict[str, int],
-                                  net_names: Dict[int, str] = None):
+                                  net_names: Dict[int, str] = None,
+                                  dropped_routes: Optional[List] = None):
     """Make axial escapes clear breakout-region foreign pads without rerouting.
 
     The pad-aware repair triggers only on true crossings (deliberately, to keep
@@ -241,7 +242,9 @@ def clear_escapes_of_foreign_pads(routes: List['FanoutRoute'], tracks: List[Dict
          component nudge is needed).
 
     Returns (n_fixed, dropped_net_names). Diff-pair legs are handled per-leg;
-    dropping one leg is left to the caller's diff-pair handling.
+    dropping one leg is left to the caller's diff-pair handling. The dropped
+    ROUTES are appended to `dropped_routes` when given: a name is not a route
+    on a multi-ball net.
     """
     if not foreign_pads:
         return 0, []
@@ -302,6 +305,8 @@ def clear_escapes_of_foreign_pads(routes: List['FanoutRoute'], tracks: List[Dict
             route.exit_pos, route.jog_end = saved_exit, saved_jog
             route.jog_extension, route.stub_end = saved_ext, saved_stub
 
+        if dropped_routes is not None:
+            dropped_routes.append(route)
         nm = net_names.get(route.net_id) or (route.pad.net_name if route.pad else None)
         if nm and nm not in dropped:
             dropped.append(nm)

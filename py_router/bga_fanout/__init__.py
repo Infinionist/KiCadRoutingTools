@@ -4112,17 +4112,15 @@ def _generate_bga_fanout_core(footprint: Footprint,
         # (#253) are dropped: without the via their inner-layer copper is
         # disconnected decoration. Remove their tracks and report the nets as
         # failed so the main router picks them up from the bare ball.
-        # #508 finding 6 coherence: the net's OTHER balls' routes are dropped
-        # WITH their tracks (the old code removed tracks net-wide but left
-        # the sibling routes in `routes` -- still counted escaped, shipping
-        # via-in-pad balls with no track).
+        # #508 finding 6: THOSE routes, tracks and all. The blocked via is one
+        # ball's; the net's other balls keep their own vias and escapes (this
+        # used to drop every route of the net, a whole rail for one ball).
         if via_blocked_routes:
             from bga_fanout.reroute import _remove_route_tracks
-            blocked_net_ids = {r.net_id for r in via_blocked_routes}
-            for r in routes:
-                if r.net_id in blocked_net_ids:
-                    _remove_route_tracks(tracks, r)
-            routes = [r for r in routes if r.net_id not in blocked_net_ids]
+            for r in via_blocked_routes:
+                _remove_route_tracks(tracks, r)
+            _blk = {id(r) for r in via_blocked_routes}
+            routes = [r for r in routes if id(r) not in _blk]
             for r in via_blocked_routes:
                 name = r.pad.net_name or f"net{r.net_id}"
                 if name not in failed_nets:
@@ -4211,12 +4209,10 @@ def _generate_bga_fanout_core(footprint: Footprint,
             hole_to_hole_clearance=hole_to_hole_clearance)
         if _reblocked:
             from bga_fanout.reroute import _remove_route_tracks
-            _rb_net_ids = {r.net_id for r in _reblocked}
-            for r in best_routes:
-                if r.net_id in _rb_net_ids:
-                    _remove_route_tracks(tracks, r)
-            best_routes[:] = [r for r in best_routes
-                              if r.net_id not in _rb_net_ids]
+            for r in _reblocked:            # those routes only (#508 finding 6)
+                _remove_route_tracks(tracks, r)
+            _rb = {id(r) for r in _reblocked}
+            best_routes[:] = [r for r in best_routes if id(r) not in _rb]
             for r in _reblocked:
                 name = r.pad.net_name or f"net{r.net_id}"
                 if name not in failed_nets:
@@ -4229,17 +4225,34 @@ def _generate_bga_fanout_core(footprint: Footprint,
     # breakout-region passive within clearance. Trim the decorative jog and/or
     # shorten the escape (without pulling its free end inside the BGA zone) to
     # clear the pad; if even the minimum escape grazes, drop the ball and warn.
+    from bga_fanout.reroute import _remove_route_tracks
+
+    def _drop_escape(r):
+        """Take ONE ball's escape off the board: its route's tracks, its
+        via-in-pad (manage_vias puts it at the route's pad) and the route
+        (#508 finding 6). These drops used to go by NET, so one ball took
+        every escape of a multi-ball rail with it while the rail's routes
+        stayed in best_routes as escaped."""
+        _remove_route_tracks(tracks, r)
+        vias_to_add[:] = [v for v in vias_to_add
+                          if not (v['net_id'] == r.net_id
+                                  and abs(v['x'] - r.pad_pos[0]) < 1e-6
+                                  and abs(v['y'] - r.pad_pos[1]) < 1e-6)]
+        if r in best_routes:
+            best_routes.remove(r)
+
     esc_net_name = {r.net_id: r.pad.net_name for r in best_routes if r.pad.net_name}
+    _esc_routes: List = []
     n_escfix, esc_dropped = clear_escapes_of_foreign_pads(
         best_routes, tracks, grid, track_width, clearance,
-        foreign_pads, obstacle_layer_map, esc_net_name)
+        foreign_pads, obstacle_layer_map, esc_net_name,
+        dropped_routes=_esc_routes)
     if n_escfix:
         print(f"  Pad-clearance: cleared {n_escfix} escape(s) grazing a foreign "
               f"pad by jog-trim/shorten (issue #123)")
     if esc_dropped:
-        drop_ids = {nid for nid, nm in esc_net_name.items() if nm in esc_dropped}
-        tracks[:] = [t for t in tracks if t['net_id'] not in drop_ids]
-        vias_to_add[:] = [v for v in vias_to_add if v['net_id'] not in drop_ids]
+        for r in _esc_routes:
+            _drop_escape(r)
         for nm in esc_dropped:
             if nm not in failed_nets:
                 failed_nets.append(nm)
@@ -4259,7 +4272,7 @@ def _generate_bga_fanout_core(footprint: Footprint,
     from geometry_utils import point_to_segment_distance
     via_net_name = {r.net_id: r.pad.net_name for r in best_routes if r.pad.net_name}
     via_clear_tol = 0.02
-    via_drop_ids = set()
+    via_drop = []
     for via in vias_to_add:
         vr = via['size'] / 2
         for t in tracks:
@@ -4269,16 +4282,26 @@ def _generate_bga_fanout_core(footprint: Footprint,
                                           t['start'][0], t['start'][1],
                                           t['end'][0], t['end'][1])
             if d < vr + clearance + t['width'] / 2 - via_clear_tol:
-                via_drop_ids.add(via['net_id'])
+                via_drop.append(via)
                 break
-    if via_drop_ids:
-        tracks[:] = [t for t in tracks if t['net_id'] not in via_drop_ids]
-        vias_to_add[:] = [v for v in vias_to_add if v['net_id'] not in via_drop_ids]
-        for nid in via_drop_ids:
-            nm = via_net_name.get(nid)
+    if via_drop:
+        # Drop THAT ball's escape -- its via and its route's tracks -- and the
+        # route with it (#508 finding 6). This used to drop by NET: one ball's
+        # via took every escape of a multi-ball rail with it, while the rail's
+        # routes stayed in best_routes as escaped. A via sits at its route's
+        # pad (manage_vias), which is how it finds its route.
+        _dropped = {id(v) for v in via_drop}
+        for via in via_drop:
+            r = next((r for r in best_routes if r.net_id == via['net_id']
+                      and abs(r.pad_pos[0] - via['x']) < 1e-6
+                      and abs(r.pad_pos[1] - via['y']) < 1e-6), None)
+            if r is not None:
+                _drop_escape(r)
+            nm = via_net_name.get(via['net_id'])
             if nm and nm not in failed_nets:
                 failed_nets.append(nm)
-        print(f"  Via-clearance: dropped {len(via_drop_ids)} ball(s) whose via "
+        vias_to_add[:] = [v for v in vias_to_add if id(v) not in _dropped]
+        print(f"  Via-clearance: dropped {len(via_drop)} ball(s) whose via "
               f"would short a foreign track (issue #123); retry with smaller "
               f"--via-size / --track-width / --clearance")
 
