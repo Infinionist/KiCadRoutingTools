@@ -85,11 +85,13 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
 - **Ask for the EMC rows the board cannot state.** Run
   `python3 -X utf8 py_tools/board_context.py <board> --json -o <ctx.json>`
   and read `emc_roles.roles`: each converter, crystal, oscillator and ESD
-  array its pin functions name, every leg measured pad edge to pad edge, and
-  a ready `proximity` row with `max_mm` left null. Ask the user for the
-  limits (crystal to its load pins, input cap to the regulator's VIN and
-  PGND, inductor to SW, ESD array to its connector), put the rows in the
-  brief's or the intent's `proximity`, and report which you were given. Ask
+  array its pin functions name, each discrete ESD/TVS diode at the one
+  connector its line reaches (`esd diode`), every leg measured pad edge to
+  pad edge, and a ready `proximity` row with `max_mm` left null. Ask the
+  user for the limits (crystal to its load pins, input cap to the
+  regulator's VIN and PGND, inductor to SW, ESD array or diode to its
+  connector), put the rows in the brief's or the intent's `proximity`, and
+  report which you were given. Ask
   in the same breath about `emc_roles.keep_away`: per crystal or oscillator,
   a rule keeping its clock nets away from every switch node, with its
   measured gap and a `brief_row` ready to paste into the brief's
