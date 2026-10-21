@@ -269,10 +269,34 @@ How to read it:
 
 ## Step 4: Differential Pair Review
 
-For each differential pair (from `list_nets.py --diff-pairs`):
+Read each pair off its **copper**, never off the router's word for it (#1303).
+`board_score.py` (Step 5's run) carries a `diff_pairs` component that measures
+every pair KiCad recognises as KiCad's DRC does: coupled and uncoupled length
+(`net_queries.diff_pair_coupling`), the layers each member uses, and the P/N
+skew (`net_queries.diff_pair_skew`). Its console line names the largest skews
+and any pair with **NO COUPLED COPPER** -- P and N never run side by side,
+which is what a pair whose members took separate layers looks like (imx6ulz
+DQS0: P on In2.Cu, N on B.Cu, 0 mm coupled, 4.5 mm skew, while route_diff
+called it coupled). In Python:
 
-- **Gap consistency**: sample parallel P/N segment pairs on the same layer and confirm the spacing matches the design gap.
-- **Intra-pair skew**: compare P and N lengths; flag pairs differing by more than ~0.5mm if intra-pair matching was expected.
+```python
+from net_queries import diff_pair_copper
+rec = diff_pair_copper(pcb, p_id, n_id)   # coupled_mm, uncoupled_mm, skew_mm, layers_p/_n
+```
+
+- **Coupling**: a pair the plan routed coupled must show coupled copper. In a
+  route_diff log, `JSON_SUMMARY.uncoupled_diff_pairs` (outcome `uncoupled`)
+  lists pairs routed whose shipped copper is not coupled -- route_diff no longer
+  counts them routed or protects them, so the next step may reroute them.
+- **Skew / uncoupled length against the spec**: a `.kicad_dru` `skew` rule
+  (`(within_diff_pairs)` for P against N) or `diff_pair_uncoupled` rule is
+  graded by `check_drc.py` (`SKEW-OUT-OF-RANGE`, `DIFF-PAIR-UNCOUPLED`, KiCad's
+  `skew_out_of_range` / `diff_pair_uncoupled_length_too_long`) and counted in
+  board_score's `diff_pairs`. With no such rule the component is UNGRADED --
+  report the measured skews, and flag pairs differing by more than ~0.5mm if
+  intra-pair matching was expected. An intra-pair status in a route_diff log is
+  read off the shipped copper too (`intra_pair_matching[].delta_mm`; the
+  matcher's own number is `matcher_delta_mm`).
 - **Polarity swaps**: if the routing logs (or the user) indicate pad swaps were applied, remind that the schematic may be out of sync and `--schematic-dir` can update it.
 
 ## Step 5: The Sign-Off Report

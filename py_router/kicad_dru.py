@@ -416,22 +416,38 @@ def read_board_track_clearances(board_path: str) -> Tuple[List[TrackRule], List[
 # it, check_drc and board_score read a board clean that KiCad failed 8 times.
 #
 # Honoured conditions: none (every net), or `||`-joined terms each of which is
-# `A.NetClass == 'X'`, `A.NetName == 'X'` or `A.hasNetclass('X')`. KiCad's
-# string `==` matches `*` / `?` wildcards case-insensitively (libeval
-# VALUE::EqualTo -> WildCompareString), so these do too. NetClass is read as
-# membership, as the track channel reads it. Anything else -- another
-# predicate, `&&`, a (layer ..) clause -- is kept as an UNSUPPORTED rule with
-# its reason, never dropped: a grader must say what it did not grade.
+# `A.NetClass == 'X'`, `A.NetName == 'X'`, `A.hasNetclass('X')` or
+# `A.inDiffPair('X')`. KiCad's string `==` matches `*` / `?` wildcards
+# case-insensitively (libeval VALUE::EqualTo -> WildCompareString), so these
+# do too. NetClass is read as membership, as the track channel reads it.
+# inDiffPair is KiCad's inDiffPairFunc (#1303): the net has a MatchDpSuffix
+# complement that exists on the board, and its base name -- or the base
+# without its trailing '_' -- matches X with wxString::Matches, which is
+# case-SENSITIVE. Anything else -- another predicate, `&&`, a (layer ..)
+# clause, a time-domain bound -- is kept as an UNSUPPORTED rule with its
+# reason, never dropped: a grader must say what it did not grade.
+#
+# The same channel carries the diff-pair constraints (#1303), selected with
+# `kinds`: `skew` (KiCad's skew_out_of_range, with its `within_diff_pairs`
+# option) and `diff_pair_uncoupled` (diff_pair_uncoupled_length_too_long).
+# check_drc grades both; each kind is its own rule list, because KiCad picks
+# the binding rule per constraint type.
 _LEN_TERM = re.compile(
     r"^A\s*\.\s*(?:(NetClass|NetName)\s*==\s*['\"]([^'\"]*)['\"]"
-    r"|(hasNetclass)\s*\(\s*['\"]([^'\"]*)['\"]\s*\))$")
+    r"|(hasNetclass|inDiffPair)\s*\(\s*['\"]([^'\"]*)['\"]\s*\))$")
+_TIME_VAL = re.compile(r"^-?[0-9.]+\s*(fs|ps|ns|us|s)$")
+#: The constraint kinds this channel reads.
+LENGTH_KINDS = ('length', 'skew', 'diff_pair_uncoupled')
 
 
 class LengthRule(NamedTuple):
-    """One `length` constraint. `terms` is a tuple of ('netclass'|'netname',
+    """One `length` (or, by `kind`, `skew` / `diff_pair_uncoupled`)
+    constraint. `terms` is a tuple of ('netclass'|'netname'|'indiffpair',
     pattern) alternatives -- () for an unconditioned rule (every net) -- or
     None when the scope is outside the honoured subset, with the reason in
-    `unsupported`. Bounds are mm; a missing bound is None."""
+    `unsupported`. Bounds are mm; a missing bound is None.
+    `within_diff_pairs` is the skew option: grade each pair's P against its
+    own N instead of every bound net against the longest."""
     name: str
     min_mm: Optional[float]
     opt_mm: Optional[float]
@@ -439,6 +455,8 @@ class LengthRule(NamedTuple):
     terms: Optional[Tuple[Tuple[str, str], ...]]
     unsupported: str = ''
     severity: str = 'error'
+    kind: str = 'length'
+    within_diff_pairs: bool = False
 
 
 def _parse_length_condition(expr: Optional[str]):
@@ -457,22 +475,31 @@ def _parse_length_condition(expr: Optional[str]):
             return None, f"condition term {raw.strip()!r} is not modelled"
         if m.group(1) == 'NetName':
             terms.append(('netname', m.group(2)))
+        elif m.group(3) == 'inDiffPair':
+            terms.append(('indiffpair', m.group(4)))
         else:
             terms.append(('netclass', m.group(2) if m.group(1) else m.group(4)))
     return tuple(terms), ''
 
 
-def parse_dru_length_rules(text: str) -> Tuple[List[LengthRule], List[str]]:
-    """Every `length` constraint in .kicad_dru text, in FILE order, and notes.
-    A `(severity ignore)` rule is dropped with a note (KiCad grades nothing
-    there); every other rule is returned, honoured or not."""
+_KIND_NOUN = {'length': 'length window', 'skew': 'skew window',
+              'diff_pair_uncoupled': 'max uncoupled length'}
+
+
+def parse_dru_length_rules(text: str, kinds=('length',)
+                           ) -> Tuple[List[LengthRule], List[str]]:
+    """Every constraint of `kinds` (default `length` alone, #1313) in
+    .kicad_dru text, in FILE order, and notes. A rule carrying several of the
+    kinds gives one entry per kind. A `(severity ignore)` rule is dropped with
+    a note (KiCad grades nothing there); every other rule is returned,
+    honoured or not."""
     rules: List[LengthRule] = []
     notes: List[str] = []
     for node in _parse_nodes(_tokenize(text)):
         if not isinstance(node, list) or not node or node[0] != "rule":
             continue
         name = node[1] if len(node) > 1 and not isinstance(node[1], list) else "?"
-        bounds = None
+        found = []                  # (kind, bounds, within_diff_pairs, time-valued)
         condition = None
         layer_clause = None
         severity = 'error'
@@ -485,27 +512,39 @@ def parse_dru_length_rules(text: str) -> Tuple[List[LengthRule], List[str]]:
                 condition = item[1]
             elif item[0] == "layer":
                 layer_clause = item[1] if len(item) >= 2 else ''
-            elif item[0] == "constraint" and len(item) >= 2 and item[1] == "length":
-                bounds = {}
+            elif item[0] == "constraint" and len(item) >= 2 and item[1] in kinds:
+                bounds, within, timed = {}, False, False
                 for sub in item[2:]:
                     if isinstance(sub, list) and len(sub) >= 2 \
                             and sub[0] in ('min', 'opt', 'max'):
                         bounds[sub[0]] = _to_mm(sub[1])
-        if bounds is None:
+                        timed = timed or bool(_TIME_VAL.match(str(sub[1]).strip()))
+                    elif isinstance(sub, list) and sub and sub[0] == 'within_diff_pairs':
+                        within = True
+                found.append((item[1], bounds, within, timed))
+        if not found:
             continue
         if severity == 'ignore':
-            notes.append(f"rule '{name}': length window, severity ignore -- skipped")
+            for kind, _b, _w, _t in found:
+                notes.append(f"rule '{name}': {_KIND_NOUN.get(kind, kind)}, "
+                             f"severity ignore -- skipped")
             continue
         terms, why = _parse_length_condition(condition)
         if layer_clause is not None and terms is not None:
             terms, why = None, f"a (layer {layer_clause}) clause is not modelled"
-        rules.append(LengthRule(str(name), bounds.get('min'), bounds.get('opt'),
-                                bounds.get('max'), terms, why, severity))
+        for kind, bounds, within, timed in found:
+            t, w = terms, why
+            if timed and t is not None:
+                t, w = None, "a time-domain bound (ps/ns) is not modelled"
+            rules.append(LengthRule(str(name), bounds.get('min'), bounds.get('opt'),
+                                    bounds.get('max'), t, w, severity, kind, within))
     return rules, notes
 
 
-def read_board_length_rules(board_path: str) -> Tuple[List[LengthRule], List[str]]:
-    """Auto-read the sibling ``<board>.kicad_dru`` length windows (#1313).
+def read_board_length_rules(board_path: str, kinds=('length',)
+                            ) -> Tuple[List[LengthRule], List[str]]:
+    """Auto-read the sibling ``<board>.kicad_dru`` length windows (#1313) --
+    or, by `kinds`, its skew / diff_pair_uncoupled rules (#1303).
     ([], []) when there is no dru file."""
     dru = os.path.splitext(board_path)[0] + ".kicad_dru" if board_path else ""
     if not dru or not os.path.isfile(dru):
@@ -514,13 +553,16 @@ def read_board_length_rules(board_path: str) -> Tuple[List[LengthRule], List[str
         text = open(dru, encoding="utf-8").read()
     except OSError as e:
         return [], [f"could not read {dru}: {e}"]
-    return parse_dru_length_rules(text)
+    return parse_dru_length_rules(text, kinds)
 
 
-def length_rule_matches(rule: LengthRule, net_name: str, classes) -> Optional[bool]:
+def length_rule_matches(rule: LengthRule, net_name: str, classes,
+                        net_names=None) -> Optional[bool]:
     """Does `rule` bind the net? None when its scope is not modelled (the
     caller cannot know). `classes` is the net's class memberships; a net with
-    none is in Default."""
+    none is in Default. `net_names` (every net name on the board) lets an
+    inDiffPair term require the complement net to exist, as KiCad does;
+    without it the complement is taken as present."""
     if rule.terms is None:
         return None
     if not rule.terms:
@@ -530,9 +572,34 @@ def length_rule_matches(rule: LengthRule, net_name: str, classes) -> Optional[bo
         if kind == 'netname':
             if _kicad_wild_eq(pat, net_name or ''):
                 return True
+        elif kind == 'indiffpair':
+            if in_diff_pair(net_name or '', pat, net_names):
+                return True
         elif any(_kicad_wild_eq(pat, c) for c in cls):
             return True
     return False
+
+
+def in_diff_pair(net_name: str, pattern: str, net_names=None) -> bool:
+    """KiCad's `A.inDiffPair('pattern')` (pcbexpr_functions.cpp
+    inDiffPairFunc, 10.0.0): the net has a MatchDpSuffix complement that
+    exists on the board, and its base name -- or, when the base ends in '_',
+    the base without it -- matches `pattern` with wxString::Matches (`*`/`?`,
+    case-sensitive)."""
+    from design_rules import match_dp_suffix
+    rv, comp, base = match_dp_suffix(net_name)
+    if not rv or (net_names is not None and comp not in net_names):
+        return False
+    if _wx_matches(pattern, base):
+        return True
+    return base.endswith('_') and _wx_matches(pattern, base[:-1])
+
+
+def _wx_matches(pattern: str, text: str) -> bool:
+    """wxString::Matches: `*` and `?` wildcards, case-sensitive."""
+    rx = ''.join('.*' if ch == '*' else '.' if ch == '?' else re.escape(ch)
+                 for ch in pattern)
+    return re.fullmatch(rx, text, re.DOTALL) is not None
 
 
 def _kicad_wild_eq(pattern: str, text: str) -> bool:
@@ -544,14 +611,15 @@ def _kicad_wild_eq(pattern: str, text: str) -> bool:
     return re.fullmatch(rx, text, re.IGNORECASE | re.DOTALL) is not None
 
 
-def binding_length_rule(rules: List[LengthRule], net_name: str, classes):
+def binding_length_rule(rules: List[LengthRule], net_name: str, classes,
+                        net_names=None):
     """The rule KiCad applies to the net: rules are evaluated LAST-to-first and
     the first match wins (as the layer channel reads them). Returns (rule,
     None), (None, None) when no rule binds, or (None, rule) when the walk
     reaches an unsupported rule first -- whether IT binds is unknown, so the
-    net cannot be graded."""
+    net cannot be graded. Pass the rules of ONE kind: KiCad picks per kind."""
     for r in reversed(rules):
-        m = length_rule_matches(r, net_name, classes)
+        m = length_rule_matches(r, net_name, classes, net_names)
         if m is None:
             return None, r
         if m:

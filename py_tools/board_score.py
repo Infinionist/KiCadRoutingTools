@@ -96,6 +96,12 @@ RULE_PAIR_TYPES = frozenset({'segment-segment-track-rule'})
 # counts in `blocking` (#1171).
 VIA_PASTE_TYPES = frozenset({'via-in-paste'})
 
+# #1303: a .kicad_dru skew or diff_pair_uncoupled rule a pair's copper breaks
+# (check_drc's pair-rule pass, KiCad's skew_out_of_range and
+# diff_pair_uncoupled_length_too_long). Split out of `drc` into the
+# `diff_pairs` component, which carries each pair's measurement beside them.
+PAIR_RULE_TYPES = frozenset({'skew-out-of-range', 'diff-pair-uncoupled'})
+
 _DRC_TOTAL = re.compile(r'^FOUND (\d+) DRC VIOLATIONS', re.M)
 # The per-type header carries an OPTIONAL suffix between the count and the
 # colon -- `PAD-PAD violations (40) -- 32 in CONTACT:` (check_drc.py's `_ct`,
@@ -791,12 +797,14 @@ def score_drc(root: str, board: str, clearance=None, sizes=None,
     size = {t: n for t, n in by_type.items() if t in SIZE_TYPES}
     rule = {t: n for t, n in by_type.items() if t in RULE_PAIR_TYPES}
     vip = {t: n for t, n in by_type.items() if t in VIA_PASTE_TYPES}
+    pairs = {t: n for t, n in by_type.items() if t in PAIR_RULE_TYPES}
     clear = {t: n for t, n in by_type.items()
              if t not in SIZE_TYPES and t not in RULE_PAIR_TYPES
-             and t not in VIA_PASTE_TYPES}
+             and t not in VIA_PASTE_TYPES and t not in PAIR_RULE_TYPES}
     return ({'ran': True, 'count': sum(clear.values()), 'by_type': clear,
              'graded_at': _graded_at(out),
              'graphic_grazes_unverified': _unverified_grazes(out),
+             'pair_rules': pairs,
              'via_in_paste': {'ran': True, 'count': sum(vip.values()), 'by_type': vip,
                               'undeclarable': _undeclarable_vias(out)}},
             {'ran': True, 'count': sum(size.values()), 'by_type': size},
@@ -881,6 +889,75 @@ def score_floorplan(root: str, board: str, intent: str, tmp: str) -> dict:
             # so "no warnings" and "warnings not looked at" cannot look alike.
             'warnings': len(warns),
             'warning_rules': sorted({str(v.get('rule')) for v in warns})}
+
+
+def score_diff_pairs(board: str, drc: dict, pcb=None) -> dict:
+    """Every differential pair on the board, graded on its copper (#1303).
+
+    The pairs are KiCad's (`kicad_dru.coupled_net_pairs`: a MatchDpSuffix
+    complement that exists). Each one whose members' pads are all joined by
+    track copper is MEASURED as KiCad's DRC measures it
+    (`net_queries.diff_pair_copper`): coupled and uncoupled length under the
+    pair's binding diff_pair_gap window (`design_rules.DesignRules`), track
+    lengths, the layers each member uses, and the P/N skew of
+    `net_match_length(mode 'total')`. On the board that motivated this
+    (imx6ulz, gp14 H10) route_diff reported DQS0 'coupled' while P ran on
+    In2.Cu, N on B.Cu -- 0 mm coupled, 4.5 mm skew -- and no grader said so.
+
+    GRADED only against what the board DECLARES: its `.kicad_dru` skew and
+    diff_pair_uncoupled rules, which check_drc's pair-rule pass grades and
+    this component counts (`count`; the rows leave `drc`, so nothing is
+    counted twice). A board that declares neither is measured, not graded:
+    `ran` False with the measurements attached, listed in UNGRADED -- KiCad
+    itself grades no pair without a rule, and an invented threshold would
+    fail every pair a design never asked to couple (a `+`/`-` named analog
+    input is a pair to MatchDpSuffix). `no_coupled_copper` names the
+    measured pairs with no coupled run at all, report-only."""
+    rows = (drc or {}).get('pair_rules') or {}
+    try:
+        from kicad_parser import parse_kicad_pcb
+        from kicad_dru import coupled_net_pairs, read_board_length_rules
+        from net_queries import diff_pair_copper, net_pads_joined, CopperIndex
+        from design_rules import DesignRules
+        if pcb is None:
+            pcb = parse_kicad_pcb(board)
+        rules, _notes = read_board_length_rules(
+            board, kinds=('skew', 'diff_pair_uncoupled'))
+        names = {nid: n.name for nid, n in pcb.nets.items() if nid and n.name}
+        pairs = coupled_net_pairs(names)
+        measured, unjoined = {}, []
+        index = dr = None
+        for p, n in sorted(pairs, key=lambda pn: names[pn[0]]):
+            if len(pcb.pads_by_net.get(p) or ()) < 2 or len(pcb.pads_by_net.get(n) or ()) < 2:
+                continue
+            if not (net_pads_joined(pcb, p) and net_pads_joined(pcb, n)):
+                unjoined.append({'p_net': names[p], 'n_net': names[n]})
+                continue
+            if index is None:
+                index, dr = CopperIndex(pcb), DesignRules.from_project(pcb, board)
+            gap = dr.resolve('diff_pair_gap', dr.item_for_net(p, 'track'))
+            gmin = gap.kicad_min if gap.kicad_min is not None else gap.min
+            rec = diff_pair_copper(pcb, p, n, gmin, gap.max, index=index)
+            rec.update(n_net=names[n], gap_window_mm=[gmin, gap.max])
+            measured[names[p]] = rec
+    except Exception as exc:                                 # noqa: BLE001
+        return {'ran': True, 'count': None,
+                'reason': f'diff-pair measurement failed: {type(exc).__name__}: {exc}'}
+    # `pairs` is keyed by the P net, each record naming its `n_net`.
+    detail = {'pairs': measured, 'unjoined_pairs': unjoined,
+              'no_coupled_copper': sorted(k for k, r in measured.items()
+                                          if r['coupled_mm'] <= 0),
+              'by_type': rows}
+    if not rules:
+        return dict(skipped('no .kicad_dru skew / diff_pair_uncoupled rule '
+                            'declares what the pairs must meet; measured, '
+                            'not graded'), **detail)
+    if (drc or {}).get('count') is None:
+        # check_drc grades the rules; without its run the rows are unknown,
+        # not zero.
+        return {'ran': True, 'count': None, 'rules': len(rules), **detail,
+                'reason': 'check_drc did not grade the board'}
+    return {'ran': True, 'count': sum(rows.values()), 'rules': len(rules), **detail}
 
 
 def score_impedance(root: str, board: str, nets, tmp: str) -> dict:
@@ -1159,6 +1236,13 @@ def declared_net_names(score: dict) -> dict:
         'components.length.groups[].pad_to_die_mm':
             [n for g in (length.get('groups') or {}).values()
              if isinstance(g, dict) for n in (g.get('pad_to_die_mm') or {})],
+        # #1303: diff pairs, keyed by the P net with the N net inside.
+        'components.diff_pairs.pairs':
+            [n for p, r in ((c.get('diff_pairs') or {}).get('pairs') or {}).items()
+             for n in (p, r.get('n_net')) if n],
+        'components.diff_pairs.unjoined_pairs':
+            [n for r in ((c.get('diff_pairs') or {}).get('unjoined_pairs') or ())
+             for n in (r.get('p_net'), r.get('n_net')) if n],
     }
     return {k: v for k, v in fields.items() if v}
 
@@ -1442,6 +1526,7 @@ def main():
         _pcb = None
     shape = unrouted_shape(args.board, conn.get('unrouted_net_names', []),
                            pcb=_pcb)
+    diff_pairs = score_diff_pairs(args.board, drc, pcb=_pcb)
     parts = {'unrouted': {'ran': conn['ran'], 'count': conn.get('unrouted'),
                           'nets': conn.get('unrouted_net_names', []),
                           'pads': conn.get('unrouted_pads', {}),
@@ -1452,7 +1537,8 @@ def main():
                         'nets': conn.get('broken_detail', {})},
              'drc': drc, 'undersized': undersized, 'floorplan': floorplan,
              'assembly': assembly,
-             'impedance': imped, 'length': length, 'net_widths': net_widths}
+             'impedance': imped, 'length': length, 'net_widths': net_widths,
+             'diff_pairs': diff_pairs}
 
     # Track-rule-governed pairs are ADVISORY: their gate is the repo's own
     # registered-floor checker (check_dru), not this scalar. They live beside
@@ -1527,6 +1613,22 @@ def main():
     _adv_bits = ' '.join(f'{k}={v}' for k, v in score['advisory'].items() if v)
     if _adv_bits:
         print(f"ADVISORY (floor-governed, not blocking): {_adv_bits}")
+    # #1303: what each pair's copper delivers, whether or not a rule grades it.
+    _dp = score['components'].get('diff_pairs') or {}
+    if _dp.get('pairs'):
+        _worst = sorted(_dp['pairs'].items(),
+                        key=lambda kv: -(kv[1].get('skew_mm') or 0))[:3]
+        print(f"DIFF PAIRS: {len(_dp['pairs'])} measured"
+              + ('' if _dp.get('ran') else ' (not graded: no .kicad_dru skew / '
+                 'diff_pair_uncoupled rule)')
+              + "; largest skew: " + ', '.join(
+                  f"{k} {v['skew_mm']:.3f}mm "
+                  f"(coupled {v['coupled_mm']:.2f} of "
+                  f"{max(v['length_p_mm'], v['length_n_mm']):.2f}mm)"
+                  for k, v in _worst))
+        if _dp.get('no_coupled_copper'):
+            print(f"  NO COUPLED COPPER (P and N never run side by side): "
+                  f"{', '.join(_dp['no_coupled_copper'])}")
     # PLACEMENT terms, and the note when they are missing on a board where
     # nothing else can rank a lap.
     if placement is not None:

@@ -107,8 +107,9 @@ CD_SIZE_TYPES = {"track-width", "via-size", "via-drill-size"}
 CD_VIA_PASTE_TYPES = {"via-in-paste"}
 # #1313: a .kicad_dru length window. KiCad's twin (`length_out_of_range`) is
 # not a copper type above, so check_drc's is out of the copper match too --
-# in it, every one would read checkdrc_only.
-CD_LENGTH_TYPES = {"length-out-of-range"}
+# in it, every one would read checkdrc_only. #1303's diff-pair rules
+# (`skew_out_of_range`, `diff_pair_uncoupled_length_too_long`) likewise.
+CD_LENGTH_TYPES = {"length-out-of-range", "skew-out-of-range", "diff-pair-uncoupled"}
 
 # Min-copper-web class (#406): graded SEPARATELY from the copper-clearance
 # classes -- check_drc has no counterpart (the artifact lives in KiCad's own

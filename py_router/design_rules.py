@@ -102,8 +102,10 @@ SIZE_KINDS = frozenset({
 # rule is reported as "parsed, not consumed".
 CONSUMED_KINDS = CLEARANCE_KINDS | SIZE_KINDS | {'disallow', 'via_count'}
 # Kinds no routing step honours but a grader does: check_drc grades every
-# `length` window (kicad_dru.read_board_length_rules, #1313).
-GRADED_ONLY_KINDS = frozenset({'length'})
+# `length` window (kicad_dru.read_board_length_rules, #1313) and every
+# diff-pair `skew` / `diff_pair_uncoupled` rule through the same channel
+# (#1303).
+GRADED_ONLY_KINDS = frozenset({'length', 'skew', 'diff_pair_uncoupled'})
 
 # Spellings a caller may use for a kind.
 KIND_ALIASES = {

@@ -239,6 +239,8 @@ def process_board(set_board, manifest, work_root, out_dir, drc_size_checks):
     failed = summary.get("failed_diff_pairs", []) if summary else None
     deferred = summary.get("single_ended_diff_pairs", []) if summary else None
     routed = summary.get("routed_diff_pairs", []) if summary else []
+    # #1303: routed, but the shipped copper is not coupled.
+    uncoupled = summary.get("uncoupled_diff_pairs", []) if summary else []
 
     out_path = os.path.join(wdir, os.path.basename(out_board))
     drc_log = os.path.join(wdir, "drc.log")
@@ -252,12 +254,13 @@ def process_board(set_board, manifest, work_root, out_dir, drc_size_checks):
     else:
         drc = "NO_OUTPUT"
 
-    flagged = (bool(failed) or bool(deferred) or summary is None
+    flagged = (bool(failed) or bool(deferred) or bool(uncoupled) or summary is None
                or drc == "NO_OUTPUT" or (isinstance(drc, int) and drc > 0))
     rec = dict(board=set_board, routed=len(routed), failed=failed, deferred=deferred,
+               uncoupled=uncoupled,
                drc=drc, flagged=flagged, replay_rc=rc, out=os.path.basename(out_board))
     print(f"  routed={len(routed)} failed={failed} deferred={deferred} "
-          f"drc={drc} flagged={flagged}")
+          f"uncoupled={uncoupled} drc={drc} flagged={flagged}")
 
     if flagged and os.path.isfile(out_path):
         dest = os.path.join(out_dir, set_board)

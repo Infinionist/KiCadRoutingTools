@@ -3931,6 +3931,61 @@ def _board_pair_lengths(pcb_data, p_net_id, n_net_id):
             + net_pad_to_die_length(pcb_data, n_net_id))
 
 
+def regrade_intra_pair_reports(reports, pair_copper, pcb_data, diff_pair_ids,
+                               tolerance):
+    """Decide each intra-pair record's status from the SHIPPED copper (#1303).
+
+    `run_intra_pair_matching` reports what the matcher believed: its own
+    result dict's segments plus the stub lengths recorded at routing time.
+    After a seam re-ask that is not the copper that ships -- imx6ulz DQS0 read
+    P 12.00 < N 13.08 there, was meandered on P, and shipped P 21.33 > N 16.82
+    -- so a 'matched' printed off it can sit on a 4.5 mm skew. This rewrites
+    each record in place, once the board is final:
+
+      delta_mm         the shipped P/N skew, KiCad's measure
+                       (`net_queries.diff_pair_skew`), or None when a member's
+                       pads are not joined by track copper
+      matcher_status   / matcher_delta_mm: what the matcher reported
+      status           'matched' (inside `tolerance`, the matcher meandered),
+                       'within-tolerance' (inside, nothing meandered),
+                       'unmatched' (over it; `reason` keeps the matcher's own
+                       when it had one, else 'copper-skew-over-tolerance', or
+                       'not-measured' when the skew cannot be read).
+                       'not-matchable' and 'skipped' keep their status and
+                       take the shipped skew as delta_mm.
+
+    `delta_before_mm` stays the matcher's estimate before it meandered: the
+    shipped copper before the meander no longer exists to measure.
+    `pair_copper` is `diff_pair_custody.measure_pair_copper`'s records; a
+    pair without one (no coupled result) is measured here."""
+    from net_queries import diff_pair_skew
+    by_name = dict(diff_pair_ids)
+    for rec in reports:
+        cop = (pair_copper or {}).get(rec['pair'])
+        if cop is not None:
+            skew = cop.get('skew_mm')
+        else:
+            pair = by_name.get(rec['pair'])
+            skew = (diff_pair_skew(pcb_data, pair.p_net_id, pair.n_net_id)['skew_mm']
+                    if pair is not None else None)
+        rec['matcher_status'] = rec.get('status')
+        rec['matcher_delta_mm'] = rec.get('delta_mm')
+        rec['delta_mm'] = None if skew is None else round(skew, 4)
+        st = rec.get('status')
+        if st in ('not-matchable', 'skipped'):
+            continue
+        if skew is None:
+            rec['status'], rec['reason'] = 'unmatched', 'not-measured'
+        elif skew <= tolerance + 1e-9:
+            rec['status'] = 'matched' if st in ('matched', 'improved') else 'within-tolerance'
+            rec['reason'] = None
+        else:
+            rec['status'] = 'unmatched'
+            if st in ('matched', 'within-tolerance') or not rec.get('reason'):
+                rec['reason'] = 'copper-skew-over-tolerance'
+    return reports
+
+
 def run_intra_pair_matching(diff_pair_ids, routed_results, config, pcb_data,
                             skip_p_net_ids=()):
     """Intra-pair P/N length matching over EVERY pair in the run (#766).
