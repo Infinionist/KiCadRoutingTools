@@ -81,7 +81,9 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
                  # #1266: pads against ANOTHER part's graphic copper -- short
                  # of clearance on a net it is not, and touching on any net.
                  'graphic_pad_conflicts', 'graphic_pad_stack_count',
-                 'pad_stack_count')
+                 'pad_stack_count',
+                 # #1306: one footprint's own pads touching on two nets.
+                 'own_pad_short_count')
 
 #: The MAGNITUDES, and they are not a nicety: a count arm alone accepts a
 #: request that keeps the tally and deepens the damage. Measured on the
@@ -100,9 +102,10 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
 #: was no pair at all and this verb wrote a board check_assembly calls NOT
 #: BUILDABLE. The pairs are measured by check_assembly's own function.
 #: #1266: a `[pad part, copper owner]` pair against footprint graphic copper.
+#: #1306: a `["U1.1", "U1.2"]` pair of one footprint's pads shorted.
 PAIR_KEYS = ('pad_conflict_pairs', 'hole_conflict_pairs',
              'graphic_pad_conflict_pairs', 'graphic_pad_stack_pairs',
-             'pad_stack_pairs')
+             'pad_stack_pairs', 'own_pad_short_pairs')
 
 MAGNITUDE_KEYS = ('pad_shortfall', 'oob_pad_amount', 'pad_edge_shortfall',
                   'oob_keepout_copper_amount',
@@ -123,7 +126,9 @@ LEGAL_SCOPE = ('pad-pad clearance', 'hole-hole clearance', 'pad copper vs the '
                "of clearance on a net it is not, or touching on any net "
                "(#1266)",
                "two parts' pad copper overlapping on a shared side, ANY net "
-               "-- a pad stack, check_assembly's pad_intersection (#1064)")
+               "-- a pad stack, check_assembly's pad_intersection (#1064)",
+               "one footprint's own pads touching on two different real nets "
+               "(KiCad's shorting_items; #1306)")
 LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
                     '(disclosed as graphic_edge_shortfall_refs, not gated)',
                     'footprint copper the parser does not model: pad-less '
@@ -577,7 +582,8 @@ PAIR_OF = {'pad_conflicts': 'pad_conflict_pairs',
            'hole_conflicts': 'hole_conflict_pairs',
            'graphic_pad_conflicts': 'graphic_pad_conflict_pairs',
            'graphic_pad_stack_count': 'graphic_pad_stack_pairs',
-           'pad_stack_count': 'pad_stack_pairs'}
+           'pad_stack_count': 'pad_stack_pairs',
+           'own_pad_short_count': 'own_pad_short_pairs'}
 
 
 def regrade_refusal(before: Dict, after: Dict, bad: List[str],
@@ -661,6 +667,9 @@ def _legality_row(before: Dict, after: Dict) -> Dict:
                 'graphic_pad_rows', 'graphic_pad_unmeasured'):
         row[key + '_after'] = after.get(key)
     row['graphic_pad_basis'] = after.get('graphic_pad_basis')
+    # #1306: which of one footprint's own pads are shorted together.
+    row['own_pad_short_pairs_after'] = after.get('own_pad_short_pairs')
+    row['own_pad_basis'] = after.get('own_pad_basis')
     return row
 
 
@@ -1626,7 +1635,9 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 for p in after.get(pk) or ():
                     if tuple(p[:2]) in had:
                         continue
-                    for r in p[:2]:
+                    # An own-pad pair names two PADS of one part (#1306).
+                    for r in ({p[0].partition('.')[0]}
+                              if pk == 'own_pad_short_pairs' else p[:2]):
                         fresh.setdefault(r, []).append(
                             '%s %s/%s' % (pk, p[0], p[1]))
             # ...and the per-PART channels, so a member the copy put past the

@@ -744,7 +744,10 @@ measured by `legality.pad_intersection_pairs`, the function check_assembly's
 channel now is; so, since #1266, is a pad on another part's footprint
 graphic copper (`graphic_pad_*`, check_drc's `footprint_graphic_pad_census`),
 which the search's gate charges in `pair_shortfall` too, licensed by an
-on-board seed only. An absolute gate would refuse poses no worse than
+on-board seed only; and, since #1306, one part's own pads touching on two
+real nets (`own_pad_short_*`, check_drc's `footprint_own_pad_census`), which
+a rigid move cannot change and a writer that turns a footprint without its
+pads can. An absolute gate would refuse poses no worse than
 where the part already sits — and would refuse to arrange the unplaced pile
 this tool exists for. `--strict-legal` is the absolute arm, `--force` the
 waiver, and a KiCad `(locked yes)` is refused unless the same call `unlock`s

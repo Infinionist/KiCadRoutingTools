@@ -937,13 +937,18 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
     # never the edge family's `intentional` count.
     cd_own = [c for c in cd if c.get("accepted") == "footprint-own-copper"]
     cd = [c for c in cd if c.get("accepted") != "footprint-own-copper"]
+    # #1306: two of one footprint's pads touching that the --baseline board's
+    # footprint already had -- pre-existing, as KiCad's side subtracts it.
+    cd_own_pads_pre = sum(1 for c in cd
+                          if c.get("accepted") == "inherited-own-pad-contact")
+    cd = [c for c in cd if c.get("accepted") != "inherited-own-pad-contact"]
     cd_accepted = [c for c in cd if c.get("accepted")]
     cd = [c for c in cd if not c.get("accepted")]
     # Symmetric baseline subtraction (#405): drop the input's own check_drc
     # items too (e.g. vfo_ctrl's 23 FG chassis-ground segments already <edge on
     # the bare board), mirroring the kicad side, so both are graded on
     # router-attributable copper.
-    cd_pre = 0
+    cd_pre = cd_own_pads_pre
     if baseline and os.path.exists(baseline):
         try:
             cd_base = run_check_drc(baseline, clearance, netclasses=not bool(clearance))
@@ -951,7 +956,8 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
             cd_base = None
         cd_base = [c for c in (cd_base or []) if c["type"] not in CD_VIA_PASTE_TYPES
                    and c.get("accepted") != "footprint-own-copper"]
-        cd, cd_pre = _subtract_baseline(cd, cd_base or [])
+        cd, _cd_sub = _subtract_baseline(cd, cd_base or [])
+        cd_pre += _cd_sub
     kicad_intentional = checkdrc_intentional = 0
     # Static footprint-geometry conditions (#450 kbic65): a hole_clearance
     # item whose participants are ALL pads is placement/footprint design

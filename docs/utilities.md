@@ -76,7 +76,7 @@ The DRC checker validates:
 3. **Via-to-track clearance** - Vias maintain clearance from tracks on other nets. A via KiCad types blind, buried or micro is graded only on the copper layers between its end layers, here, in check 5 and inside a filled copper graphic (#1268); a via with no type word is a through via whatever its `(layers ...)` pair, as KiCad loads it
 4. **Via-to-via clearance** - Vias maintain clearance from each other
 5. **Pad-to-via clearance** - Vias maintain clearance from pads on other nets (an SMD pad off a blind/micro via's span is not graded against it)
-6. **Pad-to-pad clearance** - Pads of different nets on a shared copper layer maintain clearance (catches overlaps/shorts, e.g. a placement step nudging a part onto a foreign pad). Pads of the *same* footprint are skipped — a component's own fine-pitch pin gaps are fixed library geometry, not a pipeline-introduced defect.
+6. **Pad-to-pad clearance** - Pads of different nets on a shared copper layer maintain clearance (catches overlaps/shorts, e.g. a placement step nudging a part onto a foreign pad). Two pads of ONE footprint that TOUCH on different nets are a `pad-pad` violation too (#1306, `check_drc.footprint_own_pad_census`, which check_assembly and place_pose read): KiCad reports them as `shorting_items`, or as `clearance` at actual 0 against a no-net pad. Exempt as KiCad exempts them: one net, one pad number (unless it carries two different real nets), one `net_tie_pad_groups` group; two no-net pads are not graded. With `--baseline BOARD`, a contact the baseline's same footprint already had is accepted `inherited-own-pad-contact`. Two of a footprint's pads closer than clearance without touching are library pad geometry no step changes; KiCad reports each as `clearance`, and check_drc counts them on a console line without grading them.
 7. **Copper-to-hole clearance** - Tracks maintain clearance from NPTH (no-copper) drill holes of other nets — a real fab short the via-drill hole check misses (e.g. a track across a mounting hole)
 8. **Hole-to-hole clearance** - Drill holes (via drills and through-hole pad drills) maintain edge-to-edge clearance, even on the same net (manufacturing constraint)
 9. **Board edge clearance** - Tracks and vias maintain clearance from the real `Edge.Cuts` outline (outer ring **plus interior cutouts/slots**), so copper routed into a cutout — which sits inside the bounding box — is caught. Falls back to the bounding box when the parser finds no usable outline. With `--check-pad-edge`, pads are checked too.
@@ -90,7 +90,7 @@ The DRC checker validates:
 
 Checks 11–12 are on by default; pass `--no-size-checks` to skip them, or override the floors with `--min-track-width` / `--min-via-diameter` / `--min-via-drill`. The floor is derived from the board's copper-layer count unless overridden.
 
-`--baseline BOARD` is the board this one was derived from (the unrouted input, or the placement run's starting board). It is a checker option, not a routing parameter; pass it whenever you have that board, or pre-existing vias in paste openings read as violations against the run.
+`--baseline BOARD` is the board this one was derived from (the unrouted input, or the placement run's starting board). It is a checker option, not a routing parameter; pass it whenever you have that board, or pre-existing vias in paste openings and a footprint's own touching pads read as violations against the run.
 
 ### Clearance Margin
 
@@ -207,7 +207,12 @@ part's footprint graphic copper** (#1266: a drawn SOT-89 tab, an antenna,
 its filled interior included; `graphic_pad_conflicts` short of clearance on
 a net the copper is not, `graphic_pad_stack_count` touching on any net but a
 net tie's own, `graphic_pad_shortfall`, and their `_pairs`, measured by
-`check_drc.footprint_graphic_pad_census`). The pad-conflict grade
+`check_drc.footprint_graphic_pad_census`) — plus **one part's own pads
+touching on two real nets** (#1306: `own_pad_short_count` and
+`own_pad_short_pairs`, `["U1.1", "U1.2"]`, by
+`check_drc.footprint_own_pad_census`; every other channel is between two
+parts, so a footprint whose pads the writer left at their old angle read
+clean). The pad-conflict grade
 skips same-net pads, so esp_prog's C4 put on Y1's same-net pad (0.0412 mm²)
 used to exit 0 here and read NOT BUILDABLE in check_assembly — and **never for
 damage the board already had**:

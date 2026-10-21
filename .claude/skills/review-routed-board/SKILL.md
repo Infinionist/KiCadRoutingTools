@@ -89,6 +89,14 @@ under WARNINGS as `footprint own copper` (#995). Report them as KiCad errors the
 user will see, not as shorts. A `<no net>` item with any OTHER net is a real
 short.
 
+Two pads of ONE footprint touching on different nets are a check_drc `pad-pad`
+violation (#1306), KiCad's `shorting_items` (`clearance` at actual 0 when one
+pad has no net). Some libraries ship them (a Kelvin shunt with no net-tie
+group, a shield tab or thermal-via pad with no net): pass `--baseline <input
+board>` and a contact the input's footprint already had is accepted
+`inherited-own-pad-contact`. A contact that is NOT inherited means a tool turned
+or rewrote the footprint's pads.
+
 The cross-check is one-directional (#260): kicad-cli can refute a borderline
 check_drc *near-miss* (a sub-clearance gap), but a kicad-cli "0" does NOT clear
 an *overlap/short* finding — KiCad 10 net-unifies touching copper on load, so

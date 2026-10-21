@@ -1428,6 +1428,157 @@ def footprint_graphic_pad_census(pcb_data, clearance: float,
             'basis': GRAPHIC_PAD_BASIS}
 
 
+#: What `footprint_own_pad_census` measures, carried in every report.
+OWN_PAD_BASIS = (
+    "each footprint's own pads against each other, by check_drc's pad-to-pad "
+    "test, on a shared copper layer. Exempt as KiCad exempts them: two pads "
+    "on one net, two pads with one number (unless they carry two different "
+    "real nets that are not both a pin's `unconnected-(...)` net), and two "
+    "pads in one net_tie_pad_groups group. Two pads with no net are not "
+    "graded (check_drc's same-net rule; KiCad grades them `clearance`). A "
+    "`short` is a contact between two pads on real nets (KiCad: "
+    "shorting_items); a contact with a no-net pad is `no_net` (KiCad: "
+    "clearance, actual 0)")
+
+
+def _pad_unconnected(pad) -> bool:
+    """A pad KiCad gave a per-pin `unconnected-(...)` net."""
+    return (getattr(pad, 'net_name', '') or '').startswith('unconnected-(')
+
+
+def own_pad_pair_exemption(pa, pb, tie_groups=()) -> str:
+    """Why two pads of ONE footprint are not graded against each other, or
+    '' when they are (#1306). KiCad's own rules (DRC_TEST_PROVIDER_COPPER_
+    CLEARANCE::testPadAgainstItem): one net; one logical pad (same number)
+    unless it carries two real nets; a declared net-tie group. Two no-net
+    pads are skipped as check_drc skips every same-net pair.
+
+    `tie_groups` is the footprint's `net_tie_groups`."""
+    if pa.net_id == pb.net_id:
+        return 'same net' if pa.net_id else 'no net'
+    na, nb = pa.pad_number, pb.pad_number
+    if na and na == nb and (not pa.net_id or not pb.net_id
+                            or (_pad_unconnected(pa) and _pad_unconnected(pb))):
+        return 'same pad number'
+    if na and nb and any(na in g and nb in g for g in tie_groups or ()):
+        return 'net tie'
+    return ''
+
+
+def _own_pad_box(pad):
+    """An axis-aligned box that holds the pad's copper, for the sweep."""
+    polys = getattr(pad, 'polygons', None)
+    if polys:
+        pts = [p for poly in polys for p in poly]
+        if pts:
+            return (min(p[0] for p in pts), min(p[1] for p in pts),
+                    max(p[0] for p in pts), max(p[1] for p in pts))
+    if getattr(pad, 'rect_rotation', 0.0):
+        r = math.hypot(pad.size_x, pad.size_y) / 2.0
+        return (pad.global_x - r, pad.global_y - r,
+                pad.global_x + r, pad.global_y + r)
+    hx, hy = pad.size_x / 2.0, pad.size_y / 2.0
+    return (pad.global_x - hx, pad.global_y - hy,
+            pad.global_x + hx, pad.global_y + hy)
+
+
+def footprint_own_pad_census(pcb_data, clearance: float = 0.0,
+                             routing_layers=None, clearance_of=None,
+                             contacts_only: bool = False,
+                             clearance_margin: float = 0.05,
+                             reach: float = None) -> Dict[str, Any]:
+    """Pairs of ONE footprint's pads that touch, or sit within clearance,
+    on two different nets (#1306). `{'rows', 'basis'}`.
+
+    check_drc's pad-to-pad pass grades two DIFFERENT parts. A footprint's
+    own pads were skipped on the premise that they are library geometry
+    nothing changes -- which the placement writer broke (#1305 left pads
+    carrying KiCad 6's `locked` token at their old angle, and steppenprobe
+    U1 shipped 164 shorting pad pairs while check_drc, check_assembly and
+    place_pose all read clean). This is the one measurement; check_drc,
+    `legality.grade_pad_legality` (place_pose) and check_assembly read it.
+
+    One row per pair, in footprint and pad order::
+
+        {'ref': 'U1', 'pad_a': '1', 'pad_b': '2', 'index_a': 0,
+         'index_b': 1, 'net_a': 'GND', 'net_b': '/OSCI', 'net_id_a': 1,
+         'net_id_b': 7, 'layer': 'F.Cu', 'contact': True, 'short': True,
+         'no_net': False, 'overlap_mm': 0.15, 'required_mm': 0.15,
+         'pad_loc_a': (x, y), 'pad_loc_b': (x, y), 'closest_pt': (x, y)}
+
+    `contact` is copper touching (check_pad_pad_overlap's distance 0, as
+    `legality._exact_pad_stack` asks it); `short` a contact between two real
+    nets. `index_a/b` index `footprint.pads`, so a pair can be found again
+    on another board. `contacts_only` measures contact alone (the placement
+    graders); otherwise a pair within `clearance_of(pad_a, pad_b)` (else the
+    flat `clearance`) is a row too, `contact` False. `reach` bounds the
+    sweep: the largest requirement a pair can have (default `clearance`).
+    """
+    if routing_layers is None:
+        routing_layers = list(getattr(pcb_data.board_info, 'copper_layers',
+                                      None) or ['F.Cu', 'B.Cu'])
+    nets = getattr(pcb_data, 'nets', None) or {}
+    eps = 1e-3
+    m = eps if contacts_only else max(clearance, reach or 0.0) + 1e-6
+    rows: List[Dict[str, Any]] = []
+    for key, fp in (getattr(pcb_data, 'footprints', None) or {}).items():
+        items = [(i, pd, _own_pad_box(pd)) for i, pd in enumerate(fp.pads or ())
+                 if not _pad_has_no_copper(pd) and pd.size_x > 0
+                 and pd.size_y > 0]
+        if len(items) < 2:
+            continue
+        ties = [set(g) for g in (getattr(fp, 'net_tie_groups', None) or ())]
+        items.sort(key=lambda t: (t[2][0], t[0]))
+        found = []
+        for s, (ia, pa, ba) in enumerate(items):
+            for ib, pb, bb in items[s + 1:]:
+                if bb[0] > ba[2] + m:
+                    break
+                if bb[1] > ba[3] + m or bb[3] < ba[1] - m or bb[2] < ba[0] - m:
+                    continue
+                if own_pad_pair_exemption(pa, pb, ties):
+                    continue
+                if contacts_only:
+                    eff = 0.0
+                    hit, over, pt = check_pad_pad_overlap(
+                        pa, pb, eps, routing_layers, clearance_margin=0.0)
+                    contact = bool(hit and over >= eps - 1e-9)
+                    if not contact:
+                        continue
+                    over = 0.0
+                else:
+                    eff = (clearance_of(pa, pb) if clearance_of is not None
+                           else clearance)
+                    hit, over, pt = check_pad_pad_overlap(
+                        pa, pb, eff, routing_layers, clearance_margin)
+                    if not hit:
+                        continue
+                    contact = over >= eff - 1e-9
+                found.append((ia, ib, pa, pb, eff, over, pt, contact)
+                             if ia < ib else
+                             (ib, ia, pb, pa, eff, over, pt, contact))
+        for ia, ib, pa, pb, eff, over, pt, contact in sorted(
+                found, key=lambda t: (t[0], t[1])):
+            shared = [l for l in _expand_cu(pa.layers, routing_layers)
+                      if l.endswith('.Cu')
+                      and l in _expand_cu(pb.layers, routing_layers)]
+            na, nb = nets.get(pa.net_id), nets.get(pb.net_id)
+            no_net = not pa.net_id or not pb.net_id
+            rows.append({
+                'ref': key, 'pad_a': pa.pad_number, 'pad_b': pb.pad_number,
+                'index_a': ia, 'index_b': ib,
+                'net_a': na.name if na else '', 'net_b': nb.name if nb else '',
+                'net_id_a': pa.net_id, 'net_id_b': pb.net_id,
+                'layer': shared[0] if shared else '',
+                'contact': contact, 'short': contact and not no_net,
+                'no_net': no_net, 'overlap_mm': round(over, 4),
+                'required_mm': eff,
+                'pad_loc_a': (pa.global_x, pa.global_y),
+                'pad_loc_b': (pb.global_x, pb.global_y),
+                'closest_pt': pt})
+    return {'rows': rows, 'basis': OWN_PAD_BASIS}
+
+
 _GRAPHIC_OWN_PAD_NETS = {}  # set per check run beside _GRAPHIC_EFFECTIVE_NETS
 _FOOTPRINT_OWN_COPPER_NETS = {}  # likewise; see footprint_own_copper_nets
 
@@ -4356,6 +4507,11 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
     if not quiet:
         print("Checking pad-to-pad clearances...")
     pad_pad_checked = set()
+    # Which footprint BLOCK owns each pad (#726 keys two blocks that share a
+    # reference apart), so this pass grades two different parts and the
+    # own-pad census below grades one part's pads.
+    _pad_block = {id(pd): key for key, fp in pcb_data.footprints.items()
+                  for pd in fp.pads}
     for pad_net, pads in pads_by_net.items():
         net1_matches = matching_net_ids is None or pad_net in matching_net_ids
         for pad1 in pads:
@@ -4371,14 +4527,10 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                         continue  # Same net -- allowed to touch
                     if _pad_has_no_copper(pad2):
                         continue  # NPTH hole: no copper to short/graze
-                    # Skip pads of the SAME footprint: a component's own adjacent
-                    # pins are fixed library geometry (a fine-pitch part can have
-                    # pad gaps below the routing clearance), never something a
-                    # placement/routing step introduces or can fix. Flagging them
-                    # would flood grading with pre-existing noise. The cases #234
-                    # targets are between DIFFERENT footprints (e.g. a cap nudged
-                    # onto an IC pad).
-                    if pad2.component_ref == pad1.component_ref:
+                    # Pads of ONE footprint are graded by the own-pad census
+                    # after the baseline is read (#1306), not here.
+                    _b1 = _pad_block.get(id(pad1))
+                    if _b1 is not None and _b1 == _pad_block.get(id(pad2)):
                         continue
                     net2_matches = matching_net_ids is None or pad2_net in matching_net_ids
                     if not net1_matches and not net2_matches:
@@ -5243,6 +5395,74 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
 
     _via_in_paste_pass(pcb_data, matching_via_nets, _baseline_pd, violations,
                        _accepted_edge, quiet)
+
+    # #1306: ONE footprint's own pads, graded as KiCad grades them. A contact
+    # between two of its pads on different nets is a `pad-pad` violation
+    # (KiCad: shorting_items, or clearance at actual 0 against a no-net pad)
+    # -- steppenprobe U1, whose pads the placement writer left at their old
+    # angle (#1305), shipped 164 of them graded clean. One the --baseline
+    # board's same footprint already had is accepted as inherited: five of
+    # the stress corpus's 478 human boards ship such contacts by design (a
+    # Kelvin shunt with no tie group, USB-C pads of one pin, shield tabs and
+    # thermal-via pads with no net). A pair merely closer than clearance is
+    # library pad geometry no placement or routing step changes; KiCad
+    # reports it as `clearance` and it is counted here, not graded.
+    _own_reach = max([clearance] + list(_ncl_by_id.values())
+                     + list((_lcl or {}).values())
+                     + [getattr(pd, 'local_clearance', 0.0) or 0.0
+                        for fp in pcb_data.footprints.values()
+                        for pd in fp.pads])
+    _own = footprint_own_pad_census(
+        pcb_data, clearance, routing_layers,
+        clearance_of=lambda a, b: _pad_pair_cl(a, b.net_id, other_pad=b,
+                                               other_type='pad'),
+        clearance_margin=clearance_margin, reach=_own_reach)['rows']
+    if matching_net_ids is not None:
+        _own = [r for r in _own if r['net_id_a'] in matching_net_ids
+                or r['net_id_b'] in matching_net_ids]
+    _own_inherited = set()
+    if _baseline_pd is not None and any(r['contact'] for r in _own):
+        _own_inherited = {
+            (r['ref'], r['index_a'], r['index_b'])
+            for r in footprint_own_pad_census(
+                _baseline_pd, contacts_only=True,
+                routing_layers=routing_layers)['rows']}
+    _own_gaps = 0
+    _own_counts = {'violation': 0, 'inherited': 0}
+    for r in _own:
+        if not r['contact']:
+            _own_gaps += 1
+            continue
+        _v = _mark_required({
+            'type': 'pad-pad',
+            'own_footprint': True,
+            'net1': r['net_a'] or f"net_{r['net_id_a']}",
+            'net2': r['net_b'] or f"net_{r['net_id_b']}",
+            'no_net': r['no_net'],
+            'layer': r['layer'],
+            'overlap_mm': r['overlap_mm'],
+            'pad_ref': f"{r['ref']}.{r['pad_a']}",
+            'pad_ref2': f"{r['ref']}.{r['pad_b']}",
+            'pad_loc': r['pad_loc_a'],
+            'pad_loc2': r['pad_loc_b'],
+            'closest_pt': r['closest_pt'],
+        }, r['required_mm'])
+        if (r['ref'], r['index_a'], r['index_b']) in _own_inherited:
+            _v['accepted'] = 'inherited-own-pad-contact'
+            _accepted_edge.append(_v)
+            _own_counts['inherited'] += 1
+        else:
+            violations.append(_v)
+            _own_counts['violation'] += 1
+    if not quiet and (_own_gaps or any(_own_counts.values())):
+        print("Pads of one footprint (#1306): %d in contact on different nets "
+              "(violations), %d inherited from --baseline (accepted); %d "
+              "pair(s) closer than clearance without touching -- library pad "
+              "geometry KiCad reports as `clearance`, not graded here%s"
+              % (_own_counts['violation'], _own_counts['inherited'], _own_gaps,
+                 '; pass --baseline <input board> to accept the contacts its '
+                 'footprints already had' if _own_counts['violation']
+                 and _baseline_pd is None else ''))
 
     # Same-net COPPER overlaps are not DRC failures: same-net copper is allowed
     # to overlap (KiCad's own DRC permits it -- it only enforces clearance between

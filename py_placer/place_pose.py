@@ -734,6 +734,12 @@ def _report(summary):
              summary.get('pad_stack_count_after')))
     for a, b, area, side in (summary.get('pad_stack_pairs_after') or [])[:5]:
         print("  %s/%s %.4fmm2 side %s" % (a, b, area, side or '-'))
+    # #1306: one footprint's own pads shorted together (KiCad shorting_items).
+    print("one part's own pads touching on two nets: %s -> %s"
+          % (summary.get('own_pad_short_count_before'),
+             summary.get('own_pad_short_count_after')))
+    for a, b in (summary.get('own_pad_short_pairs_after') or [])[:5]:
+        print("  %s/%s" % (a, b))
     # #1266: a pad on another part's footprint graphic copper (a SOT-89 tab).
     print("pads on another part's graphic copper (touching, any net): "
           "%s -> %s; short of clearance: %s -> %s"
