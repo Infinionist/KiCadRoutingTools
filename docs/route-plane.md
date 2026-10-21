@@ -242,25 +242,36 @@ contend nor get replaced (#478).
 #### Replacing a same-net pour
 
 An existing pour for the **same** net on the target layer is replaced by default
-(`--skip-existing-zones` keeps it instead). Two cases used to go wrong silently:
+(`--skip-existing-zones` keeps it instead). Three cases used to go wrong silently:
 
 - **KiCad 10 boards.** Zones carry `(net "NAME")`, and the replacement filter was
   only given numeric `(net <id>)` pairs, so it never matched: the old pour shipped
   next to its replacement while the log said "Replacing existing zone", and every
   re-run stacked another duplicate. The name pairs are passed now.
-- **Multi-layer pours.** `(layers "F.Cu" "B.Cu")` is **one** zone. It is *not*
-  deleted to replace one of its layers -- that would destroy the copper on the
-  others. The run warns, keeps the pour, and pours the new plane over it at a
-  higher fill priority (same net, so no short); replace it outright by running
-  those layers together or by deleting it in KiCad.
+- **Multi-layer pours.** `(layers "F.Cu" "B.Cu")` is **one** zone. A run that
+  pours the net on every layer the zone covers replaces it, with one new zone
+  per layer: `--nets GND GND --plane-layers F.Cu B.Cu` replaces a
+  `(layers "F.Cu" "B.Cu")` GND pour. A run that pours only some of those layers
+  does *not* delete it, because that would destroy the copper on the others. It
+  warns, names the layers it does not pour, keeps the pour, and pours the new
+  plane over it at a higher fill priority (same net, so no short). To replace it,
+  add those layers to the run or delete the pour in KiCad. Until #1299 the
+  decision was made one layer at a time, so even a run over every layer kept
+  the pour and stacked a new zone on each layer. On CM5_MINIMA_3 that left 5
+  extra GND zones, and `check_impedance` read the overlap as 64 reference-plane
+  splits.
+- **KiCad 5 / 6 spellings.** A bare `(layer B.Cu)` and the layer sets
+  `(layers F&B.Cu)` / `(layers *.Cu)` are read as pcbnew loads them, so the
+  writer removes exactly the pours the run decided to replace.
 
 A pour is therefore removed only when every layer it covers is being replaced.
 A teardrop area on the net is not a pour (#1164) and is never removed with it.
 
 The GUI planes tab does the same. Its **Skip existing zones** checkbox is
-`--skip-existing-zones`, unticked by default as on the CLI: the tab then deletes
-the replaced pour from the live board and adds the new one, and a plan step
-that omits the flag runs unticked again.
+`--skip-existing-zones`, unticked by default as on the CLI. The tab then deletes
+the replaced pour from the live board and adds the new one. A multi-layer pour
+is deleted only when the run replaced every one of its layers, as the CLI writer
+does. A plan step that omits the flag runs unticked again.
 
 #### Choosing `--gnd-via-distance`
 
@@ -532,7 +543,7 @@ The plane generation code is organized into several modules:
 
 **plane_io.py:**
 - `extract_zones()` - Reads existing zones from PCB file
-- `check_existing_zones()` - Reports what already occupies the target layer: the same-net pour to replace, plus other nets' pours to coexist with (it no longer aborts the run over a foreign pour)
+- `check_existing_zones()` - Reports what already occupies the target layer: the same-net pour to replace, plus other nets' pours to coexist with (it no longer aborts the run over a foreign pour). `call_layers` is every layer the call pours the net on; a same-net pour is replaced only when every layer it covers is in that set (#1299)
 - `shared_layer_zone_priority()` - Fill priority for a plane sharing a layer with another net's pour: one above the highest incumbent, so the overlap resolves deterministically
 - `write_plane_output()` - Writes vias, traces, and zones to output file
 

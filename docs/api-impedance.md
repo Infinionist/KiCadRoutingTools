@@ -355,3 +355,9 @@ python3 py_tools/check_impedance.py routed.kicad_pcb --json report.json
 It reports, per net: length over a reference-plane void, plane-split crossings,
 the measured coplanar side-gap distribution, and the implied Z0 error against
 what the route call assumed.
+
+A split is a move from one piece of reference copper to another: a different
+fill component, or another net's pour. Two pours of the same net that overlap
+on a layer fill as one sheet of copper, so their overlapping components count
+as one reference (#1299). Before that, a trace passing from one such pour's
+fill to the other's was graded as a split.

@@ -1383,6 +1383,14 @@ python3 -X utf8 py_router/route_planes.py board.kicad_pcb board_step1.kicad_pcb 
     --plane-layers B.Cu F.Cu \
     2>&1 | tee /tmp/step1_pour.txt
 
+**A pour the board already has.** A same-net pour on a layer of this run is
+replaced. A multi-layer pour, such as `(layers "F.Cu" "B.Cu")`, is ONE zone and
+is replaced only when this run pours the net on every layer it covers (#1299),
+so name them all (`--nets GND GND --plane-layers F.Cu B.Cu`). If the run pours
+only some of them, it prints `WARNING: ... cannot be replaced` and keeps the
+old pour under the new zone. Read that line, and re-run with the layers it
+names.
+
 **Zone clearance is a MINIMUM-ALLOWED, not a target — never pass a
 `--zone-clearance` larger than the routed clearance.** The default already
 follows `--clearance` and auto-steps down to the fab floor when the pour

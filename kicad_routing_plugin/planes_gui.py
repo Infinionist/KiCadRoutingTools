@@ -1615,13 +1615,21 @@ class PlanesTab(wx.Panel):
         if hasattr(self, '_new_zones') and self._new_zones:
             # Snapshot which (net_name, layer) pairs already have a POUR on
             # the live board so we never add a duplicate -- and, per pair, the
-            # single-layer pours a `replace_existing` zone supersedes, which
-            # are exactly the zones the CLI writer drops from the file
+            # pours a `replace_existing` zone supersedes, which are exactly the
+            # zones the CLI writer drops from the file
             # (plane_io.filter_zones_from_content; footprint zones are not in
-            # board.Zones()). Teardrop and rule areas are no pour (#1164), so
+            # board.Zones()): a pour goes only when EVERY copper layer it
+            # covers is replaced by this run (#1299 -- a multi-layer pour the
+            # run poured on all of its layers used to stay under its
+            # replacements). Teardrop and rule areas are no pour (#1164), so
             # they neither block a pour as a "duplicate" nor get replaced.
+            replaced_keys = {(zd.get('net_name', ''), zd.get('layer', ''))
+                             for zd in self._new_zones
+                             if zd.get('replace_existing')
+                             and not zd.get('keepout')}
             existing_zone_keys = set()
             replaceable = {}
+            removed_zone_ids = set()
             try:
                 for existing_zone in board.Zones():
                     try:
@@ -1644,13 +1652,18 @@ class PlanesTab(wx.Panel):
                         existing_layer = ''
                     existing_zone_keys.add((existing_net, existing_layer))
                     try:
-                        _span = [id_to_name.get(l, '')
-                                 for l in existing_zone.GetLayerSet().Seq()]
+                        # Copper layers only (id_to_name holds no other), as
+                        # the parsers read a zone's span.
+                        _span = [n for n in (id_to_name.get(l, '') for l in
+                                             existing_zone.GetLayerSet().Seq())
+                                 if n]
                     except Exception:
-                        _span = [existing_layer]
-                    if len(_span) == 1 and _span[0]:
-                        replaceable.setdefault((existing_net, _span[0]),
-                                               []).append(existing_zone)
+                        _span = [existing_layer] if existing_layer else []
+                    if _span and all((existing_net, l) in replaced_keys
+                                     for l in _span):
+                        for l in _span:
+                            replaceable.setdefault((existing_net, l),
+                                                   []).append(existing_zone)
             except Exception:
                 pass
 
@@ -1715,8 +1728,12 @@ class PlanesTab(wx.Panel):
                     # pour on the layer, so delete the old one, as the CLI
                     # writer does. Once per pair -- a shared layer's split
                     # returns several polygons for one net, and the later
-                    # ones must not delete the earlier.
+                    # ones must not delete the earlier -- and once per pour:
+                    # a multi-layer pour is listed under each of its layers.
                     for _old in replaceable.pop(key):
+                        if id(_old) in removed_zone_ids:
+                            continue
+                        removed_zone_ids.add(id(_old))
                         board.RemoveNative(_old)
                         zones_replaced += 1
                     existing_zone_keys.discard(key)

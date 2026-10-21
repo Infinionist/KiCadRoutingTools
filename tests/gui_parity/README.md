@@ -474,9 +474,17 @@ skip cleanly without KiCad python). Run any directly:
   `--skip-existing-zones`, on the real tab (create + apply on a live board):
   a net's single-layer pour is replaced (old one deleted, one new pour at the
   run's clearance and width), kept with the box, a multi-layer pour is never
-  deleted and is out-ranked, and a GND teardrop neither blocks the pour nor
-  goes with it. GUI and CLI leave identical GND pours; a negative control
-  strips the engine's `replace_existing` marks.
+  deleted to replace one of its layers and is out-ranked, and a GND teardrop
+  neither blocks the pour nor goes with it. GUI and CLI leave identical GND
+  pours; a negative control strips the engine's `replace_existing` marks.
+- `test_1299_multilayer_zone_replace_gui.py` -- a `(layers "F.Cu" "B.Cu")`
+  GND pour, poured on both layers and on B.Cu alone, on the real Planes tab
+  (create + apply) against `route_planes.py` (#1299). Both layers: the 2-layer
+  pour is deleted and one GND pour per layer added. One layer: it is kept
+  under a new B.Cu pour. GUI and CLI leave identical pours. Negative control:
+  the engine's check given no call layers keeps the 2-layer pour under the new
+  ones. With the tab's pre-fix apply (single-layer pours only) the both-layers
+  arm fails on the GUI side alone.
 - `test_1056_renamed_layers_gui.py` -- a board whose In1.Cu/In2.Cu are
   renamed "GND"/"+5V" in Board Setup (#1056). `board.GetLayerName()` returns
   that display name, so every live-board site that mapped through it missed:

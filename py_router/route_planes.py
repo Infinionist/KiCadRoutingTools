@@ -52,6 +52,7 @@ from connectivity import compute_mst_segments
 from plane_io import (
     ZoneInfo,
     extract_zones,
+    zone_infos,
     check_existing_zones,
     shared_layer_zone_priority,
     resolve_net_id,
@@ -3333,22 +3334,11 @@ def create_plane(
     from kicad_parser import pour_zones
     if _live_pcb_data:
         # POURS only (#1164), as plane_io.extract_zones reads the file -- and
-        # with each pour's layer SPAN recovered from its uuid the same way, so
-        # check_existing_zones can tell a multi-layer pour (kept, never
-        # replaced) from one that covers only the target layer. Without it a
-        # live `(layers "F.Cu" "B.Cu")` pour read as single-layer.
-        _live = list(pour_zones(getattr(pcb_data, 'zones', None)))
-        _span_by_uuid: Dict[str, List[str]] = {}
-        for z in _live:
-            if getattr(z, 'uuid', ''):
-                _span_by_uuid.setdefault(z.uuid, []).append(z.layer)
-        for z in _live:
-            _zu = getattr(z, 'uuid', '') or ''
-            existing_zones.append(ZoneInfo(net_id=z.net_id, net_name=z.net_name, layer=z.layer,
-                                           in_footprint=getattr(z, 'in_footprint', False),
-                                           priority=int(getattr(z, 'priority', 0) or 0),
-                                           uuid=_zu,
-                                           span=tuple(_span_by_uuid.get(_zu, [z.layer]))))
+        # through the same reader (zone_infos), which recovers each pour's
+        # layer SPAN from its uuid, so check_existing_zones can tell a
+        # multi-layer pour from one that covers only the target layer.
+        # Without it a live `(layers "F.Cu" "B.Cu")` pour read as single-layer.
+        existing_zones = zone_infos(pour_zones(getattr(pcb_data, 'zones', None)))
     else:
         try:
             existing_zones = list(extract_zones(input_file))
@@ -3405,9 +3395,12 @@ def create_plane(
         # CLI path. A foreign-net pour on the layer no longer aborts the run: the
         # plane is created alongside it, at a higher fill priority so the overlap
         # resolves deterministically (see check_existing_zones /
-        # shared_layer_zone_priority).
+        # shared_layer_zone_priority). A same-net pour is replaced when this
+        # call pours the net on every layer it covers (#1299), so the check is
+        # given all of this net's layers, not just this one.
         should_create, should_continue, zone_to_replace, foreign_zones = check_existing_zones(
-            existing_zones, plane_layer, net_name, net_id, verbose
+            existing_zones, plane_layer, net_name, net_id, verbose,
+            call_layers=[l for n, l in zip(net_names, plane_layers) if n == net_name]
         )
         if not should_continue:
             print(f"Error: Zone conflict for net '{net_name}' on layer {plane_layer}")
