@@ -95,6 +95,10 @@ def _summary(stdout):
 
 
 def _run_seed(args):
+    # 0.55: the edge floor the splitflap fixture layouts were chosen at
+    # (SF_SEED, the release arms) -- it declares no edge rule, which #1301
+    # reads as the 0.2 fab floor and seeds a different layout.
+    args = list(args) + ['--board-edge-clearance', '0.55']
     r = subprocess.run([sys.executable, '-X', 'utf8', PLACE_SEED] + args,
                        capture_output=True, text=True, encoding='utf-8',
                        errors='replace', cwd=ROOT, timeout=900)
