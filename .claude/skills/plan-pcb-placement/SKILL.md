@@ -328,7 +328,9 @@ Write these into the intent's `edge_connectors[]` entries, the rows into
 then emit again (§3.2). Check the fixed parts -- mounting holes, switches, LEDs
 a panel shows -- against the brief or `mechanical.json`, and move any that is
 wrong with `place_pose ... set ... lock` as in §3.1. Run check_floorplan again:
-no `edge_connector` error.
+no `edge_connector` error, and no `edge_oversubscribed` warning (an edge
+declared more connectors than fit on it together: move one to another edge,
+drop a declaration, or widen a band now, before placing).
 
 ### 3.5 Datasheet layouts (your judgement)
 

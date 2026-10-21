@@ -199,7 +199,8 @@ the twelve `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
 `plan_board_overfull`, `plan_board_crowded`, `plan_fixed_overlap`,
 `plan_fixed_overlap_budget`), `edge_connector_side` (settable to `warn`
 only -- `error` is refused, because the rule is advisory by design),
-plus seven more raised BESIDE a rule's own name —
+`edge_oversubscribed` (raised by check_floorplan's grade and by
+`--plan-only`), plus seven more raised BESIDE a rule's own name —
 `decap_pin_distance_inferred` and `decap_pin_uncovered`,
 `proximity_unresolved`, `keep_away_unresolved`, `replicate_unresolved`,
 `template_unresolved` and `template_ground_return`.
@@ -217,7 +218,8 @@ and `replicate_unresolved`, `template`, `template_unresolved` and
 `template_ground_return`,
 `keepout_allow_unresolved`,
 `intent_zone_overlap`, `fixed_pose_overlap_waived`, `plan_fixed_overlap` and
-the three `plan_*_crowded` findings; `pins_to_edge` and
+the three `plan_*_crowded` findings and `edge_oversubscribed`;
+`pins_to_edge` and
 `edge_connector_side` are always warn; `mechanical_drift` is warn for a
 move the anchor already reports and error for a turn. Writing
 `{"keepout_allow_unresolved": "error"}` upgrades one.
@@ -851,6 +853,7 @@ status from this list:
 | `legality` | overlap or off-board parts exceed a budget. An overlap finding's `measured` carries `overlap_area` (the outline reading the budget grades), `overlap_area_rect`, the worst 50 `pairs` (`[a, b, rect, exact]`) with `pairs_total`, and `excluded` -- the containers, pad-less logos and silk-only parts the budget does not see (a silk body never gates); `legality.overlap_area_excluded` counts them on every grade | overlap: `legality.courtyard_overlap_pairs` (check_assembly's drawn outlines); off-board: `QuenchState.legality_metrics` |
 | `pins_to_edge` | a part's pad row faces the outline (within `edge_facing.EDGE_MM`, 2 mm) with no partner beyond it, so its nets can leave only along the edge strip or under the part. Always **warn**, whatever `severity` says; armed only by declared `edge_connectors`, whose edge claims it excludes | `placement.edge_facing` |
 | `edge_connector_side` | a connector's declared `side` is not the face it is on (`place_simple` applies that face before placing, so it fires on a board placed some other way). Always **warn** (`error` is refused at load) | the graded part's face |
+| `edge_oversubscribed` | an edge (on one face) whose declared parts cannot all seat on it together: the record `place_simple` makes and reports once a run (`oversubscribed`), measured on the board it seats on -- declared faces and poses applied -- so check_floorplan says it of the pile BEFORE placing, and of every placed seed alike. Raised by check_floorplan's grade (`grade(edge_seats=True)`) and by `--plan-only`. **warn** by default; `severity` may promote it | `edge_seat.oversubscribed` (`seats`, its rows packed by `_crowding`, worded by `crowding_text`) |
 | `mechanical_drift` | a `mechanical.json` ref moved or turned away from its recorded pose: **warn** for a move its anchor already reports, **error** for a turn and for a pad-less ref; the map may promote the warn, never demote the error | the recorded pose vs the board |
 | `block_unresolved` | a block matched no footprint | — |
 | `intent_zone_in_keepout` | a declared zone is contradicted by a keep-out that binds its members: covered entirely (reported per block), or left with no pose for a member at any rotation (per member) | `zone_covered_by_keepout`, then `zone_pose_feasibility` |

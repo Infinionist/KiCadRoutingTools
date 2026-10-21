@@ -153,25 +153,15 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
     """`(state, model, movable, notes)` for the board, its groups and its
     base intent (the JSON for its claims; the loaded `intent`, with its
     resolved `blocks`, for its keep-outs and zones)."""
-    import pose_score
     from list_nets import board_floor_knobs
     from placement import floorplan as fp
+    from placement.edge_seat import seat_state
     from placement.grouping import (BoardView, claim_rows, decap_conflicts,
                                     fold_followers, group_of, is_ground)
     from placement.simple import Model
     notes = []
     clearance, edge, _ = board_floor_knobs(board)
-    # every declared zone binds its members (containment) and, when exclusive,
-    # keeps strangers out; the board's bounds open a zone side on the outline
-    # to an edge-claim member (#1174)
-    zones = (fp.zone_entries(intent, blocks or {}, bounds=pcb.board_info.board_bounds)
-             if intent is not None else ())
-    state = pose_score.make_state(pcb, board, clearance=clearance,
-                                  board_edge_clearance=edge,
-                                  extra_locked_refs=set(fixed) or None,
-                                  keepouts=intent.keepouts if intent is not None else (),
-                                  intent_zones=list(zones),
-                                  exclusive_zones=[z for z in zones if z['exclusive']])
+    state = seat_state(pcb, board, intent, blocks, clearance, edge, fixed)
     movable = sorted(r for r, p in state.parts.items() if not p.locked)
     # claims: the intent's own, and each crystal at its IC's oscillator pins
     rows, xnotes = claim_rows(pcb, base)
@@ -685,7 +675,6 @@ def main(argv=None):
     from placement import floorplan
     from placement.groups import parse_sources
     from placement.grouping import GroupsError, load_groups
-    from placement.legality import footprint_side
     from placement.parser import extract_locked_refs
     from placement.portfolio import copy_siblings
     from placement.writer import SideFlipUnsupported, write_placed_output
@@ -721,23 +710,8 @@ def main(argv=None):
         return 2
     # ... and every part the intent seats at a declared pose goes there and
     # stays (`fixed_poses[]`: the mechanical facts the brief compiles)
-    fixed = {str(f['ref']): f for f in intent.fixed_poses if str(f['ref']) in pcb.footprints}
-    pre = {}
-    for r, f in sorted(fixed.items()):
-        foot = pcb.footprints[r]
-        rot = (float(f['rot']) if f.get('rot') not in (None, 'unknown')
-               else (foot.rotation or 0.0))
-        if (abs(float(f['x']) - foot.x) > 1e-6 or abs(float(f['y']) - foot.y) > 1e-6
-                or abs((rot - (foot.rotation or 0.0) + 180.0) % 360.0 - 180.0) > 1e-6):
-            pre[r] = {'reference': r, 'new_x': float(f['x']), 'new_y': float(f['y']),
-                      'new_rotation': rot}
-    for r, side in sorted(sides.items()):
-        foot = pcb.footprints[r]
-        if footprint_side(foot) != side:
-            pre.setdefault(r, {'reference': r, 'new_x': foot.x, 'new_y': foot.y,
-                               'new_rotation': foot.rotation or 0.0})['new_side'] = side
-    flips = [pre[r] for r in sorted(pre)]
-    locked = sorted(set(pre) & extract_locked_refs(a.board))
+    fixed, flips = floorplan.declared_moves(intent, sides, pcb)
+    locked = sorted({f['reference'] for f in flips} & extract_locked_refs(a.board))
     if locked:
         print(f"place_simple: {', '.join(locked)} locked in the board on a face or at a "
               f"pose its declaration does not name; a lock is a decision. Nothing was "

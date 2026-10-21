@@ -690,6 +690,9 @@ def test_severity_keys_are_checked_against_the_rule_names():
                                         'plan_fixed_overlap_budget',
                                         # #959 (#1000)
                                         'edge_connector_side',
+                                        # an edge whose declared parts
+                                        # cannot all seat together
+                                        'edge_oversubscribed',
                                         # #1051: array_problems
                                         'array_unresolved',
                                         'array_conflict',

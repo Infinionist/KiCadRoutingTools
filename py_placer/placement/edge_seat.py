@@ -604,6 +604,78 @@ def seats(state, pcb, pcb_file, intent, movable, crowded=None
     return out, notes, unseated
 
 
+def seat_state(pcb, pcb_file, intent, blocks, clearance, edge, fixed=()):
+    """The placement state `place_simple` seats and anneals on: the board's
+    floors, the intent's `fixed_poses[]` refs held (`fixed`), its keep-outs,
+    and every declared zone binding its members (containment) and, when
+    exclusive, keeping strangers out -- the board's bounds open a zone side
+    on the outline to an edge-claim member (#1174)."""
+    import pose_score
+    from . import floorplan as fp
+    zones = (fp.zone_entries(intent, blocks or {}, bounds=pcb.board_info.board_bounds)
+             if intent is not None else ())
+    return pose_score.make_state(pcb, pcb_file, clearance=clearance,
+                                 board_edge_clearance=edge,
+                                 extra_locked_refs=set(fixed) or None,
+                                 keepouts=intent.keepouts if intent is not None else (),
+                                 intent_zones=list(zones),
+                                 exclusive_zones=[z for z in zones if z['exclusive']])
+
+
+def oversubscribed(pcb, pcb_file, intent, clearance, edge, group_sources=()
+                   ) -> List[dict]:
+    """The `_crowding` records `place_simple` will make on this board and
+    intent: its edges whose declared parts cannot all seat together, the
+    same records in every seed, measured BEFORE placing, so a check of the
+    plan warns where it used to say nothing and only the placement run
+    reported the edge. One measure, two readers: the grade
+    (`floorplan.grade(edge_seats=True)`, `plan_check`) calls this, and this
+    calls `seats` on the board `place_simple` seats on -- each part on its
+    declared face and at its declared pose (`floorplan.declared_moves`,
+    written to a scratch copy) and the same state (`seat_state`). Nothing on
+    `pcb` or its file is changed. The faces a groups file adds are not known
+    here; a declaration contradicting itself leaves its part where it is; a
+    board whose declared faces cannot be written measures nothing, since
+    place_simple refuses it.
+
+    A part's seat lines depend on the parts that do not move, never on where
+    the movable ones stand, so a placed board and its pile give the same
+    records."""
+    import os
+    import shutil
+    import tempfile
+    from . import floorplan as fp
+    if not any(c.get('edge') for c in intent.edge_connectors):
+        return []
+    blocks = fp.resolve_blocks(intent, pcb, group_sources)[0]
+    sides = fp.declared_sides(fp.declared_side_claims(intent, blocks))[0]
+    fixed, moves = fp.declared_moves(intent, {r: s for r, s in sides.items()
+                                              if r in pcb.footprints}, pcb)
+    tmp, board, src = None, pcb, pcb_file
+    try:
+        if moves:
+            from kicad_parser import parse_kicad_pcb
+            from .portfolio import copy_siblings
+            from .writer import SideFlipUnsupported, write_placed_output
+            tmp = tempfile.mkdtemp(prefix='edge_seat_')
+            src = os.path.join(tmp, os.path.basename(pcb_file))
+            try:
+                write_placed_output(pcb_file, src, moves)
+            except (ValueError, SideFlipUnsupported):
+                return []       # place_simple refuses such a board, and seats nothing
+            copy_siblings(pcb_file, src)
+            board = parse_kicad_pcb(src)
+            blocks = fp.resolve_blocks(intent, board, group_sources)[0]
+        state = seat_state(board, src, intent, blocks, clearance, edge, set(fixed))
+        movable = {r for r, p in state.parts.items() if not p.locked}
+        crowded: List[dict] = []
+        seats(state, board, src, intent, movable, crowded=crowded)
+        return crowded
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _sit(part, seat) -> None:
     """Move `part` onto `seat`: at its own turn when the seat has it (else
     the turn with the most room), in the middle of that turn's longest

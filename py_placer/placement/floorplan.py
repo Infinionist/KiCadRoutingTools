@@ -7051,6 +7051,11 @@ _NON_RULE_SEVERITIES = frozenset({
     # say `warn`; `error` is refused at load), because it is advisory by
     # design.
     'edge_connector_side',
+    # Beside `edge_connector` too, by `grade(edge_seats=True)` and
+    # `plan_check`: an edge whose declared parts cannot all seat together
+    # (`edge_seat.oversubscribed`, the records place_simple makes). WARN by
+    # default, like `plan_edge_crowded`; an intent may promote it.
+    'edge_oversubscribed',
     # #959 (#998). Raised by `plan_check`, the zone plan checked against
     # itself and the board BEFORE the first pose write, and (the first) by
     # `grade` too. Every ERROR among them is sound: the plan cannot be seeded
@@ -8251,6 +8256,35 @@ def declared_sides(claims: Dict[str, List[Tuple[str, str]]]
     return sides, conflicts
 
 
+def declared_moves(intent: Intent, sides: Dict[str, str], pcb_data
+                   ) -> Tuple[Dict[str, Dict], List[Dict]]:
+    """`(fixed, moves)`: the intent's `fixed_poses[]` entries for refs the
+    board has, `{ref: entry}`, and the writer's moves (`write_placed_output`
+    rows) that put each part at its declared pose and on its declared face
+    (`sides`, from `declared_sides`) where it is not there yet -- what
+    `place_simple` applies before it seats or anneals anything, and what an
+    edge-seat measure made before placing (`edge_seat.oversubscribed`) must
+    apply too."""
+    from .legality import footprint_side
+    fixed = {str(f['ref']): f for f in intent.fixed_poses
+             if str(f['ref']) in pcb_data.footprints}
+    pre: Dict[str, Dict] = {}
+    for r, f in sorted(fixed.items()):
+        foot = pcb_data.footprints[r]
+        rot = (float(f['rot']) if f.get('rot') not in (None, 'unknown')
+               else (foot.rotation or 0.0))
+        if (abs(float(f['x']) - foot.x) > 1e-6 or abs(float(f['y']) - foot.y) > 1e-6
+                or abs((rot - (foot.rotation or 0.0) + 180.0) % 360.0 - 180.0) > 1e-6):
+            pre[r] = {'reference': r, 'new_x': float(f['x']), 'new_y': float(f['y']),
+                      'new_rotation': rot}
+    for r, side in sorted(sides.items()):
+        foot = pcb_data.footprints[r]
+        if footprint_side(foot) != side:
+            pre.setdefault(r, {'reference': r, 'new_x': foot.x, 'new_y': foot.y,
+                               'new_rotation': foot.rotation or 0.0})['new_side'] = side
+    return fixed, [pre[r] for r in sorted(pre)]
+
+
 def _planned_sides(intent: Intent,
                    blocks: Dict[str, List[str]]) -> Dict[str, str]:
     """The face each part is PRICED on by `plan_check`: the one its
@@ -8264,6 +8298,48 @@ def _planned_sides(intent: Intent,
     anneals.
     """
     return declared_sides(declared_side_claims(intent, blocks))[0]
+
+
+def edge_oversubscribed_findings(intent: Intent, pcb_data, pcb_file: str, *,
+                                 clearance: Optional[float] = None,
+                                 board_edge_clearance: Optional[float] = None,
+                                 group_sources: Sequence[str] = ()
+                                 ) -> List[Violation]:
+    """One `edge_oversubscribed` finding per edge and face whose declared
+    parts cannot all seat there together: the records `place_simple` makes
+    (`edge_seat.oversubscribed`, the seat lines `_crowding` packs), worded as
+    place_simple words them (`edge_seat.crowding_text`). WARN unless the
+    intent's severity map promotes it. A floor left None is the board's own
+    (`board_floor_knobs`), as place_simple reads it.
+
+    place_simple reports such an edge once per run and places the parts that
+    do not fit as any other part; before this, a check of the plan, or of
+    the pile it is placed from, said nothing about it."""
+    from .edge_seat import crowding_text, oversubscribed
+    if not any(c.get('edge') for c in intent.edge_connectors):
+        return []
+    if clearance is None or board_edge_clearance is None:
+        from list_nets import board_floor_knobs
+        c0, e0, _k = board_floor_knobs(pcb_file)
+        clearance = c0 if clearance is None else clearance
+        board_edge_clearance = (e0 if board_edge_clearance is None
+                                else board_edge_clearance)
+    out = []
+    for rec in oversubscribed(pcb_data, pcb_file, intent, clearance,
+                              board_edge_clearance, group_sources):
+        need = sum(min(t['length_mm'] for t in p['turns'])
+                   for p in rec['parts'])
+        out.append(Violation(
+            rule='edge_oversubscribed',
+            severity=intent.severity_of('edge_oversubscribed', WARN),
+            message=crowding_text(rec),
+            measured={'edge': rec['edge'], 'side': rec['side'],
+                      'parts': [p['ref'] for p in rec['parts']],
+                      'parts_mm': round(need, 4),
+                      'free': rec['free'], 'fit': rec['fit'],
+                      'seated': rec['seated'], 'unseated': rec['unseated']},
+            expected={'fit': len(rec['parts'])}))
+    return out
 
 
 def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
@@ -8723,6 +8799,13 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                     measured={'claimed_mm': row['claimed_mm'], 'edge': edge},
                     expected={'span_mm': round(span, 4)}))
     measured['edges'] = sorted(edge_rows.values(), key=lambda r: r['edge'])
+    # 6b. the edges whose declared parts cannot all seat together, on the
+    #     seat lines place_simple packs (`edge_oversubscribed_findings`)
+    crowded = edge_oversubscribed_findings(
+        intent, pcb_data, pcb_file, clearance=clearance,
+        board_edge_clearance=board_edge_clearance, group_sources=group_sources)
+    out.extend(crowded)
+    measured['edge_oversubscribed'] = [v.measured for v in crowded]
 
     # 7. interior utilisation
     try:
@@ -8858,7 +8941,8 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
           brief_fragment=None, mechanical=None,
           mechanical_skip: Sequence[str] = (),
           reconciliation=None,
-          with_pad_stacks: bool = False) -> GradeResult:
+          with_pad_stacks: bool = False,
+          edge_seats: bool = False) -> GradeResult:
     """Measure a board against its declared floorplan intent.
 
     `with_roster` (#959) also builds the rule roster -- which rules the intent
@@ -8867,7 +8951,12 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
 
     `with_pad_stacks` (#1064) also measures check_assembly's exact pad
     stacks into `GradeResult.pad_stacks`, for check_floorplan to PRINT. It
-    is not a rule and changes no verdict; opt-in for the same reason."""
+    is not a rule and changes no verdict; opt-in for the same reason.
+
+    `edge_seats` also reports each edge whose declared parts cannot all seat
+    together (`edge_oversubscribed_findings`, place_simple's own seat
+    measure). Opt-in, because it seats every declared edge part on a
+    scratch state; check_floorplan asks for it."""
     from . import placement_state
 
     ctx, outline, state, blocks, block_problems = _grade_ctx(
@@ -8893,6 +8982,11 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
     violations.extend(found)
     violations.extend(exclusive_unsatisfiable(intent, blocks, pcb_data,
                                               pcb_file, state=state))
+    if edge_seats:
+        violations.extend(edge_oversubscribed_findings(
+            intent, pcb_data, pcb_file, clearance=clearance,
+            board_edge_clearance=board_edge_clearance,
+            group_sources=group_sources))
     if mechanical:
         violations.extend(mechanical_drift(intent, pcb_data, mechanical,
                                            skip=mechanical_skip))
