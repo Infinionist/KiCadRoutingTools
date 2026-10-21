@@ -52,6 +52,10 @@ REFUSED_TOOLS = {
         'places the board by its groups and one annealed objective; the plan '
         'format has no placement step. Run it BEFORE the plan and start the '
         'plan from the placed board'),
+    'judge_seeds.py': (
+        "fast-routes and scores place_simple's judged seeds (the placement "
+        "skill's judging step); the plan format has no placement step. Run "
+        'it BEFORE the plan and start the plan from the kept seed\'s board'),
     'place_movie.py': (
         'films place_simple placing the board (and, with --route, the '
         "placement skill's flow, routing included); the plan format has no "
