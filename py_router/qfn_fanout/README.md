@@ -54,7 +54,12 @@ The `--nets` option supports fnmatch-style wildcards (`*`, `?`) and exclusion pa
 | `!*VCC*` | Exclude nets containing "VCC" |
 | `"*" "!GND" "!VCC"` | All nets except GND and VCC |
 
-**Note:** Nets starting with "unconnected-" (KiCad pins not connected in schematic) are automatically excluded.
+**Note:** Nets starting with "unconnected-" (KiCad pins not connected in schematic) are automatically excluded,
+and so is any net with **a single pad on the whole board** (#1342) -- a spare pin the schematic still names
+(an unused DPHY/HDMI/SD lane on a CM4/CM5 module) has nothing to connect to, so its escape would be copper
+that only blocks routing. This is bga_fanout's #122 rule (`single_pad_net_ids`), applied whatever `--nets`
+says; the run prints `Skipping N single-pad/NC net(s)` and `JSON_SUMMARY` carries `skipped_nc`. Such a net
+counts as neither requested nor failed.
 
 ## Options
 

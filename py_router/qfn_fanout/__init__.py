@@ -24,6 +24,7 @@ from kicad_parser import parse_kicad_pcb, Footprint, PCBData, find_components_by
 from kicad_writer import add_tracks_and_vias_to_pcb
 from qfn_fanout.types import QFNLayout, PadInfo, FanoutStub
 from bga_fanout.constants import POSITION_TOLERANCE
+from bga_fanout import single_pad_net_ids
 from net_queries import matches_net_filter
 from qfn_fanout.layout import analyze_qfn_layout, analyze_pad, single_line_reason
 from qfn_fanout.geometry import calculate_fanout_stub
@@ -1289,12 +1290,25 @@ def generate_qfn_fanout(footprint: Footprint,
             0, 0, f"QFN fanout {getattr(footprint, 'reference', '?')}: "
                   f"analyzing {len(footprint.pads)} pad(s)...")
 
+    # #1342: a net with one pad board-wide (a spare / NC pin the schematic
+    # still names) has nothing to connect to, so its escape is copper that
+    # can only block routing. bga_fanout has skipped these since #122; the
+    # QFN fan used to escape them, and on a CM5 module 33 of 70 new vias were
+    # on such nets. Same predicate, same disclosure.
+    nc_net_ids = single_pad_net_ids(footprint, pcb_data)
+    if nc_net_ids:
+        print(f"  Skipping {len(nc_net_ids)} single-pad/NC net(s) "
+              f"(nothing to connect to)")
+
     for pad in footprint.pads:
         if not pad.net_name or pad.net_id == 0:
             continue
 
         # Skip unconnected nets (KiCad pins not connected in schematic)
         if pad.net_name.lower().startswith('unconnected-'):
+            continue
+
+        if pad.net_id in nc_net_ids:
             continue
 
         if net_filter and not matches_net_filter(pad.net_name, net_filter):
@@ -2043,6 +2057,8 @@ def main():
         'escaped': escaped,
         'failed': len(unescaped),
         'unescaped_nets': unescaped,
+        # #1342: single-pad (NC) nets the engine skipped, as bga_fanout's key.
+        'skipped_nc': len(single_pad_net_ids(footprint, pcb_data)),
         'clearance': args.clearance,
         'track_width': args.width,
         'escape_method': args.escape_method,

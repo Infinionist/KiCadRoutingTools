@@ -626,7 +626,9 @@ Use the printed flags as-is:
   track at 0.2 mm clearance) — the same board escapes **all** balls at the 0.1 mm
   floor. So don't gate on pitch: gate on whether balls actually dropped.
   `bga_fanout.py` and `qfn_fanout.py` both end with a `JSON_SUMMARY: {...}` line
-  giving `requested`/`escaped`/`failed`/`unescaped_nets`. **After every fanout, parse it;
+  giving `requested`/`escaped`/`failed`/`unescaped_nets` (a net with one pad on the
+  whole board -- an NC pin -- is skipped by both and counted in `skipped_nc`, never
+  in `requested`; #122, #1342). **After every fanout, parse it;
   if `failed > 0` (escaped < requested), re-run the fanout with `--clearance` at
   the manufacturing floor** (never below it — the floor is the rule the human
   board passes DRC against, so tightening board-wide is manufacturable and needs
