@@ -42,8 +42,11 @@ the layer's default track width and applies neck-down widths to the result:
 
 - Segments within `--neckdown-length` (default 2.5mm) of a pad endpoint are laid at the
   pad-entry width -- the power width capped at that pad's short side -- wherever it fits, and
-  at the default width only where it does not (#1318). An end on a via or a track takes the
-  power width there. They used to stay at the default width whole, fit or not, so a short edge
+  at the default width only where it does not (#1318). Whether it fits is measured exactly
+  against the neighbouring pads, tracks and vias where the routing grid would refuse it (the
+  grid rounds, so it refuses some pin entries that clear); near the board edge, a bare drill
+  hole, a keep-out or a filled copper graphic the grid's answer stands. An end on a via or a
+  track takes the power width there. They used to stay at the default width whole, fit or not, so a short edge
   (a 1 mm pin-to-pin run, a 1.2 mm drop to a via at a 0.5 mm-pitch LQFP) shipped narrow end to
   end.
 - Farther segments return to the power width wherever the wide clearance actually fits;
