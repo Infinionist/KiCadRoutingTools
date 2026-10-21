@@ -248,6 +248,15 @@ def write_label_output(input_file: str, output_file: str,
     return True
 
 
+#: A pad's own `(at x y [angle])`: the pad number quoted or bare, then any run
+#: of bare tokens before it -- type and shape, and the `locked` KiCad 6 writes
+#: on every pad, which a fixed two-token pattern missed, leaving every pad of a
+#: rotated KiCad 6 footprint turned against its body (#1305, steppenprobe).
+_PAD_AT = re.compile(
+    r'(\(pad\s+(?:"[^"]*"|[^\s()"]+)(?:\s+[^\s()"]+)*\s*)'
+    r'\(at\s+(' + AT_NUM + r')\s+(' + AT_NUM + r')(?:\s+(' + AT_NUM + r'))?\)')
+
+
 def _rotate_pad_angles(fp_text: str, delta_rot: float) -> str:
     """Add delta_rot to the (at x y [angle]) of every pad in a footprint block."""
 
@@ -260,10 +269,7 @@ def _rotate_pad_angles(fp_text: str, delta_rot: float) -> str:
             return f'{head}(at {x} {y} {new_angle:.6g})'
         return f'{head}(at {x} {y})'
 
-    return re.sub(
-        r'(\(pad\s+"[^"]*"\s+\S+\s+\S+\s*\n?\s*)'
-        r'\(at\s+(' + AT_NUM + r')\s+(' + AT_NUM + r')(?:\s+(' + AT_NUM + r'))?\)',
-        fix_pad, fp_text)
+    return _PAD_AT.sub(fix_pad, fp_text)
 
 
 #: A text node's own `(at x y [angle])`.
