@@ -37,6 +37,7 @@
     "pins_to_edge",
     "proximity",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -69,6 +70,7 @@
     "must_lock",
     "pins_to_edge",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -100,6 +102,7 @@
     "must_lock",
     "proximity",
     "replicate",
+    "template",
     "zone_exclusive"
    ],
    "skipped_withheld": [],
@@ -130,6 +133,7 @@
     "keepout",
     "must_lock",
     "replicate",
+    "template",
     "zone_exclusive",
     "zone_side"
    ],
@@ -162,6 +166,7 @@
     "pins_to_edge",
     "proximity",
     "replicate",
+    "template",
     "zone_exclusive"
    ],
    "skipped_withheld": [],
@@ -190,6 +195,7 @@
     "keepout",
     "must_lock",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -220,6 +226,7 @@
     "keepout",
     "must_lock",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -250,6 +257,7 @@
     "keepout",
     "must_lock",
     "replicate",
+    "template",
     "zone_exclusive"
    ],
    "skipped_withheld": [],
@@ -281,6 +289,7 @@
     "pins_to_edge",
     "proximity",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -314,6 +323,7 @@
     "pins_to_edge",
     "proximity",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -347,6 +357,7 @@
     "must_lock",
     "proximity",
     "replicate",
+    "template",
     "zone_exclusive"
    ],
    "skipped_withheld": [],
@@ -378,6 +389,7 @@
     "pins_to_edge",
     "proximity",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -411,6 +423,7 @@
     "pins_to_edge",
     "proximity",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -444,6 +457,7 @@
     "pins_to_edge",
     "proximity",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -477,6 +491,7 @@
     "pins_to_edge",
     "proximity",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -510,6 +525,7 @@
     "pins_to_edge",
     "proximity",
     "replicate",
+    "template",
     "zone_exclusive"
    ],
    "skipped_withheld": [],
@@ -538,6 +554,7 @@
     "keepout",
     "must_lock",
     "replicate",
+    "template",
     "zone_exclusive"
    ],
    "skipped_withheld": [],
@@ -567,6 +584,7 @@
     "must_lock",
     "proximity",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -598,6 +616,7 @@
     "must_lock",
     "proximity",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -630,6 +649,7 @@
     "keepout",
     "must_lock",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
@@ -662,6 +682,7 @@
     "keepout",
     "must_lock",
     "replicate",
+    "template",
     "zone_exclusive"
    ],
    "skipped_withheld": [],
@@ -692,6 +713,7 @@
     "keepout",
     "must_lock",
     "replicate",
+    "template",
     "zone_containment",
     "zone_exclusive",
     "zone_side"
