@@ -113,9 +113,16 @@ def _quiet(fn, *a, **k):
         return fn(*a, **k)
 
 
+#: The edge floor every case here was measured at: esp_prog declares no edge
+#: rule, which #1301 reads as the 0.2 fab floor, not the old 0.55.
+EDGE_MM = 0.55
+EDGE = ['--board-edge-clearance', str(EDGE_MM)]
+
+
 def _knobs(board):
     from placement import pose_ops
-    clr, bec, _tw, _k = pose_ops.resolve_knobs(board)
+    clr, bec, _tw, _k = pose_ops.resolve_knobs(board,
+                                               board_edge_clearance=EDGE_MM)
     return clr, bec
 
 
@@ -235,7 +242,7 @@ def _summary(r):
 def _set(radius):
     out = os.path.join(_TMP.name, 'o.kicad_pcb')
     return [sys.executable, '-X', 'utf8', POSE, evidence(ESP, 'esp_prog'),
-            out, '--dry-run', 'set', REF, str(REQ[0]), str(REQ[1]), '--snap',
+            out, *EDGE, '--dry-run', 'set', REF, str(REQ[0]), str(REQ[1]), '--snap',
             '--radius', radius]
 
 
@@ -287,7 +294,7 @@ def _off_board():
 
 def _off_set(x, y, *extra):
     out = os.path.join(_TMP.name, 'o1277.kicad_pcb')
-    return [sys.executable, '-X', 'utf8', POSE, _off_board(), out,
+    return [sys.executable, '-X', 'utf8', POSE, _off_board(), out, *EDGE,
             '--dry-run', 'set', REF, str(x), str(y), '--rot', '180'] + [
                 str(e) for e in extra]
 
@@ -460,7 +467,8 @@ def test_the_labels_reach_converge_and_the_suggestion():
     # converge poses: the escape pose is reported as one, and said so.
     conv = tool('converge.py')
     r = check([sys.executable, '-X', 'utf8', conv, 'poses', _off_board(),
-               '--ref', REF, '--radius', '3', '--limit', '8'], accept=True)
+               '--ref', REF, '--radius', '3', '--limit', '8', *EDGE],
+              accept=True)
     d = json.loads(r.stdout)
     by = {(p['x'], p['y'], p['rot']): p for p in d['poses']}
     off = by.get((146.0, 104.5, 270.0))
