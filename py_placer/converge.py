@@ -3020,7 +3020,8 @@ def build_parser():
                         'the work with --radius / --step instead.')
     q.add_argument('--clearance', type=float, default=None,
                    help='pose-legality clearance (default: the board\'s own '
-                        'Default netclass, else 0.25; run-7 S4 -- a fixed '
+                        'Default netclass floored at its Board Setup '
+                        'min_clearance, else 0.25; run-7 S4 -- a fixed '
                         'default tighter than the board floor silently '
                         'vetoes legal poses)')
     q.add_argument('--board-edge-clearance', type=float, default=None,

@@ -242,10 +242,13 @@ def resolve_clearance(pcb_file: Optional[str] = None,
         return float(clearance), 'caller'
     if pcb_file:
         try:
-            from list_nets import board_default_netclass_clearance
-            val = board_default_netclass_clearance(pcb_file)
+            # as KiCad grades it: the class floored at Board Setup
+            # min_clearance (#1338)
+            from list_nets import board_grading_clearance
+            val, src = board_grading_clearance(pcb_file)
             if val:
-                return float(val), 'netclass'
+                return float(val), ('netclass' if src == 'board netclass'
+                                     else src)
         except Exception:
             pass
     try:

@@ -383,7 +383,7 @@ def board_floor_declaration(pcb_path, design_rules=None):
 
 def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
                       clearance_default=0.25, edge_default=0.55,
-                      design_rules=None, grading=False):
+                      design_rules=None):
     """Resolve grading/legality knobs BOARD-first (run-7 S1/S4).
 
     An explicit value wins; an unset one resolves from the board's own
@@ -393,9 +393,12 @@ def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
     violations (S1: check_floorplan oob), and one LOOSER lets real ones
     pass; the same mistake vetoed legal poses in converge (S4).
 
-    `grading=True` resolves an unset clearance the way KiCad grades it,
-    floored at Board Setup ``min_clearance`` (`board_grading_clearance`,
-    #1338) -- place_pose's verdict. The placers keep the class.
+    An unset clearance resolves the way KiCad GRADES the board: the Default
+    class floored at Board Setup ``min_clearance`` (`board_grading_clearance`,
+    #1338). Every caller is a placement grade or a placer, and a part seated
+    at the class alone on multichannel_mixer (class 0.2, min_clearance 0.3)
+    is one KiCad reports pad clearance errors on, so the placers obey the
+    floor too. A tool that PREDICTS routability reads `board_floor` instead.
 
     Returns ``(clearance, board_edge_clearance, knobs)`` where ``knobs``
     records each value's source (``'cli'`` | ``'board netclass'`` |
@@ -410,13 +413,9 @@ def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
     # render_placement a 0.0 edge floor (every edge-halo and oob term
     # vanishing) where it had previously used 0.55.
     knobs = {}
-    if clearance is None and grading:
+    if clearance is None:
         clearance, src = board_grading_clearance(
             pcb_path, None, clearance_default, design_rules)
-    elif clearance is None:
-        v = board_default_netclass_clearance(pcb_path, design_rules)
-        clearance, src = ((v, 'board netclass') if v is not None and v > 0
-                          else (clearance_default, 'fixed default'))
     else:
         src = 'cli'
     knobs['clearance'] = {'value': clearance, 'source': src}

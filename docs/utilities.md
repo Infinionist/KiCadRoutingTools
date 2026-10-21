@@ -347,8 +347,9 @@ refuse, so it is disclosed on stderr — and the siblings are carried (#441).
 The clearance is the one KiCad grades the board at (#1338,
 `list_nets.board_grading_clearance`): the Default class floored at Board
 Setup `min_clearance`, as check_drc reads it since #1210, source `board
-minimum clearance` when the floor binds. check_assembly grades at the same
-value, and its `--clearance` note compares against it.
+minimum clearance` when the floor binds. check_assembly, check_floorplan,
+render_placement, converge and the placers resolve the same value, so a
+pose the placer seats is graded at the clearance it was seated at.
 Exit 0 written; 2 the request does not name a thing on this board (a typo you
 rewrite); 3 the board carries copper (`--allow-routed` to override); 4 well
 formed, and the board said no (a measurement you act on), nothing written —

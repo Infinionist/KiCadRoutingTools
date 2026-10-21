@@ -200,7 +200,9 @@ def build_parser():
                         "ON unlike on the placement CLIs")
     p.add_argument('--clearance', type=float, metavar='MM',
                    help="clearance the legality model grades at (default: "
-                        "the board's own Default netclass, else 0.25). "
+                        "the board's own Default netclass floored at its "
+                        "Board Setup min_clearance, as KiCad grades it, "
+                        "else 0.25). "
                         "Grading a fixed constant tighter than the board's "
                         "floor manufactures phantom violations")
     p.add_argument('--board-edge-clearance', type=float, metavar='MM',

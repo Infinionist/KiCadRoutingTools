@@ -2012,8 +2012,9 @@ Examples:
                         'the unreadable ratsnest KiCad already shows')
     p.add_argument('--clearance', type=float, default=None,
                    help="pad clearance in mm for the legality/halo metrics. "
-                        "DEFAULT: the board's own Default net-class clearance, "
-                        "else its min_clearance constraint, else "
+                        "DEFAULT: the board's own Default net-class clearance "
+                        "floored at its Board Setup min_clearance (as KiCad "
+                        "grades it), else "
                         f"{defaults.CLEARANCE}. The effective value and its "
                         "source are printed, and land in the JSON as "
                         "instrument.floors -- this flag documented no default "

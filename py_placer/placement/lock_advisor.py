@@ -246,8 +246,10 @@ def advise_locks(pcb_data, pcb_file: Optional[str] = None, *,
     _cc = conflict_clearance
     if _cc is None:
         try:
-            from list_nets import board_default_netclass_clearance
-            _cc = board_default_netclass_clearance(pcb_file) if pcb_file else None
+            # as KiCad grades it: the class floored at Board Setup
+            # min_clearance (#1338)
+            from list_nets import board_grading_clearance
+            _cc = board_grading_clearance(pcb_file)[0] if pcb_file else None
         except Exception:
             _cc = None
     if not _cc:
