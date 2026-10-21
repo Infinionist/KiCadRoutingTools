@@ -142,8 +142,8 @@ def test_judge_key_and_gui_agree():
                 json.dump(d, fh)
             sc = placement_run._read_score(p)
             assert sc is not None, (s, d)
-            rows.append(dict(zip(('blocking', 'vias', 'copper_mm', 'segments', 'floorplan'), sc),
-                             seed=s))
+            rows.append(dict(zip(('blocking', 'vias', 'copper_mm', 'segments', 'floorplan',
+                                  'joins'), sc), seed=s))
     by_gui = [r['seed'] for r in sorted(rows, key=placement_run.candidate_key)]
     assert by_gui == by_judge, (by_gui, by_judge)
     print(f'  PASS: judge_key and the GUI both rank {by_judge}: the clean seeds above s8')

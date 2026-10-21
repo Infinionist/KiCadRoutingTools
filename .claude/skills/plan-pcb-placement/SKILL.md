@@ -30,6 +30,12 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
 
 - **"Better" is lexicographic, never a weighted sum.** A lower via count never
   buys back an open net.
+- **Below DONE, open connections outrank vias and copper.** Between two
+  boards of equal `blocking`, the one whose `joins_needed` (in `board_score`
+  and `quick_score` JSON: the joins its open nets still need) is lower is
+  better, whatever its vias or copper: `unrouted` counts a net as 1 whatever
+  its size, and a board missing a 17-pad rail has fewer vias because the
+  rail is missing. Vias, copper_mm and segments break a tie only after that.
 - **In `place` mode the fast route is your own check.** `scripts/grade.py
   --mode place` and the verifier grade the placement, not a route; keep the
   fast-routed board and its score JSON (`quick_score`) as the evidence for
@@ -679,8 +685,9 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
    via, copper and segment counts. (`board_score` itself would count DRC
    grazes that level 2 leaves for the full route's cleanup, which say
    nothing about the placement.)
-3. **Keep the best** by floorplan errors first, then blocking, then vias,
-   copper_mm, segments (`quick_score.judge_key`): every seed whose floorplan
+3. **Keep the best** by floorplan errors first, then blocking, then
+   `joins_needed`, then vias, copper_mm, segments
+   (`quick_score.judge_key`): every seed whose floorplan
    grades clean ranks above every seed that does not, since a route cannot
    clear a floorplan error. Copy its placement (`s<S>.kicad_pcb`, never the
    `--quick` board) to `wk/<run>/final.kicad_pcb` with `copy_board.py`. A
@@ -763,8 +770,9 @@ does not come, classify the failure (§4).
      20 minutes.
    - **If DONE will not come:** after three consecutive DIFFERENT approaches
      that each fail to lower `unrouted` + `broken` (then the rest of
-     `blocking`), measured, stop and ship the best board with every remaining
-     blocker itemised with its measurement.
+     `blocking`), measured, stop and ship the best board (by `blocking`,
+     then `joins_needed`, §1) with every remaining blocker itemised with its
+     measurement.
    - **Hard cap:** 10 hours of wall clock, unless the user sets another.
 4. **An "impossible" claim needs its measurement.** Quote
    `check_reachability` (PASSABLE is a router problem, CAGED is geometry) or

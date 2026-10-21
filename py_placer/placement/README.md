@@ -266,7 +266,10 @@ overlaps, the movable parts in its way pushed aside in turn.
 ## Judging seeds by routing
 
 A placement is judged by routing it: blocking nets first (unrouted, then
-broken), then vias, copper length and segment count. The objective's cost,
+broken), then the joins the open nets still need (`joins_needed`: a
+missing 17-pad rail is 16, one stranded pad 1, and the rail-less board has
+fewer vias because the rail is missing), then vias, copper length and
+segment count. The objective's cost,
 crossings and hpwl only rank placements nobody has routed yet. A floorplan
 error (`check_floorplan --intent`: a decap past its pin limit) ranks ahead
 of all of them, since no route clears it: a seed that carries one cannot be
@@ -320,8 +323,8 @@ python3 -X utf8 py_tools/quick_score.py $R/s${s}_fast.kicad_pcb --intent $R/inte
 check_connected gave no summary. Read `blocking` (with `--intent`, the
 floorplan's errors are in it: `blocking_by.floorplan`) and `quality` (vias,
 copper_mm, segments) from the score file, keep the best seed by
-`quick_score.judge_key` (floorplan errors first, then blocking, then vias,
-copper, segments), and copy its placement (`$R/s<S>.kicad_pcb`, never the `--quick` board)
+`quick_score.judge_key` (floorplan errors first, then blocking, then
+`joins_needed`, then vias, copper, segments), and copy its placement (`$R/s<S>.kicad_pcb`, never the `--quick` board)
 to `wk/tig/final.kicad_pcb` with `copy_board.py`; in `full` mode the skill then
 routes it with `/plan-pcb-routing`, without `--quick`.
 

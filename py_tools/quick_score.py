@@ -29,9 +29,10 @@ converge ledger holds quick and full rows side by side, and it compares two
 rows' graded sets before it compares their `blocking`.
 
 Rank seeds by `judge_key`: floorplan errors first (every seed that grades
-clean before any that does not), then blocking, then vias, copper_mm,
-segments. Never grade a board to ship with it: route that one in full and run
-`board_score`.
+clean before any that does not), then blocking, then `joins_needed` (the
+joins the open nets still need, board_score's own, #1340), then vias,
+copper_mm, segments. Never grade a board to ship with it: route that one in
+full and run `board_score`.
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -49,25 +50,32 @@ sys.path.insert(0, os.path.join(ROOT, 'py_router'))
 
 
 def connectivity(board):
-    """(blocking, blocking_by, poured) from `board_score.score_connectivity`,
-    the nets with a zone set apart. None for blocking when check_connected
-    gave no summary."""
+    """(blocking, blocking_by, poured, joins_needed) from
+    `board_score.score_connectivity`, the nets with a zone set apart.
+    `joins_needed` is board_score's own (#1340) over the same nets: N - 1 per
+    unrouted net of N pads, plus the broken joins. None for blocking and
+    joins when check_connected gave no summary."""
     from board_score import score_connectivity
     c = score_connectivity(ROOT, board)
     if not c.get('ran'):
-        return None, {'unrouted': None, 'broken': None}, {'reason': c.get('reason')}
+        return None, {'unrouted': None, 'broken': None}, {'reason': c.get('reason')}, None
     zoned = set(c.get('poured_nets') or ())
     unrouted = [n for n in c.get('unrouted_net_names') or () if n not in zoned]
+    pads = c.get('unrouted_pads') or {}
     detail = c.get('broken_detail') or {}
     broken = {n: v.get('joins_needed') or 0 for n, v in detail.items() if n not in zoned}
     poured = {n: v.get('joins_needed') or 0 for n, v in detail.items() if n in zoned}
     poured_unrouted = [n for n in c.get('unrouted_net_names') or () if n in zoned]
     blocking = len(unrouted) + sum(broken.values())
+    # an unrouted net's pad count, else 2 (the least check_connected calls
+    # unrouted): one join, as `blocking` counts it
+    joins = sum(max(1, pads.get(n, 2) - 1) for n in unrouted) + sum(broken.values())
     return (blocking,
             {'unrouted': len(unrouted), 'broken': sum(broken.values()),
              'nets': sorted(set(unrouted) | {n for n, j in broken.items() if j})},
             {'unrouted': len(poured_unrouted), 'broken': sum(poured.values()),
-             'nets': sorted(set(poured_unrouted) | {n for n, j in poured.items() if j})})
+             'nets': sorted(set(poured_unrouted) | {n for n, j in poured.items() if j})},
+            joins)
 
 
 #: What this score leaves out of board_score's `blocking`, by board_score's
@@ -104,7 +112,7 @@ def quick_score(board, intent=None):
     check_floorplan could not grade, `floorplan` is listed in `ungraded`."""
     import tempfile
     from board_score import quality, score_floorplan
-    blk, by, poured = connectivity(board)
+    blk, by, poured, joins = connectivity(board)
     reasons = dict(UNGRADED)
     components = {}
     if intent:
@@ -120,8 +128,8 @@ def quick_score(board, intent=None):
             reasons['floorplan'] = fp.get('reason') or reasons['floorplan']
     ungraded = sorted(reasons)
     components.update({k: {'ran': False, 'reason': reasons[k]} for k in ungraded})
-    return {'blocking': blk, 'blocking_by': by, 'poured': poured, 'quality': quality(board),
-            'ungraded': ungraded, 'components': components,
+    return {'blocking': blk, 'blocking_by': by, 'joins_needed': joins, 'poured': poured,
+            'quality': quality(board), 'ungraded': ungraded, 'components': components,
             'score': 'quick_score: connectivity of the nets without a zone (route.py --quick 2)'
                      + (', and the floorplan' if 'floorplan' not in reasons else '')}
 
@@ -132,17 +140,25 @@ def judge_key(score):
     Floorplan errors come first, ahead of the route: a seed check_floorplan
     grades with an ERROR (a decap past its pin limit) cannot be DONE as
     placed whatever its route does, so every seed that grades clean ranks
-    above every seed that does not (#1296). Then `blocking`, then vias,
-    copper_mm, segments. A floorplan nobody graded (no --intent) counts as 0,
-    so a run scored without an intent ranks as it did before; a value that is
-    not a number sorts last."""
+    above every seed that does not (#1296). Then `blocking`, then
+    `joins_needed` (#1340): `blocking` counts an unrouted net as 1 whatever
+    its size, so between equal blockings a board missing a 17-pad rail (16
+    joins) must lose to one with a single open pad (1 join) -- by vias it
+    won, its missing rail reading as fewer vias. Only then vias, copper_mm,
+    segments. A floorplan nobody graded (no --intent) counts as 0, so a run
+    scored without an intent ranks as it did before; `joins_needed` absent
+    (a score written before it existed) is 0 at blocking 0 and last
+    otherwise; any other value that is not a number sorts last."""
     def num(v):
         return (v if isinstance(v, (int, float)) and not isinstance(v, bool)
                 else float('inf'))
     by = score.get('blocking_by') if isinstance(score.get('blocking_by'), dict) else {}
     q = score.get('quality') if isinstance(score.get('quality'), dict) else {}
     fp = by.get('floorplan')
-    return (0 if fp is None else num(fp), num(score.get('blocking')),
+    blk = num(score.get('blocking'))
+    joins = score.get('joins_needed')
+    return (0 if fp is None else num(fp), blk,
+            0 if joins is None and blk == 0 else num(joins),
             num(q.get('vias')), num(q.get('copper_mm')), num(q.get('segments')))
 
 
@@ -161,8 +177,9 @@ def main(argv=None):
     q = sc['quality']
     p = sc['poured']
     fp = sc['blocking_by'].get('floorplan')
-    print(f"blocking={sc['blocking']} vias={q.get('vias')} copper_mm={q.get('copper_mm')} "
-          f"segments={q.get('segments')} (poured, not counted: {p.get('broken')} joins)"
+    print(f"blocking={sc['blocking']} joins_needed={sc['joins_needed']} vias={q.get('vias')} "
+          f"copper_mm={q.get('copper_mm')} segments={q.get('segments')} "
+          f"(poured, not counted: {p.get('broken')} joins)"
           + (f" floorplan={fp}" if fp is not None else ''))
     if fp:
         rules = sorted(set(sc['components']['floorplan'].get('violations') or ()))

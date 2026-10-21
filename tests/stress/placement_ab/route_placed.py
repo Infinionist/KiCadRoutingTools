@@ -8,8 +8,8 @@ placed board instead of the recorded input, then score the result.
 
 This is how a placement is judged (CLAUDE.md, "What a placement run is FOR"):
 by routing it. A placement A/B places each arm over seeds, routes every
-placed board with this, and compares `score.json` (blocking first, then vias,
-copper_mm, segments).
+placed board with this, and compares `score.json` (blocking first, then
+joins_needed, then vias, copper_mm, segments).
 
   --quick [LEVEL]  route to judge, not to ship. 1 (`--quick` alone) adds
                  route.py's --quick to the chain's whole-board route step(s)

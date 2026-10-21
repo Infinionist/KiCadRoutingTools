@@ -3,7 +3,9 @@
 A placement is judged by routing it (CLAUDE.md, "What a placement run is
 FOR"): place each arm over seeds, route every placed board the way the stress
 corpus routed the original, and compare the routed results paired per board
-and seed, with blocking first, then vias, copper_mm and segments.
+and seed, with blocking first, then `joins_needed` (the joins the open nets
+still need: a missing rail is not fewer vias), then vias, copper_mm and
+segments.
 
 - **`route_placed.py PLACED.kicad_pcb BOARD SET OUT_DIR`** routes one placed
   board on this machine. It replays the corpus board's recorded chain

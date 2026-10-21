@@ -522,37 +522,47 @@ _FAST_BOARD_RE = re.compile(r"^s\d+_fast\.kicad_pcb$")    # a --quick board: nev
 
 
 def _read_score(path):
-    """(blocking, vias, copper_mm, segments, floorplan) from a quick_score /
-    board_score JSON, or None. `floorplan` is `blocking_by.floorplan`, the
-    check_floorplan errors already summed into `blocking`; 0 when the score
-    graded no floorplan."""
+    """(blocking, vias, copper_mm, segments, floorplan, joins) from a
+    quick_score / board_score JSON, or None. `floorplan` is
+    `blocking_by.floorplan`, the check_floorplan errors already summed into
+    `blocking` (0 when the score graded no floorplan); `joins` is
+    `joins_needed`, the joins the open nets still need (0 at blocking 0, None
+    when an older score does not say)."""
     try:
         with open(path, encoding="utf-8") as f:
             doc = json.load(f)
         q = doc.get("quality") or {}
         fp = (doc.get("blocking_by") or {}).get("floorplan")
-        return (int(doc["blocking"]), int(q["vias"]), float(q["copper_mm"]),
-                int(q["segments"]), int(fp) if fp is not None else 0)
+        blocking = int(doc["blocking"])
+        joins = doc.get("joins_needed")
+        return (blocking, int(q["vias"]), float(q["copper_mm"]),
+                int(q["segments"]), int(fp) if fp is not None else 0,
+                int(joins) if joins is not None else (0 if blocking == 0 else None))
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
 
 def candidate_key(row):
-    """How the skill ranks candidates (`quick_score.judge_key`, #1296): the
+    """How the skill ranks candidates (`quick_score.judge_key`): the
     floorplan errors first -- a seed check_floorplan grades with an error
     cannot be DONE as placed, so every seed that grades clean ranks above it
-    -- then blocking, then vias, copper, segments."""
-    return (row.get("floorplan") or 0, row["blocking"], row["vias"],
-            row["copper_mm"], row["segments"])
+    (#1296) -- then blocking, then the joins the open nets still need (a
+    missing 17-pad rail is 16 joins, one stranded pad 1: by vias the
+    rail-less board won, #1340), then vias, copper, segments."""
+    joins = row.get("joins")
+    return (row.get("floorplan") or 0, row["blocking"],
+            float("inf") if joins is None else joins,
+            row["vias"], row["copper_mm"], row["segments"])
 
 
 def scan_candidates(workdir, active=None):
     """One row per seed, from the seeds' files in <workdir> -> [row], by seed.
 
     row: {seed, placed, fast, blocking, vias, copper_mm, segments, floorplan,
-    status, mtime}. `placed`/`fast` are the board paths or None; the metrics
-    are None until the fast route is scored (`floorplan`: the check_floorplan
-    errors inside `blocking`, 0 when the score graded none). status: "placing" (no finished placement
+    joins, status, mtime}. `placed`/`fast` are the board paths or None; the
+    metrics are None until the fast route is scored (`floorplan`: the
+    check_floorplan errors inside `blocking`, 0 when the score graded none;
+    `joins`: the joins the open nets still need). status: "placing" (no finished placement
     yet), "routing" (placed, no score yet), "not judged" (placed, and not
     among the seeds `judge.json` names for the skill to fast-route),
     "illegal" (its report lists illegal parts, so it is never judged),
@@ -579,10 +589,11 @@ def scan_candidates(workdir, active=None):
                     default=0.0)
         row = {"seed": s, "placed": placed, "fast": fast,
                "blocking": None, "vias": None, "copper_mm": None,
-               "segments": None, "floorplan": None, "mtime": mtime}
+               "segments": None, "floorplan": None, "joins": None,
+               "mtime": mtime}
         if score is not None:
             (row["blocking"], row["vias"], row["copper_mm"],
-             row["segments"], row["floorplan"]) = score
+             row["segments"], row["floorplan"], row["joins"]) = score
             row["status"] = "clean" if score[0] == 0 else "routed"
         elif placed and report:
             row["status"] = "routing"
@@ -593,8 +604,8 @@ def scan_candidates(workdir, active=None):
         if s not in rows:
             rows[s] = {"seed": s, "placed": None, "fast": None,
                        "blocking": None, "vias": None, "copper_mm": None,
-                       "segments": None, "floorplan": None, "status": "placing",
-                       "mtime": time.time()}
+                       "segments": None, "floorplan": None, "joins": None,
+                       "status": "placing", "mtime": time.time()}
     out = [rows[k] for k in sorted(rows)]
     _mark_unjudged(out)
     scored = [r for r in out if r["blocking"] is not None]

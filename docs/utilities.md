@@ -796,6 +796,13 @@ blocking = unrouted + broken + drc + undersized + floorplan + assembly
 quality  = (vias, copper_mm, segments)     # compared only once blocking == 0
 ```
 
+Between two boards of equal `blocking` above 0, compare `joins_needed`
+before `quality`: the joins the open nets still need, an unrouted net of N
+pads needing N - 1 (`components.unrouted.pads` has each count) and a broken
+one its components - 1. `unrouted` counts nets, so a board missing a 17-pad
+rail and a board missing one 2-pad net both score 1, and the rail-less one
+has fewer vias and less copper because the rail is missing (#1340).
+
 It reimplements no checking: every component runs the real CLI
 (`check_connected.py`, `check_drc.py`, `check_assembly.py`,
 `check_floorplan.py`, ...), so the score equals what those report. A
@@ -904,8 +911,9 @@ end reports `already_connected` and nothing about the rest of the board.
 board. With `--intent` it grades the floorplan as `board_score --intent`
 does (check_floorplan's errors, `blocking_by.floorplan`, summed into
 `blocking`): a route cannot clear a floorplan error, so the judge ranks by
-it first (`judge_key`: floorplan errors, then blocking, then vias, copper,
-segments; #1296). It leaves DRC and assembly out: level 2 skips the
+it first (`judge_key`: floorplan errors, then blocking, then `joins_needed`
+-- board_score's own count of the joins the open nets still need, #1340 --
+then vias, copper, segments; #1296). It leaves DRC and assembly out: level 2 skips the
 passes that fix grazes, so DRC on its board measures the polish it skipped,
 not the placement. The JSON has `board_score`'s keys, so the GUI's candidates
 table reads either, and it lists what it leaves out in `ungraded`, by
