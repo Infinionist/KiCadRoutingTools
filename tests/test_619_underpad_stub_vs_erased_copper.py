@@ -515,12 +515,13 @@ def test_layer_scope_decision():
     # read the mount layer, and this configuration is one of only two places in
     # the repo that can tell the difference -- every board in the corpus sweep
     # runs escape layer == footprint.layer, where the distinction is invisible.
-    check("cross-layer tally pinned at 15 tracks / 13 vias / 27 dropped "
-          "(14 / 13 / 28 before the stub measured pads exactly, PadFreeMap). "
+    check("cross-layer tally pinned at 16 tracks / 14 vias / 26 dropped "
+          "(15 / 13 / 27 at 0.1 alone: #1328 re-runs the part at 0.095, where "
+          "Net-(U2A-DATA_6) escapes; 14 / 13 / 28 before PadFreeMap). "
           "Filtering erased segments by the ESCAPE layer instead of the stub's "
           "layer selects a DIFFERENT set (25 vs 17 pairs on this board) and "
           "moves this number -- which is what makes this a real check",
-          (len(t_x), len(v_x), len(d_x)) == (15, 13, 27),
+          (len(t_x), len(v_x), len(d_x)) == (16, 14, 26),
           f"got {(len(t_x), len(v_x), len(d_x))}")
 
 
@@ -632,11 +633,14 @@ NOOP_ROWS = [
 # (bga_fanout.reroute.PadFreeMap): Net-(U2A-DATA_23)'s 0.67 mm F.Cu stub to an
 # existing via clears U2.68 by 0.188 mm at a 0.1 rule, and the pad-stamped
 # map refused it. The residual pairs, which are this file's point, are unchanged.
+# 'seg' and 'all' escape one more again (#1328): a part whose under-pad escape
+# drops pads is re-run down the clearance ladder, and at 0.095 Net-(U2A-DATA_6)
+# (U2.46) escapes; the 0.1 tallies were (17, 15, 25) and (15, 13, 27).
 ARM_ROWS = [
     ('off',     (28, 26, 14), (7, 32, 0)),
     ('via',     (21, 19, 21), (0, 13, 0)),   # via contacts gone, 13 seg remain
-    ('seg',     (17, 15, 25), (2, 0, 0)),    # seg contacts gone,  2 via remain
-    ('all',     (15, 13, 27), (0, 0, 0)),
+    ('seg',     (18, 16, 24), (2, 0, 0)),    # seg contacts gone,  2 via remain
+    ('all',     (16, 14, 26), (0, 0, 0)),
 ]
 
 # (board, ref, post-fix tally t/v/d, pre-fix pairs via/seg/pad)
@@ -645,13 +649,17 @@ ARM_ROWS = [
 # place. It was pre-registered as a withdrawal candidate on a 5-board sample
 # that showed zero yield; the full 408-footprint sweep found 49 pairs on 9
 # footprints across 6 boards, so it ships.
+# The #1328 under-pad escalation (the part re-run down the clearance ladder
+# when it drops pads) adds one escape on three of these: U2 Net-(U2A-DATA_6)
+# (U2.46) at 0.095, orangecrab U3 FPGA_RESET (U3.V17) at 0.09, rp2350 U6
+# /RP2354A/1V1 (U6.50) at 0.09. Their 0.1 tallies follow each row.
 BOARD_ROWS = [
-    (U2BOARD, "U2", (15, 13, 27), (7, 32, 0)),   # (14, 13, 28) before PadFreeMap
+    (U2BOARD, "U2", (16, 14, 26), (7, 32, 0)),   # (15, 13, 27); (14, 13, 28) before PadFreeMap
     (ORANGE, "U7", (2, 0, 4), (3, 0, 4)),
     # (33, 33, 62) before #1342: its 6 escapes and 4 drops on single-pad
     # (NC) nets are no longer fanned at all.
-    (ORANGE, "U3", (27, 27, 58), (1, 14, 11)),
-    (RP2350, "U6", (6, 3, 41), (2, 11, 1)),
+    (ORANGE, "U3", (28, 28, 57), (1, 14, 11)),   # (27, 27, 58)
+    (RP2350, "U6", (7, 4, 40), (2, 11, 1)),      # (6, 3, 41)
     (TIGARD, "U3", (43, 43, 5), (0, 0, 4)),     # pad half only
     (WATCHY, "J3", (12, 12, 7), (0, 0, 9)),     # pad half only
 ]

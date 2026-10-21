@@ -306,11 +306,15 @@ def _q2_reuse_end_to_end():
     #     doubled-margin stamps, and Net-(U2A-DATA_23) escapes (its 0.67 mm
     #     F.Cu stub to an existing via clears U2.68 by 0.188 mm at a 0.1 rule).
     #     -> 18/22/20.
+    #   #1328, the under-pad escalation: a part that drops pads is re-run down
+    #     the clearance ladder, and at 0.095 Net-(U2A-DATA_6) (U2.46) escapes.
+    #     -> 19/21/21.
     # The reuse behaviour this section exists to pin is unchanged -- see the
     # named DATA_30 check below, which still passes.
-    check('U2 underpad reuse: 18 vias / 22 dropped / 20 tracks '
-          '(28 / 12 / 30 before #619; 18 / 23 / 19 before PadFreeMap)',
-          got == (18, 22, 20), f"got {got[0]} / {got[1]} / {got[2]}")
+    check('U2 underpad reuse: 19 vias / 21 dropped / 21 tracks '
+          '(28 / 12 / 30 before #619; 18 / 23 / 19 before PadFreeMap; '
+          '18 / 22 / 20 at 0.1 alone, before #1328 escalates)',
+          got == (19, 21, 21), f"got {got[0]} / {got[1]} / {got[2]}")
     # The specific net the regression cost, named -- a count can drift back
     # into place for an unrelated reason, this cannot.
     check('Net-(U2A-DATA_30) keeps its escape (it reuses an existing via)',
