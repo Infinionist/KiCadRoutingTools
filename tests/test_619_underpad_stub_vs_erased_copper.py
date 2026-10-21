@@ -626,7 +626,9 @@ ARM_ROWS = [
 BOARD_ROWS = [
     (U2BOARD, "U2", (14, 13, 28), (7, 32, 0)),
     (ORANGE, "U7", (2, 0, 4), (3, 0, 4)),
-    (ORANGE, "U3", (33, 33, 62), (1, 14, 11)),
+    # (33, 33, 62) before #1342: its 6 escapes and 4 drops on single-pad
+    # (NC) nets are no longer fanned at all.
+    (ORANGE, "U3", (27, 27, 58), (1, 14, 11)),
     (RP2350, "U6", (6, 3, 41), (2, 11, 1)),
     (TIGARD, "U3", (43, 43, 5), (0, 0, 4)),     # pad half only
     (WATCHY, "J3", (12, 12, 7), (0, 0, 9)),     # pad half only

@@ -1621,9 +1621,11 @@ def remove_segments_from_content(content: str, segments: List,
     targets = Counter()
     by_key = {}
     for s in segments:
+        # The width is read only when it is part of the key: the default
+        # match is span + layer + net, which a caller may hand without one.
         k = seg_key(pos_key(s.start_x, s.start_y),
                     pos_key(s.end_x, s.end_y), s.layer, _canon(s.net_id),
-                    s.width)
+                    s.width if match_width else None)
         targets[k] += 1
         by_key.setdefault(k, []).append(s)
 
