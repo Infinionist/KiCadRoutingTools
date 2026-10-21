@@ -168,9 +168,16 @@ class Annealer:
         self.half = st.clearance / 2.0
         self.names = sorted(st.parts)
         self.everyone = frozenset(st.parts)
-        # each part's faces as a bit mask: two parts can overlap when theirs meet
+        # each part's faces as a bit mask: two parts can overlap when theirs
+        # meet. A container (a pin frame, an outline: `QuenchState.
+        # container_refs`) is a frame, not a body, and has none, as the halo
+        # and the legality skip it; a pin frame's drilled pins are priced
+        # instead (`_pins`, #1307).
+        self.containers = frozenset(r for r in self.names if r in st.container_refs)
+        self.frames = sorted(r for r in self.containers if r in st.pin_frame_refs)
         bit = {}
-        self.faces = {r: sum(1 << bit.setdefault(f, len(bit)) for f in set(st.parts[r].sides))
+        self.faces = {r: 0 if r in self.containers else
+                      sum(1 << bit.setdefault(f, len(bit)) for f in set(st.parts[r].sides))
                       for r in self.names}
         self.face_ids = np.asarray([self.faces[r] for r in self.names], dtype=np.int64)
         # The pairs on opposite faces with a drilled part among them, which
@@ -181,11 +188,12 @@ class Annealer:
         # part can be in one only when the other face holds a part it can
         # pair with there (a drilled part if it is not drilled itself).
         P = st.parts
-        self.drilled = frozenset(r for r in self.names if P[r].tht_by_rot is not None)
+        bodies = [r for r in self.names if r not in self.containers]
+        self.drilled = frozenset(r for r in bodies if P[r].tht_by_rot is not None)
         drilled_on = {P[r].side for r in self.drilled}
-        on = {P[r].side for r in self.names}
+        on = {P[r].side for r in bodies}
         self.far_parts = frozenset(
-            r for r in self.names
+            r for r in bodies
             if (on if r in self.drilled else drilled_on) - {P[r].side})
         # the drilled parts whose lead boxes reach past their courtyard (a
         # connector's pins beyond the courtyard drawn round its body)
@@ -343,6 +351,32 @@ class Annealer:
                 fix += self._far_area(a, b) - (ox * oy if ox > 0 and oy > 0 else 0.0)
         return fix
 
+    def _pins(self, mine):
+        """Courtyard over a pin frame's drilled holes (mm2), the holes
+        check_assembly's pin_in_courtyard tests (`QuenchState.
+        pin_hole_boxes`), on either face: each (frame, part) pair with a part
+        in `mine` once -- a frame in `mine` with every part, any other frame
+        with the parts in `mine`."""
+        P, tot, mset = self.st.parts, 0.0, set(mine)
+        for f in self.frames:
+            holes = self.st.pin_hole_boxes(f)
+            if not holes:
+                continue
+            H = (min(h[0] for h in holes), min(h[1] for h in holes),
+                 max(h[2] for h in holes), max(h[3] for h in holes))
+            for b in (self.names if f in mset else mine):
+                if b in self.containers:
+                    continue
+                c = P[b].rect()
+                if c[2] <= H[0] or H[2] <= c[0] or c[3] <= H[1] or H[3] <= c[1]:
+                    continue
+                for h in holes:
+                    ox = min(c[2], h[2]) - max(c[0], h[0])
+                    oy = min(c[3], h[3]) - max(c[1], h[1])
+                    if ox > 0 and oy > 0:
+                        tot += ox * oy
+        return tot
+
     def _outside(self, r):
         """How far `r`'s courtyard is off the board, as an area: its overhang
         past each side times its size along that side -- the area off while
@@ -396,7 +430,8 @@ class Annealer:
 
     def overlap(self, refs=None) -> float:
         """Overlap (mm2) of every pair with a part in `refs` (all pairs when
-        None), each pair once, plus those parts' distance off the board and
+        None), each pair once -- a pin frame by its pins (`_pins`), not its
+        body -- plus those parts' distance off the board and
         into what the intent and the board's rule areas keep them out of. With
         `refs`, the pairs are summed in Rust (`grid_router.overlap_sum`): the
         moving parts at their live poses, every other part at its committed
@@ -414,7 +449,11 @@ class Annealer:
                 total += self._seat_correction(mine)
             if self.far_parts:
                 total += self._far_correction(mine)
+            if self.frames:
+                total += self._pins(mine)
             return total
+        if self.frames:
+            total += self._pins(mine)
         mset = set(mine)
         grown = {}
         for a in mine:

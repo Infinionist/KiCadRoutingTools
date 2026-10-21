@@ -1605,6 +1605,17 @@ class QuenchState:
             return q
         return None
 
+    def pin_hole_boxes(self, frame) -> list:
+        """The bounds of pin frame `frame`'s drilled holes at its current
+        pose, as the grader tests them (`CourtyardCensus._frame_holes`): what
+        place_simple's anneal prices a courtyard over (#1307)."""
+        if self._pin_census_obj is None:
+            self._pin_census_obj = legality.CourtyardCensus(self.pcb_data,
+                                                            self.pcb_file)
+        p = self.parts[frame]
+        return [hb for _n, _s, hb, _k in
+                self._pin_census_obj._frame_holes(frame, (p.x, p.y, p.rot))]
+
     def _pin_hits_at(self, ref, x, y, rot, poses=None) -> list:
         """Every GATING pin_in_courtyard pair `ref` makes at this pose.
         `poses` ({ref: (x, y, rot)}) overrides the parts' current poses --
