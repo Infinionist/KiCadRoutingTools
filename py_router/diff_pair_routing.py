@@ -1425,6 +1425,17 @@ def _generate_debug_arrows(center_src_x, center_src_y, src_dir_x, src_dir_y,
     return arrows
 
 
+def _vias_as_layer_copper(vias, layer):
+    """Each via that spans `layer`, as a zero-length track of its own
+    diameter there: a pair member's via is partner copper on every layer it
+    spans (#318)."""
+    from geometry_utils import via_on_layer
+    from kicad_parser import Segment
+    return [Segment(start_x=v.x, start_y=v.y, end_x=v.x, end_y=v.y,
+                    width=v.size, layer=layer, net_id=v.net_id)
+            for v in vias if via_on_layer(v, layer)]
+
+
 def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data,
                               p_vias=(), n_vias=()):
     """#318: neck a polarity's segment that sits sub-clearance to its PARTNER's
@@ -1484,14 +1495,7 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data,
             hit = _pc_memo[key] = _pcf(a_nid, b_nid, layer)
         return hit
 
-    from geometry_utils import via_on_layer
-    from kicad_parser import Segment
-
-    def _via_copper(vias, layer):
-        # A via on `layer` as a zero-length track of its own diameter.
-        return [Segment(start_x=v.x, start_y=v.y, end_x=v.x, end_y=v.y,
-                        width=v.size, layer=layer, net_id=v.net_id)
-                for v in vias if via_on_layer(v, layer)]
+    _via_copper = _vias_as_layer_copper
 
     def neck_side(own, partner, partner_vias):
         nonlocal necked
@@ -3898,7 +3902,8 @@ def _seg_seg_distance(ax, ay, bx, by, cx, cy, dx, dy):
                pt_seg(cx, cy, ax, ay, bx, by), pt_seg(dx, dy, ax, ay, bx, by))
 
 
-def _collapse_leg_attach_join(leg_segs, attach_xy, config, pcb_data, net_id, partner_segs):
+def _collapse_leg_attach_join(leg_segs, attach_xy, config, pcb_data, net_id, partner_segs,
+                              partner_vias=()):
     """Collapse a hybrid leg's short grid->float "join" at the coupled-middle
     attach end when it pinches the partner track below clearance (#215).
 
@@ -3917,7 +3922,12 @@ def _collapse_leg_attach_join(leg_segs, attach_xy, config, pcb_data, net_id, par
     sub-clearance to the partner copper -- so clean junctions are left untouched
     and downstream pairs are not perturbed -- and (b) the relocated segment
     provably clears the partner (and any foreign pad) by the full clearance, so
-    the tilt can never introduce a new graze. Mutates ``leg_segs`` in place."""
+    the tilt can never introduce a new graze. Mutates ``leg_segs`` in place.
+
+    ``partner_vias`` are partner copper too, on every layer each spans: watchy
+    USB_D's N leg landed its stand-in 0.088 mm from P's middle via, which the
+    float near-end clears by 0.101, and #318's gate (which counts vias)
+    refused every layer pair for it."""
     if len(leg_segs) < 2:
         return leg_segs
     ax, ay = attach_xy
@@ -3933,6 +3943,7 @@ def _collapse_leg_attach_join(leg_segs, attach_xy, config, pcb_data, net_id, par
         return leg_segs  # join doesn't continue the penultimate segment
 
     w = config.get_net_track_width(net_id, pen.layer)
+    partner_segs = list(partner_segs) + _vias_as_layer_copper(partner_vias, pen.layer)
     # partner_segs is the OTHER half of the SAME pair, so the requirement is the
     # INTRA-PAIR floor min(clearance, diff_pair_gap) -- the coupled trace runs at
     # the design gap by construction, and the clearance ledger grades the board
@@ -4324,7 +4335,8 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
             path, coord, layer_names, net_id, config,
             _start_orig, _end_orig,
             through_hole_positions=reuse_holes, pcb_data=pcb_data)
-        _collapse_leg_attach_join(ps, (mid_pt[0], mid_pt[1]), config, pcb_data, net_id, partner_segs)
+        _collapse_leg_attach_join(ps, (mid_pt[0], mid_pt[1]), config, pcb_data, net_id,
+                                  partner_segs, partner_vias=partner_vias)
         return ps, pv, it, path
     finally:
         remove_segments_list_from_obstacles(obstacles, partner_segs, config)
