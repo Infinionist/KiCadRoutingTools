@@ -1196,8 +1196,47 @@ def _settle_gnd_via(x, y, ux, uy, pair_segs, config, gnd_net_id, pcb_data,
     return x, y
 
 
+def _gnd_via_drill_conflict(x, y, config, pcb_data, placed=(), ignore=frozenset()):
+    """Why a companion GND via's drill at (x, y) breaks hole-to-hole, or None.
+
+    Hole-to-hole is net-independent at the fab (#282), so EVERY drill counts:
+    each board via (another pair's GND via included -- same net, and the one
+    the old checks skipped), each pad hole (plated or not, slots as capsules)
+    and the GND vias this call already placed (`placed`). The required edge
+    gap is the config's hole_to_hole_clearance (0 still forbids overlap).
+    `ignore` holds (x, y, net_id) keys of vias being REPLACED (a re-created
+    pair's own vias, still on the board), which are skipped. (#1341)"""
+    from geometry_utils import point_to_segment_distance
+    h2h = max(getattr(config, 'hole_to_hole_clearance', 0.0) or 0.0, 0.0)
+    r = (config.via_drill or 0.0) / 2.0
+    vias = list(getattr(pcb_data, 'vias', None) or []) + list(placed)
+    for v in vias:
+        if (round(v.x, 6), round(v.y, 6), v.net_id) in ignore:
+            continue
+        vr = (getattr(v, 'drill', 0.0) or 0.0) / 2.0
+        gap = math.hypot(v.x - x, v.y - y) - r - vr
+        if vr > 0 and gap < h2h - 1e-6:
+            net = getattr(pcb_data, 'nets', {}).get(v.net_id)
+            name = net.name if net is not None else f'net {v.net_id}'
+            return (f"its drill would sit {gap:.3f}mm from the {name} via drill "
+                    f"at ({v.x:.3f},{v.y:.3f}) (hole-to-hole {h2h:.3f}mm)")
+    if pcb_data is not None:
+        from kicad_parser import pad_drill_capsule
+        for pads in (getattr(pcb_data, 'pads_by_net', None) or {}).values():
+            for p in pads:
+                if not (p.drill and p.drill > 0):
+                    continue
+                (ax, ay), (bx, by), pr = pad_drill_capsule(p)
+                gap = point_to_segment_distance(x, y, ax, ay, bx, by) - r - pr
+                if gap < h2h - 1e-6:
+                    return (f"its drill would sit {gap:.3f}mm from pad "
+                            f"{p.component_ref}.{p.pad_number}'s hole "
+                            f"(hole-to-hole {h2h:.3f}mm)")
+    return None
+
+
 def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
-                     pair_net_ids=(None,), pair_segs=(), pcb_data=None):
+                     pair_net_ids=(None,), pair_segs=(), pcb_data=None, ignore_vias=()):
     """Create GND vias at layer changes in the centerline path.
 
     Args:
@@ -1211,6 +1250,8 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
         pair_net_ids: (P, N) net ids, which price the via's clearance (#1207)
         pair_segs: the pair's tracks as drawn; each via is settled clear of them
         pcb_data: the board, against which a settled site is re-checked
+        ignore_vias: vias this call REPLACES (a meandered pair's own, still in
+            pcb_data); their drills are not obstacles to the new ones (#1341)
 
     Returns:
         List of Via objects for GND connections
@@ -1218,6 +1259,8 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
     gnd_vias = []
     if gnd_net_id is None or len(simplified_path) < 2:
         return gnd_vias
+    _ignore = frozenset((round(v.x, 6), round(v.y, 6), v.net_id)
+                        for v in (ignore_vias or ()))
 
     gnd_via_perp_mm, via_via_dist_mm, _gnd_clr = _gnd_via_offsets(
         config, spacing_mm, gnd_net_id, pair_net_ids)
@@ -1295,23 +1338,31 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
                     gnd_n_x, gnd_n_y, -perp_x, -perp_y, pair_segs, config,
                     gnd_net_id, pcb_data, pair_net_ids)
 
-            # Create GND vias (free=True prevents KiCad auto-assigning net)
-            gnd_vias.append(Via(
-                x=gnd_p_x, y=gnd_p_y,
-                size=config.via_size,
-                drill=config.via_drill,
-                layers=["F.Cu", "B.Cu"],  # Always through-hole
-                net_id=gnd_net_id,
-                free=True
-            ))
-            gnd_vias.append(Via(
-                x=gnd_n_x, y=gnd_n_y,
-                size=config.via_size,
-                drill=config.via_drill,
-                layers=["F.Cu", "B.Cu"],  # Always through-hole
-                net_id=gnd_net_id,
-                free=True
-            ))
+            # The router checked each site on the GRID (the floored offset);
+            # the via lands at the float offset and the settle may move it
+            # further, and neither re-check looked at a drill -- another
+            # pair's GND via is the same net, so it was skipped outright.
+            # CM5 DPHY0_P.C's GND via shipped 0.21mm hole-to-hole from
+            # DPHY0_P.D2's against 0.25 (#1341). The final site is checked
+            # against every drill; one that fails is not placed (the planned
+            # site is not a fallback: the settle moved it off the pair's
+            # tracks, #1207). The blocker is usually a GND via already there.
+            for gx, gy in ((gnd_p_x, gnd_p_y), (gnd_n_x, gnd_n_y)):
+                why = _gnd_via_drill_conflict(gx, gy, config, pcb_data, gnd_vias,
+                                              _ignore)
+                if why is not None:
+                    print(f"  GND return via at ({gx:.3f},{gy:.3f}) not placed: "
+                          f"{why} (#1341)")
+                    continue
+                # free=True prevents KiCad auto-assigning net
+                gnd_vias.append(Via(
+                    x=gx, y=gy,
+                    size=config.via_size,
+                    drill=config.via_drill,
+                    layers=["F.Cu", "B.Cu"],  # Always through-hole
+                    net_id=gnd_net_id,
+                    free=True
+                ))
 
     return gnd_vias
 

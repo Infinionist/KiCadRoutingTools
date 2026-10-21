@@ -493,6 +493,7 @@ By default, the router places GND vias adjacent to each differential pair signal
 2. **Ahead or behind** - GND vias can be placed ahead of or behind the signal vias along the route direction. The router tries both and picks the clear option
 3. **Direction stored** - The chosen direction (1=ahead, -1=behind) is stored per layer change
 4. **Python places vias** - After routing, Python uses the direction info to place GND vias connected to the GND net
+5. **The final site is drill-checked** (#1341) - The router checks a site on the grid, but the via lands at the exact (float) offset and may be settled further off the pair's drawn tracks (#1207). That final site is checked against every drill at hole-to-hole: every via (any net, so another pair's GND via too), every pad hole, and the GND vias already placed. A site that fails is not placed, with a console line `GND return via at (x,y) not placed: ...` naming the blocking drill; usually another pair's GND via is already there to carry the return current.
 
 **GND via positions:**
 - Perpendicular offset: `P/N spacing + track_width/2 + clearance + via_size/2`
