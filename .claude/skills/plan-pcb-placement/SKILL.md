@@ -46,7 +46,9 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   `--net-min-widths`, `--impedance-nets`, `--length-groups` (a FILE) and
   `--min-track-width` / `--min-via-diameter` / `--min-via-drill` to
   `board_score` and `check_complete`. An `ungraded` component is UNEXAMINED,
-  not passed.
+  not passed. `--impedance-nets` grades reference-plane continuity: a net
+  that crosses a gap in its reference plane (a track on that plane cuts
+  one) is blocking.
 - **Matching the original layout does not count.** A human layout is a
   benchmark to approach, not a pose to match.
 
