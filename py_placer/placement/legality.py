@@ -2070,6 +2070,17 @@ def graded_parts_from_file(pcb_data, pcb_file: Optional[str] = None
 #: severity is appended, e.g. 'project_severity_ignore'.
 PROJECT_SEVERITY_WAIVER = 'project_severity_'
 
+#: #1298: the label of a courtyard (or pin-in-courtyard) pair a declared pose
+#: accepts by name -- `fixed_poses[].accept_courtyard_overlap`. Authored, like
+#: `intent_declared`, but courtyard-only: no drawn-body pair carries it, so
+#: it never exempts a containment.
+FIXED_POSE_WAIVER = 'fixed_pose_accepted'
+
+#: The labels an AUTHOR wrote for one exact pair: they excuse a courtyard pair
+#: from blocking whatever the parts' class or lock, and outrank the board's
+#: own courtyard severity.
+AUTHORED_WAIVERS = ('intent_declared', FIXED_POSE_WAIVER)
+
 
 #: The categories the pre-#856 `fix_kicad_drc_settings.severity_plan` set to
 #: ignore on every route step, as they were THEN. A literal on purpose: built
@@ -2348,11 +2359,21 @@ class PairWaivers:
     """
 
     def __init__(self, pcb_data, *, intent_waivers: Sequence = (),
-                 containers=(), locked_refs=(), rect_of=None):
+                 containers=(), locked_refs=(), rect_of=None,
+                 courtyard_waivers: Sequence = ()):
         self.pcb_data = pcb_data
         self.fps = pcb_data.footprints or {}
         self.waiver_sets = {frozenset(p) for p in intent_waivers
                             if len(p) == 2}
+        # #1298: the pairs a declared pose ACCEPTS a courtyard overlap with
+        # (`fixed_poses[].accept_courtyard_overlap`, `Intent.
+        # fixed_pose_courtyard_waivers`). Courtyard-only, unlike
+        # `waiver_sets`: they label courtyard and pin pairs
+        # (`courtyard_label`), never a drawn-body pair, so they cannot
+        # license one part sitting inside another's body.
+        self.courtyard_sets = {frozenset(p) for p in courtyard_waivers
+                               if len(p) == 2} - self.waiver_sets
+        self.courtyard_hit: set = set()
         self.containers = set(containers)
         self.locked_refs = set(locked_refs)
         self.rect_of = rect_of or (lambda ref: None)
@@ -2404,6 +2425,18 @@ class PairWaivers:
             return 'edge_class'
         return ''
 
+    def courtyard_label(self, a: str, b: str) -> str:
+        """`label`, for a COURTYARD (or pin-in-courtyard) pair: an
+        `overlap_waivers` pair first, then a pair a declared pose accepts
+        (#1298: `FIXED_POSE_WAIVER`, authored like `intent_declared` and,
+        like it, outranking every class label), then the class ladder."""
+        if self.courtyard_sets:
+            pair = frozenset((a, b))
+            if pair in self.courtyard_sets:
+                self.courtyard_hit.add(pair)
+                return FIXED_POSE_WAIVER
+        return self.label(a, b)
+
     def edge_live(self, ref: str) -> bool:
         """An edge-class waiver is a claim that the part's shell or actuator
         legitimately overhangs -- which is only TRUE of a part that is
@@ -2429,8 +2462,10 @@ class PairWaivers:
         if not p.waived:
             return False
         # An AUTHORED waiver outranks everything below: it is a recorded
-        # human decision about this exact pair.
-        if p.waiver == 'intent_declared':
+        # human decision about this exact pair -- an `overlap_waivers` entry,
+        # or (#1298) a declared pose's `accept_courtyard_overlap`, which
+        # only courtyard pairs ever carry (`courtyard_label`).
+        if p.waiver in AUTHORED_WAIVERS:
             return True
         # #1095: the board declared KiCad's courtyard rule non-blocking. Its
         # own DRC reports none of these pairs, locked or not, so neither do
@@ -2498,6 +2533,19 @@ class PairWaivers:
         return sorted(self.row(p) for p in self.waiver_sets
                       if p not in self.hit and all(r in self.fps for r in p))
 
+    def courtyard_unresolved(self) -> List[List[str]]:
+        """#1298: `accept_courtyard_overlap` pairs naming a ref the board
+        does not have (`unresolved`'s twin)."""
+        return sorted(self.row(p) for p in self.courtyard_sets
+                      if any(r not in self.fps for r in p))
+
+    def courtyard_unused(self) -> List[List[str]]:
+        """#1298: `accept_courtyard_overlap` pairs whose courtyards do not
+        overlap on this board (`unused`'s twin)."""
+        return sorted(self.row(p) for p in self.courtyard_sets
+                      if p not in self.courtyard_hit
+                      and all(r in self.fps for r in p))
+
 
 def courtyard_blocking(pairs, waivers: PairWaivers, *, synthetic_refs=(),
                        silk_occupancy_refs=()) -> list:
@@ -2559,11 +2607,13 @@ class CourtyardCensus:
     def __init__(self, pcb_data, pcb_file: Optional[str] = None, *,
                  intent_waivers: Sequence = (),
                  courtyard_severity: Optional[str] = 'auto',
-                 locked_refs=None):
+                 locked_refs=None, courtyard_waivers: Sequence = ()):
         self.pcb_data = pcb_data
         self.pcb_file = pcb_file
         self.fps = pcb_data.footprints or {}
         self.intent_waivers = tuple(tuple(p) for p in intent_waivers)
+        # #1298: courtyard-only waivers (`PairWaivers.courtyard_sets`).
+        self.courtyard_waivers = tuple(tuple(p) for p in courtyard_waivers)
         self.lbs, self.bodies = _part_local_bounds_and_bodies(pcb_data,
                                                               pcb_file)
         if courtyard_severity == 'auto':
@@ -2671,7 +2721,8 @@ class CourtyardCensus:
         return PairWaivers(self.pcb_data, intent_waivers=self.intent_waivers,
                            containers=(self.containers if containers is None
                                        else containers),
-                           locked_refs=self.locked_refs, rect_of=rect_of)
+                           locked_refs=self.locked_refs, rect_of=rect_of,
+                           courtyard_waivers=self.courtyard_waivers)
 
     def grade(self, poses: Optional[Dict[str, tuple]] = None, *,
               moved=None) -> CourtyardGrade:
@@ -2870,10 +2921,12 @@ class CourtyardCensus:
                if p.a not in self.pin_frames and p.b not in self.pin_frames]
         pairs = []
         for p in raw:
-            waiver = waivers.label(p.a, p.b)
+            # #1298: `courtyard_label` -- a declared pose's accepted pair
+            # labels a courtyard pair, never a body one.
+            waiver = waivers.courtyard_label(p.a, p.b)
             # #1095: the board's own severity outranks every inferred class
-            # label, and only an authored intent waiver outranks it.
-            if self.severity_waiver and waiver != 'intent_declared':
+            # label, and only an authored waiver outranks it.
+            if self.severity_waiver and waiver not in AUTHORED_WAIVERS:
                 waiver = self.severity_waiver
             pairs.append(p._replace(waived=bool(waiver), waiver=waiver))
         pairs.sort(key=lambda p: (p.waived, -p.area_mm2, p.a, p.b))
@@ -2897,6 +2950,13 @@ class CourtyardCensus:
                     waivers.waiver_sets:
                 waivers.hit.add(frozenset((p.a, p.b)))
                 waiver = 'intent_declared'
+            elif waivers.courtyard_sets and frozenset((p.a, p.b)) in \
+                    waivers.courtyard_sets:
+                # #1298: a pin under a courtyard is a courtyard finding, and
+                # stage 0 waives it for an accepted pair as well
+                # (`seeder._fixed_pose_check`).
+                waivers.courtyard_hit.add(frozenset((p.a, p.b)))
+                waiver = FIXED_POSE_WAIVER
             elif sev == 'ignore':
                 waiver = PROJECT_SEVERITY_WAIVER + sev
             pin_pairs.append(p._replace(waived=bool(waiver), waiver=waiver))
@@ -2918,7 +2978,8 @@ class CourtyardCensus:
 def grade_body_overlap(pcb_data, clearance: float,
                        intent_waivers: Sequence[Sequence[str]] = (),
                        pcb_file: Optional[str] = None,
-                       courtyard_severity: Optional[str] = 'auto'
+                       courtyard_severity: Optional[str] = 'auto',
+                       courtyard_waivers: Sequence[Sequence[str]] = ()
                        ) -> Dict[str, object]:
     """Board-level ASSEMBLY audit at the file's own poses.
 
@@ -2946,6 +3007,12 @@ def grade_body_overlap(pcb_data, clearance: float,
     The fab/containment, pad and locked-contact channels are NOT KiCad's
     courtyard rule and are graded as before: a severity is the board's word
     about courtyards, not about two bodies in one place.
+
+    `courtyard_waivers` (#1298) are the pairs a declared pose accepts a
+    courtyard overlap with (`Intent.fixed_pose_courtyard_waivers`): they
+    label the COURTYARD channel's pairs `FIXED_POSE_WAIVER` and never a
+    drawn-body pair, so a containment still gates. `intent_waivers` reach
+    every channel, as before.
     """
     fps = pcb_data.footprints or {}
     # -- courtyard channel (advisory + the run-23 blocking policy below) ------
@@ -2954,7 +3021,8 @@ def grade_body_overlap(pcb_data, clearance: float,
     # every authored waiver that fires anywhere is recorded once).
     _census = CourtyardCensus(pcb_data, pcb_file,
                               intent_waivers=intent_waivers,
-                              courtyard_severity=courtyard_severity)
+                              courtyard_severity=courtyard_severity,
+                              courtyard_waivers=courtyard_waivers)
     _cg = _census.grade()
     _cy_sev = _cg.severity
     _cy_basis = _cg.severity_basis
@@ -3328,7 +3396,11 @@ def grade_body_overlap(pcb_data, clearance: float,
             # collapses to one element. Pad it back out rather than emitting a
             # ragged row: a consumer formatting `a <-> b` crashed on it.
             'waivers_unresolved': _waivers.unresolved(),
-            'waivers_unused': _waivers.unused()}
+            'waivers_unused': _waivers.unused(),
+            # #1298: the same two populations for the courtyard-only
+            # waivers a declared pose carries (`courtyard_waivers`).
+            'courtyard_waivers_unresolved': _waivers.courtyard_unresolved(),
+            'courtyard_waivers_unused': _waivers.courtyard_unused()}
 
 
 def _exact_pad_stack(pa, pb, routing_layers) -> bool:
@@ -5313,6 +5385,11 @@ def format_waiver_warnings(grade, limit: int = 6):
     for _p in (grade.get('waivers_unresolved') or ())[:limit]:
         out.append(f"WARNING: overlap_waivers pair {_p[0]}<->{_p[1]} names a "
                    f"reference this board does not have -- it waives nothing")
+    # #1298: a declared pose's accepted pairs, said the same way.
+    for _p in (grade.get('courtyard_waivers_unresolved') or ())[:limit]:
+        out.append(f"WARNING: fixed_poses[].accept_courtyard_overlap pair "
+                   f"{_p[0]}<->{_p[1]} names a reference this board does not "
+                   f"have -- it waives nothing")
     _unused = grade.get('waivers_unused') or ()
     if _unused:
         out.append("note: %d declared waiver(s) matched no waivable overlap "
@@ -5321,6 +5398,13 @@ def format_waiver_warnings(grade, limit: int = 6):
                    "such a pair lands here too."
                    % (len(_unused),
                       ', '.join(f"{a}<->{b}" for a, b in _unused[:limit])))
+    _cunused = grade.get('courtyard_waivers_unused') or ()
+    if _cunused:
+        out.append("note: %d accept_courtyard_overlap pair(s) matched no "
+                   "courtyard overlap here (%s) -- harmless while the parts "
+                   "are not at their declared poses"
+                   % (len(_cunused),
+                      ', '.join(f"{a}<->{b}" for a, b in _cunused[:limit])))
     return out
 
 

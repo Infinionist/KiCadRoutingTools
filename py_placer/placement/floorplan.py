@@ -647,6 +647,15 @@ class Intent:
                 out.append((str(f['ref']), str(other)))
         return tuple(out)
 
+    def fixed_pose_courtyard_waivers(self) -> Tuple[Tuple[str, str], ...]:
+        """#1298: the `fixed_poses[].accept_courtyard_overlap` half of
+        `courtyard_waiver_pairs` -- each accepted ref with its entry's ref --
+        which check_assembly and the renderer hand to `grade_body_overlap`'s
+        courtyard-only channel (`courtyard_waivers`), so a declared pair is
+        waived there and a containment still gates."""
+        return tuple((str(f['ref']), str(other)) for f in self.fixed_poses
+                     for other in f.get('accept_courtyard_overlap') or ())
+
     def severity_of(self, rule: str, default: str = ERROR) -> str:
         return self.severity.get(rule, default)
 
@@ -2087,6 +2096,69 @@ def _fixed_pose_waiver_findings(intent: Intent, pcb_data, pcb_file: str, *,
                      (f"{ref}'s fixed pose waives courtyard overlap with "
                       f"{other}, and none is measured -- a stale waiver")),
             measured={'waives': other, 'overlap_mm2': round(area, 4)}))
+    return out
+
+
+def declared_pose_overlaps(fixed_poses, pcb_data, pcb_file: str, *,
+                           clearance: float, board_edge_clearance: float,
+                           waived=()) -> Tuple[List[Dict], List[Dict]]:
+    """#1298: `(courtyard, hard)` -- the pairs of declared `fixed_poses[]`
+    that conflict with each other AT their declared poses.
+
+    Measured by the plan check's own predicate (`seeder.
+    fixed_pose_pair_conflicts`, stage 0's `_fixed_pose_check`), once as the
+    intent stands and once with every conflicting pair waived, so the split
+    is exactly what a courtyard waiver changes there: `courtyard` are the
+    pairs whose conflict the waiver changes (their courtyards overlap, or a
+    pin lies under a courtyard), each with its unwaived `reason`; `hard` are
+    the pairs that still conflict waived -- pads or holes, which no waiver
+    covers -- each with what is left. A pair can be in both. `waived` are
+    the pairs the intent already waives, left out. Records are the
+    predicate's own (`pair`, `reason`, `poses`), sorted by pair."""
+    from .seeder import fixed_pose_pair_conflicts
+    import pose_score
+    if len(fixed_poses or ()) < 2:
+        return [], []
+    state = pose_score.make_state(pcb_data, pcb_file, clearance=clearance,
+                                  board_edge_clearance=board_edge_clearance)
+    done = frozenset(frozenset(p) for p in waived if len(p) == 2)
+    found = {frozenset(c['pair']): c for c in fixed_pose_pair_conflicts(
+        state, fixed_poses, waived=done)}
+    if not found:
+        return [], []
+    left = {frozenset(c['pair']): c for c in fixed_pose_pair_conflicts(
+        state, fixed_poses, waived=done | set(found))}
+    order = sorted(found, key=lambda k: found[k]['pair'])
+    return ([found[k] for k in order
+             if k not in left or left[k]['reason'] != found[k]['reason']],
+            [left[k] for k in order if k in left])
+
+
+def accept_declared_overlaps(doc: Dict, courtyard_only: Sequence[Dict]
+                             ) -> List[Tuple[str, str]]:
+    """#1298: write each `declared_pose_overlaps` courtyard pair into the
+    emitted intent `doc` as `fixed_poses[].accept_courtyard_overlap` on the
+    pair's first entry (the waiver is unordered), with a `note` saying who
+    wrote it and why -- explicit, in the file, where the author can delete
+    it to refuse the overlap instead. Returns the pairs written."""
+    by_ref = {str(f.get('ref')): f for f in doc.get('fixed_poses') or ()}
+    out: List[Tuple[str, str]] = []
+    for c in courtyard_only:
+        a, b = (str(r) for r in c['pair'])
+        f = by_ref.get(a)
+        if f is None:
+            continue
+        acc = list(f.get('accept_courtyard_overlap') or ())
+        if b in acc:
+            continue
+        f['accept_courtyard_overlap'] = acc + [b]
+        why = (f"check_floorplan --emit-intent (#1298): at their declared "
+               f"poses {a} and {b} overlap by courtyard ({c['reason']}); "
+               f"both poses are declared, so the overlap is the declared "
+               f"design -- delete {b} from accept_courtyard_overlap to refuse "
+               f"it instead")
+        f['note'] = (f"{f['note']}; {why}" if f.get('note') else why)
+        out.append((a, b))
     return out
 
 
