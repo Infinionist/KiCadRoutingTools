@@ -233,8 +233,16 @@ step, confirm the geometry actually has that problem:
    without fanout.
 2. **Wide-pitch SMD (>=1.27mm) perimeter part?** → No fanout; plain routing
    handles it.
-3. **Interior pads at fine pitch (<=0.6mm), or a perimeter at <=0.65mm with
-   many pads?** → Yes, fanout genuinely helps (this is the boxed-in case).
+3. **Interior pads at fine pitch (<=0.6mm)?** → Yes, fanout is needed: those
+   pads are boxed in, and ordinary routing cannot reach them (Step
+   5a-tuned-ii). **A perimeter at <=0.65mm with many pads (QFN/QFP)?** → A
+   candidate only. Every perimeter pad faces outward, so the router can
+   reach it without a fanout; the stubs only commit each escape in advance,
+   and that can cost more than it saves. On one board an LQFP-48 at 0.5 mm
+   routed worse with `qfn_fanout.py` than without, the chain otherwise the
+   same (blocking 30 vs 25, vias 77 vs 70). Route the chain with and without
+   the perimeter fanout and keep it only when it routes better (blocking,
+   then vias); one board is not enough to say which way it usually goes.
    **"Fine-pitch" is not one number in this file, and no sentence should be read
    as if it were.** It is the FANOUT trigger at <=0.6 mm interior / <=0.65 mm
    perimeter — the predicate in the code block above, the only executable one —
@@ -2393,7 +2401,9 @@ Key options:
 
 ### QFN/QFP Components (Perimeter Pads)
 
-Use `qfn_fanout.py` instead of `bga_fanout.py`:
+Use `qfn_fanout.py` instead of `bga_fanout.py`, once Step 3's benefit check
+says the part gains from a fanout at all (a perimeter-only part is a
+candidate to compare, rule 3):
 
 ```bash
 python3 py_router/qfn_fanout.py board.kicad_pcb \
