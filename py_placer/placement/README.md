@@ -1717,6 +1717,26 @@ it.
 own acceptance numbers -0.12 / -0.09 / -0.133 into -0.52 / -0.49 / -0.53. Silk
 at stroke centreline, unioned with the pads, reproduces all three exactly.
 
+**The courtyard a part that draws none would have had (#1300).** The body
+above is what the graders read; a placer needs the courtyard, which is the body
+plus a margin. `body.estimated_courtyards` derives it for every pad-bearing
+part that draws no courtyard (a container excepted): its occupancy -- the
+.Fab body, else silk with the pads, else the pads, each united with the pads,
+exactly what check_assembly's courtyard channel grades -- grown on every side
+by the courtyard excess KiCad's library convention uses (KLC F5.3, IPC-7351B
+nominal): 0.25 mm, 0.15 mm for a body under 2 mm (an 0402), 0.5 mm for a
+connector (`part_class`), 1.0 mm for a BGA (`body.courtyard_excess`).
+Measured over the 1014 footprints of kicad_files/ and stress sets 1-10 that
+draw both a courtyard and a .Fab body (`tests/measure_1300_courtyard_excess.
+py`): every side of the estimate lies within 0.05 mm of the drawn courtyard on
+61% of them (a flat 0.25 mm: 44%), median error 0. It is a placement INPUT,
+never a grade: `part_local_bounds` and every grader keep reading what is
+drawn, and since the estimate contains that occupancy, a placer that keeps
+estimates clear keeps the graded bodies clear. `courtyard_sides_with_
+estimates` hands a consumer the parser's courtyard map with the estimates
+added. multichannel_mixer's radial electrolytics (a 5 mm .Fab circle round a
+4.0 x 1.5 mm pad box) estimate to 5.5 mm squares.
+
 Corpus effect over the 22 tracked boards, symmetric diff, nothing lost:
 
 | | before | after |
