@@ -1661,6 +1661,18 @@ complete one when the input has none). Pass `--no-fix-drc-settings` to skip it
 that writes the project prints one `PROJECT_WRITES_JSON: {...}` line listing
 what it changed, so a harness can see it without grepping prose.
 
+A step writes only the floors of copper it drew. A fanout writes its via
+floors only when it placed a via and nothing when it drew nothing (#1195,
+`fanout_fix_kwargs`). A pour (`route_planes.py`, the Planes tab) writes its
+via floors and hole-to-hole only when it placed a via, its track floor only
+when it laid a track, and its copper-to-hole floor only when it drew either
+(#1319, `plane_fix_kwargs`). A bare pour writes the copper clearance alone,
+because a KiCad refill regrows the pour at max(zone clearance, net class). The
+`FAB FLOOR RELAXED` disclosure compares against the floors the board declared
+before the chain began (`kicad_routing_tools.fab_floor_origin`). A floor that
+origin does not carry was never declared, so nothing is reported as its
+"ORIGINAL".
+
 When routing used `--clearance-ceiling` (#530; formerly the implicit meaning of
 `--clearance`, #439), the writeback also **clamps** each NON-Default net class'
 **clearance** DOWN to the ceiling, so KiCad grades the copper at what was

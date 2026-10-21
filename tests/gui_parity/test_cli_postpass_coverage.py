@@ -115,6 +115,12 @@ REGISTRY = {
     # they are written with. bga_fanout's and qfn_fanout's mains and the fanout
     # tab's apply all decide with it before their writeback.
     'fanout_fix_kwargs': ['_apply_fanout_results'],
+    # #1319: the same rule for a pour -- no size or copper-to-hole floor for
+    # copper the step did not draw. route_planes' main counts its copper off
+    # the files (drawn_copper); the Planes tab's apply decides with the same
+    # function from the copper it applied.
+    'plane_fix_kwargs': ['_apply_results_to_board_body'],
+    'drawn_copper': ['plane_fix_kwargs'],
     # #857: the end-of-run `Design rules [...]` line (and, CLI-only, the
     # --strict-sizes exit 3). route.py's line comes from inside batch_route on
     # both fronts; route_diff / route_planes / the fanouts print it from their
@@ -332,6 +338,7 @@ SAME_SYMBOL_TWINS = {
     'persist_impedance_specs',
     'persist_pour_served_pads',
     'fanout_fix_kwargs',
+    'plane_fix_kwargs',
 }
 
 

@@ -4790,7 +4790,22 @@ Examples:
                       f"(below nominal {args.clearance:.4g}; fine-pitch taps) - "
                       f"grading at this floor")
             from fix_kicad_drc_settings import (fix_project_for_output, drc_fix_kwargs,
-                                                read_project_edge_clearance)
+                                                read_project_edge_clearance,
+                                                drawn_copper, plane_fix_kwargs)
+            # #1319: only the floors of copper this step drew -- the Planes
+            # tab makes the same decision from the copper it applied. Counted
+            # off the files, so the GND return vias above are included.
+            _n_tracks, _n_vias = drawn_copper(args.input_file, args.output_file)
+            if _n_tracks is None:
+                _n_tracks = _n_vias = 1     # unreadable: write as before
+            _plane_kw = plane_fix_kwargs(
+                _n_tracks, _n_vias, clearance=eff_clearance,
+                hole_to_hole=args.hole_to_hole_clearance,
+                track_width=args.track_width, via_size=args.via_size,
+                via_drill=args.via_drill)
+            if not (_n_tracks or _n_vias):
+                print("  Bare pour (no track or via drawn): writing the copper "
+                      "clearance only -- no size or copper-to-hole floor (#1319)")
             # #338: record the PROJECT's copper-to-edge rule, never this
             # tool's --board-edge-clearance -- that is the plane-zone INSET
             # (default 0.5), not an enforced DRC floor; writing it into a
@@ -4798,10 +4813,13 @@ Examples:
             # rule (openstint: design 0.3, recorded 0.5).
             fix_project_for_output(
                 args.output_file, input_pcb=args.input_file,
-                clearance=eff_clearance, hole_to_hole=args.hole_to_hole_clearance,
+                hole_to_hole=_plane_kw['hole_to_hole'],
+                clearance=_plane_kw['clearance'],
                 edge_clearance=read_project_edge_clearance(args.input_file),
-                track_width=args.track_width,
-                via_diameter=args.via_size, via_drill=args.via_drill,
+                track_width=_plane_kw['track_width'],
+                via_diameter=_plane_kw['via_diameter'],
+                via_drill=_plane_kw['via_drill'],
+                copper_holes=_plane_kw['copper_holes'],
                 **drc_fix_kwargs(args))
         except Exception as e:
             print(f"  (skipped DRC-settings fix: {e})")
