@@ -1158,7 +1158,7 @@ python3 py_placer/beautify_labels.py placed.kicad_pcb --orientation vertical --r
 - `--anchor-gap` (0.2 mm) from the courtyard, growing at most
   `--max-distance` (2.0 mm); `--silk-pad-clearance` and `--label-clearance`
   (0.15 mm); `--board-edge-clearance` (the board's own
-  `min_copper_edge_clearance`, else 0.55 mm).
+  `min_copper_edge_clearance`, else the fab edge floor routing writes, 0.2 mm).
 - `--refs PATTERN ...` limits the parts (the other labels stay put as
   obstacles); `--include-hidden` tidies hidden labels too (they stay hidden);
   `--skip-locked` leaves locked parts' labels alone (a lock pins the part, not

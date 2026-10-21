@@ -8310,7 +8310,7 @@ def edge_oversubscribed_findings(intent: Intent, pcb_data, pcb_file: str, *,
     (`edge_seat.oversubscribed`, the seat lines `_crowding` packs), worded as
     place_simple words them (`edge_seat.crowding_text`). WARN unless the
     intent's severity map promotes it. A floor left None is the board's own
-    (`board_floor_knobs`), as place_simple reads it.
+    (`resolved_floors`), as place_simple reads it.
 
     place_simple reports such an edge once per run and places the parts that
     do not fit as any other part; before this, a check of the plan, or of
@@ -8318,12 +8318,8 @@ def edge_oversubscribed_findings(intent: Intent, pcb_data, pcb_file: str, *,
     from .edge_seat import crowding_text, oversubscribed
     if not any(c.get('edge') for c in intent.edge_connectors):
         return []
-    if clearance is None or board_edge_clearance is None:
-        from list_nets import board_floor_knobs
-        c0, e0, _k = board_floor_knobs(pcb_file)
-        clearance = c0 if clearance is None else clearance
-        board_edge_clearance = (e0 if board_edge_clearance is None
-                                else board_edge_clearance)
+    clearance, board_edge_clearance = resolved_floors(
+        pcb_file, clearance, board_edge_clearance)
     out = []
     for rec in oversubscribed(pcb_data, pcb_file, intent, clearance,
                               board_edge_clearance, group_sources):
@@ -8901,6 +8897,29 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     return out, measured
 
 
+def resolved_floors(pcb_file: Optional[str], clearance: Optional[float] = None,
+                    board_edge_clearance: Optional[float] = None
+                    ) -> Tuple[float, float]:
+    """`(clearance, board_edge_clearance)`: each value a caller passes, as
+    passed, and each it leaves None as placement reads the board's own floors
+    (`list_nets.board_floor_knobs`: the Default class floored at Board Setup's
+    minimum, and an unset or sub-fab edge clearance read as the fab floor
+    routing writes back, #1301). With no board file, `routing_defaults
+    .CLEARANCE` and that unset floor. One resolver for every path that grades
+    or reads edges with no floors handed to it (`_grade_ctx`, `emit_intent`),
+    so none of them keeps the 0.55 edge clearance #1301 retired."""
+    if clearance is not None and board_edge_clearance is not None:
+        return float(clearance), float(board_edge_clearance)
+    import routing_defaults as defaults
+    from list_nets import board_floor_knobs, unset_board_edge_clearance
+    if pcb_file and os.path.isfile(pcb_file):
+        c0, e0, _knobs = board_floor_knobs(pcb_file)
+    else:
+        c0, e0 = defaults.CLEARANCE, unset_board_edge_clearance(None)[0]
+    return (float(c0 if clearance is None else clearance),
+            float(e0 if board_edge_clearance is None else board_edge_clearance))
+
+
 def _grade_ctx(intent: Intent, pcb_data, pcb_file: str, *,
                group_sources: Sequence[str] = (),
                clearance: Optional[float] = None,
@@ -8909,18 +8928,16 @@ def _grade_ctx(intent: Intent, pcb_data, pcb_file: str, *,
     and `rule_roster` share, so a plan's roster reads the board facts its
     grade will read."""
     from .quench import QuenchState
-    import routing_defaults as defaults
 
     outline = outline_state(pcb_data, pcb_file)
     if not outline['trustworthy']:
         raise UntrustworthyOutline(outline['problems'])
 
-    qargs = dict(clearance=clearance if clearance is not None
-                 else defaults.CLEARANCE,
-                 board_edge_clearance=(board_edge_clearance
-                                       if board_edge_clearance is not None
-                                       else 0.55))
-    state = QuenchState(pcb_data, pcb_file, **qargs)
+    # a floor left None is the board's own, as placement reads it (#1301),
+    # never a fixed 0.55 edge clearance
+    clr, edge = resolved_floors(pcb_file, clearance, board_edge_clearance)
+    state = QuenchState(pcb_data, pcb_file, clearance=clr,
+                        board_edge_clearance=edge)
 
     try:
         from .parser import extract_locked_refs

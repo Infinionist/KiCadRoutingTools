@@ -450,8 +450,11 @@ def test_must_lock_reports_a_part_the_file_does_not_pin():
 
 def test_legality_numbers_are_the_optimizers_own():
     pcb = parse_kicad_pcb(ULX)
-    state = QuenchState(pcb, ULX, clearance=defaults.CLEARANCE,
-                        board_edge_clearance=0.55)
+    # at the floors the grade reads when handed none: the board's own
+    # (`resolved_floors`, #1301), not the fixed 0.55 it used to fill in
+    from placement.floorplan import resolved_floors
+    clr, edge = resolved_floors(ULX)
+    state = QuenchState(pcb, ULX, clearance=clr, board_edge_clearance=edge)
     want = state.legality_metrics()
     got = _graded(_emit()).legality
     for k, v in want.items():
@@ -492,26 +495,31 @@ def test_a_legality_budget_bites_when_exceeded():
     assert n_conn, "ulx3s has overhanging parts and none were recorded"
     # (a) declared: the overlap arm bites, the outline arm is exempt by name,
     #     and the raw count stays the optimizer's own beside the exemption.
+    #     The emitter declares every part AT an edge (within the seat
+    #     tolerance); the grade counts the ones off the board at its own
+    #     floors, a subset (#1301), and every one of them is declared.
     r = _graded(raw)
+    n_oob = r.legality['oob_count']
+    assert 0 < n_oob <= n_conn, (n_oob, n_conn)
     hits = {v.expected and next(iter(v.expected)): v
             for v in r.violations if v.rule == 'legality'}
     assert 'overlap_area' in hits, "a zero overlap budget caught nothing on ulx3s"
     assert 'oob_count' not in hits, \
         f"declared edge connectors still counted: {hits['oob_count'].message}"
-    assert r.legality['oob_count_exempt'] == n_conn, r.legality
-    assert r.legality['oob_count'] == n_conn, \
-        "the raw oob_count must stay the optimizer's own number"
+    assert r.legality['oob_count_exempt'] == n_oob, r.legality
     # (b) undeclared: the same parts are off the board and nothing vouches for
     #     them, so a zero budget must catch every one.
     raw['edge_connectors'] = []
     r2 = _graded(raw)
     oob = [v for v in r2.violations if v.rule == 'legality'
            and 'oob_count' in v.expected]
-    assert len(oob) == 1 and oob[0].measured['oob_count'] == n_conn, \
+    assert len(oob) == 1 and oob[0].measured['oob_count'] == n_oob, \
         [v.message for v in oob]
+    assert r2.legality['oob_count'] == n_oob, \
+        "the raw oob_count must stay the optimizer's own number"
     assert r2.legality['oob_count_exempt'] == 0
-    print(f"  PASS: overlap bites either way; oob_count {n_conn} exempt when "
-          f"declared, {n_conn} counted when not")
+    print(f"  PASS: overlap bites either way; oob_count {n_oob} exempt when "
+          f"declared ({n_conn} declared), {n_oob} counted when not")
 
 
 def test_declared_edge_connectors_within_band_are_not_oob():
@@ -522,11 +530,17 @@ def test_declared_edge_connectors_within_band_are_not_oob():
     raw = _emit()
     raw['legality_budget'] = {'oob_count': 0}
     conns = raw['edge_connectors']
-    assert not [v for v in _graded(raw).violations if v.rule == 'legality'], \
+    r0 = _graded(raw)
+    assert not [v for v in r0.violations if v.rule == 'legality'], \
         "a zero oob budget fired on parts the intent declares off the board"
-    # Tighten one band to nothing: that part is outside it now.
-    ref = conns[0]['ref']
-    conns[0]['overhang_mm'] = {'min': 0.0, 'max': 0.0}
+    # the parts off the board at the grade's floors: every one declared
+    n_oob = r0.legality['oob_count']
+    assert 0 < n_oob == r0.legality['oob_count_exempt'], r0.legality
+    # Tighten one band to nothing -- the widest, a part well off the board:
+    # that part is outside it now.
+    i = max(range(len(conns)), key=lambda k: conns[k]['overhang_mm'].get('max') or 0)
+    ref = conns[i]['ref']
+    conns[i]['overhang_mm'] = {'min': 0.0, 'max': 0.0}
     r = _graded(raw)
     leg = [v for v in r.violations if v.rule == 'legality']
     edge = [v for v in r.violations if v.rule == 'edge_connector' and v.ref == ref]
@@ -534,15 +548,15 @@ def test_declared_edge_connectors_within_band_are_not_oob():
         [v.message for v in leg]
     assert ref not in leg[0].measured['exempt'], leg[0].measured
     assert edge, f"{ref} outside its band was not named by edge_connector"
-    assert r.legality['oob_count_exempt'] == len(conns) - 1
+    assert r.legality['oob_count_exempt'] == n_oob - 1
     # No max at all: an unbounded band vouches for nothing.
-    conns[0]['overhang_mm'] = {'min': 0.0}
+    conns[i]['overhang_mm'] = {'min': 0.0}
     r = _graded(raw)
     leg = [v for v in r.violations if v.rule == 'legality']
     assert len(leg) == 1 and leg[0].measured['oob_count'] == 1, \
         [v.message for v in leg]
-    print(f"  PASS: {len(conns)} declared parts exempt; one pushed outside its "
-          f"band (and one with no max) is counted and named")
+    print(f"  PASS: {n_oob} declared parts off the board exempt; one pushed "
+          f"outside its band (and one with no max) is counted and named")
 
 
 #: A 30 x 20 board. U2 sits at (6, 3) with a three-pin row 2 mm ABOVE its
