@@ -2780,7 +2780,9 @@ kilobyte: `routed`, `failed`, `failed_single`, `open_single`,
 failure state comes from a re-grade of the board the run wrote, over every net
 the run's passes worked on or disturbed (#1069, the `JSON_REGRADE` line), so a
 net an earlier reconciliation lap or finalize sub-run left broken stays
-counted. The big `JSON_SUMMARY` lines are several kB each and cover one pass
+counted. A pour net the plane finalize's oracle left with open links is graded
+on KiCad's exact fill there, not credited by the router's fill model (#1339;
+`--json-out` names it in `regrade.exact_open`). The big `JSON_SUMMARY` lines are several kB each and cover one pass
 each — they are forensics, not your read. Four things about it that are easy
 to get wrong:
 

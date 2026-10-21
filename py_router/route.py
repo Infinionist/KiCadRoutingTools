@@ -431,12 +431,80 @@ def _emit_summary_min(gate_report: Optional[dict] = None,
         print(f"  WARNING: could not emit JSON_SUMMARY_MIN: {_e}")
 
 
+def _exact_open_grades(board, board_file: Optional[str], names, links,
+                       project_from: Optional[str] = None) -> Dict[str, tuple]:
+    """Re-grade the pour nets KiCad's exact fill left OPEN (#1339).
+
+    `names` are nets with oracle links still pending after the final
+    reconciliation (`links`, remaining_links-shaped) that the fill MODEL
+    grades connected. The model's raster pour can join what KiCad's fill
+    splits -- the very credit #572 refuses at the reconciliation's entrance
+    (assume_open) -- so the re-grade must not take it either. Each net is
+    graded on KiCad's exact fill of the written file (refill_islands +
+    exact_clusters) when one can be had; otherwise (no KiCad python, the GUI's
+    unsaved board, a multi-outline board where a cluster split may be a board
+    boundary) on the oracle's own verdict: one stranded cluster per pending
+    link, located at the link's anchor.
+
+    Returns {name: (grade, source)}, grade shaped like grade_nets' entries and
+    source 'exact fill' or 'oracle verdict'. A net the exact fill joins is
+    left out: the model was right about it."""
+    if not names:
+        return {}
+    by_name = {}
+    for lk in links or ():
+        if lk and lk[0] in names:
+            by_name.setdefault(lk[0], []).append(lk)
+    islands = None
+    multi = len(getattr(getattr(board, 'board_info', None), 'board_outlines',
+                        None) or []) >= 2
+    if board_file and not multi:
+        try:
+            import kicad_exact_fill as _kef
+            islands = _kef.refill_islands(board_file, project_from=project_from)
+        except Exception:                                        # noqa: BLE001
+            islands = None
+    id_of = {n.name: i for i, n in board.nets.items()}
+    out = {}
+    for name in names:
+        nid = id_of.get(name)
+        pads = list(board.pads_by_net.get(nid, [])) if nid is not None else []
+        if islands is not None and nid is not None:
+            from kicad_exact_fill import exact_clusters
+            isl = [(layer, poly) for (n, layer), polys in islands.items()
+                   if n == name for poly in polys]
+            pcl = [c for c in exact_clusters(board, nid, isl) if c['pads']]
+            if len(pcl) <= 1:
+                continue
+            keep = max(pcl, key=lambda c: len(c['pads']))
+            failed = [{'x': round(float(p.global_x), 4),
+                       'y': round(float(p.global_y), 4),
+                       'component_ref': p.component_ref,
+                       'pad_number': p.pad_number}
+                      for c in pcl if c is not keep for p in c['pads']]
+            parts, src = len(pcl), 'exact fill'
+        else:
+            nl = by_name.get(name) or []
+            failed = [{'x': round(float(lk[1][0]), 4),
+                       'y': round(float(lk[1][1]), 4),
+                       'component_ref': '?', 'pad_number': '?'} for lk in nl]
+            if not failed:
+                continue
+            parts, src = 1 + len(failed), 'oracle verdict'
+        n = len(pads)
+        out[name] = ({'pads': n, 'broken': True, 'copper': True,
+                      'pad_pairs': [max(0, n - 1), max(0, n - parts)],
+                      'failed_pads': failed}, src)
+    return out
+
+
 def _final_regrade(pcb_data, output_file: str, return_results: bool,
                    results_data: Optional[dict], write_model,
                    routing_scope: List[str], input_signature,
                    orig_seg_by_net: Dict[int, list],
                    orig_via_by_net: Dict[int, list],
-                   orig_copper=None) -> Optional[dict]:
+                   orig_copper=None, exact_links=None,
+                   project_from: Optional[str] = None) -> Optional[dict]:
     """Grade the board this run SHIPS over every net it owns (#1069).
 
     The merged tally used to be the LAST summary's failure state, and each
@@ -463,6 +531,10 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     it carries when a zone is first consulted, which here is the end of the
     run, so grading the input on pcb_data read a pour this run cut as cut on
     the input too, and the net was never charged.
+
+    `exact_links` are the oracle links still pending after the final
+    reconciliation; a net among them that the fill model credits is graded on
+    KiCad's exact fill instead (_exact_open_grades, #1339).
 
     Prints the record as `JSON_REGRADE:` (merge_route_summaries reads it from
     the log), stores it for --json-out and JSON_SUMMARY_MIN, prints a
@@ -504,6 +576,23 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
                                 if n in id_of],
                         segs_by_net=segs_by_net, vias_by_net=vias_by_net)
     grades = {name_of[nid]: g for nid, g in graded.items()}
+    # #1339: a pour net whose exact-fill links are still pending after the
+    # final reconciliation is not connected because the fill MODEL says so --
+    # multichannel_mixer's GND read "recovered" (failed 0) with the oracle's
+    # 5 links open and KiCad's refill in 5 pieces. Grade those nets on the
+    # exact fill of the shipped board, else on the oracle's verdict.
+    _pending = {lk[0] for lk in (exact_links or ()) if lk and lk[0]}
+    _exact_open = _exact_open_grades(
+        board, output_file if label == 'file' else None,
+        sorted(n for n in _pending if n in grades and not grades[n]['broken']),
+        exact_links, project_from=project_from)
+    for _n, (_g, _src) in sorted(_exact_open.items()):
+        grades[_n] = _g
+        print(f"  Final re-grade (#1339): {_n} graded on the "
+              f"{'exact fill' if _src == 'exact fill' else 'oracle verdict'} "
+              f"-- the fill model credits it, the oracle's links are still "
+              f"open: {len(_g['failed_pads'])} "
+              f"{'pad(s)' if _src == 'exact fill' else 'island(s)'} off")
     # A net graded only because its copper changed is the run's failure only
     # if the run made it worse: broken now and connected before, or more pads
     # off than before. Graded on the input copper snapshot, through a fill of
@@ -533,6 +622,8 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
                             board=label, seconds=_t1069.time() - _t0,
                             disturbed_only=_worse)
     record['graded_nets'] = len(graded)
+    if _exact_open:
+        record['exact_open'] = {n: s for n, (_g, s) in _exact_open.items()}
     # #1215: a broken net outside pass 1's scope is either the run's own
     # casualty (a rip it could not restore, a re-route that failed) or one the
     # input already had broken. Graded on the input copper, as `_worse` is: a
@@ -5948,6 +6039,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # merges the sub-run's results (claude-tab/stress parity gap closure).
     _custody_nets9 = []
     _custody_links9 = []
+    # #1339: the exact-fill links still pending after the final
+    # reconciliation, for the end-of-run re-grade (None: no lap ran).
+    _pending_links1339 = None
     _zone_complete9 = set()
     # PLANE FINALIZE (#562): the pours-first chain's repair step, absorbed.
     # Measured (3-board arch chains): the standalone repair step's entire
@@ -7226,6 +7320,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                           f"{_lap10 + 1} recovered {_lrok} with {_lrfail} "
                           f"still failed -- one more lap on the updated "
                           f"board")
+            # #1339: the forced links no lap landed (a lap that ended the
+            # loop without failures was never harvested, so drop its landed
+            # nets here too) -- the nets whose exact-fill verdict is still
+            # OPEN, which the end-of-run re-grade must not credit.
+            _landed1339 = set(getattr(batch_route, '_forced_link_landed',
+                                      None) or [])
+            _pending_links1339 = [l for l in (_rk.get('oracle_links') or [])
+                                  if l and l[0] not in _landed1339]
             print("Note: the JSON_SUMMARY above covers only the "
                   "reconciliation subset (it carries scope="
                   "\"reconciliation-subset\"). The run's tally is the final "
@@ -7678,7 +7780,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 locals().get('results_data'), _gui_write_model,
                 [_n for _n, _i in single_ended_nets], _input_sig1069,
                 _orig_seg_by_net, _orig_via_by_net,
-                orig_copper=_orig_copper_values)
+                orig_copper=_orig_copper_values,
+                exact_links=(_pending_links1339
+                             if _pending_links1339 is not None
+                             else list(_custody_links9)
+                             + list(_oracle_open_links)),
+                project_from=input_file)
             if _rg1069 is not None:
                 successful = _rg1069['successful']
                 failed = _rg1069['failed']

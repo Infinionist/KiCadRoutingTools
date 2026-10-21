@@ -669,6 +669,10 @@ def _apply_regrade(merged: Dict, regrade: Dict, summaries: List[Dict]) -> None:
     merged['regrade'] = {k: regrade.get(k) for k in (
         'board', 'graded_nets', 'seconds', 'unowned_broken', 'recovered',
         'broken_by_run')}
+    if regrade.get('exact_open'):
+        # #1339: the pour nets graded on KiCad's exact fill (or the oracle's
+        # verdict) because the fill model credited them.
+        merged['regrade']['exact_open'] = dict(regrade['exact_open'])
 
 
 def merge_route_summaries(log: str) -> Optional[Dict]:

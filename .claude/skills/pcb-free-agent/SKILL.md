@@ -322,7 +322,9 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   disturbed (#1069: the `JSON_REGRADE` line, merged into `JSON_SUMMARY_MIN`
   and `--json-out`), so reconciliation laps no longer hide broken nets. It
   does not grade the rest of the board, and it uses the router's fill model
-  rather than KiCad's refill. Count the board's open nets with
+  rather than KiCad's refill -- except for a pour net whose oracle links are
+  still open after the reconciliation, which it grades on KiCad's exact fill
+  (#1339, `regrade.exact_open`). Count the board's open nets with
   `check_connected` or `board_score`.
 - **`route.py` finishes the planes; a repair step does not (#562, #1112).**
   Pour first (`route_planes.py`), then route with the plane nets inside
