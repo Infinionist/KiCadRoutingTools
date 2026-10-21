@@ -430,8 +430,10 @@ def test_the_loader_refuses_every_malformed_along_edge_claim():
     # `replicate[]`, sibling sheet instances laid out as copies. 12 since
     # af45a9e7: a `proximity[]` row sourced `placement.crystals`, a crystal
     # claim the emitter derives, graded at warn. 13: `templates[]`, a chip's
-    # datasheet layout that place_simple seats and carries.
-    assert fp.READER_VERSION == 13, (
+    # datasheet layout that place_simple seats and carries. 14: a template
+    # row's `kind` and `ground_return_mm`, a switching stage's caps' ground
+    # return graded at warn.
+    assert fp.READER_VERSION == 14, (
         f"{fp.READER_VERSION}: the field vocabulary grew. Re-state this "
         f"literal and say which field arrived, the way #712, #837, #902, "
         f"#893, #959 and #1051 did")

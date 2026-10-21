@@ -189,9 +189,18 @@ EDGE_BAND_SANITY_MM = 5.0
 #: each member's drift. A placement tool acts on it and the grade can be
 #: promoted, so the rule above mandates the bump; an older build refuses the
 #: key by name, and `fit_template.py` stamps `min_reader` 13.
-READER_VERSION = 13
+#: 14: a `templates[]` row's `kind` and `ground_return_mm`. A `switching
+#: stage` has each member cap's ground return graded
+#: (`template_ground_return`, WARN by default), which the `severity` map can
+#: promote, so the rule above mandates the bump; an older build refuses both
+#: keys by name, and `fit_template.py` stamps `min_reader` 14 on a row that
+#: carries either.
+READER_VERSION = 14
 #: The reader version that first reads `templates[]`.
 TEMPLATES_READER = 13
+#: The reader version that first reads a template row's `kind` and
+#: `ground_return_mm`.
+TEMPLATE_KIND_READER = 14
 
 #: #1357. A row's FREE TEXT -- the author's reason for it, which no rule
 #: grades -- has ONE meaning and three spellings. `why` is canonical;
@@ -6709,12 +6718,20 @@ def rule_template(ctx) -> Iterator[Violation]:
     them in the anchor's frame (`placement.templates.measure`): one finding
     per template whose worst member pad sits more than `tolerance_mm` from
     its template position, or with a member on the other face. A template
-    naming a ref the board does not have is `template_unresolved`. WARN by
-    default (both names); the `severity` map may promote either. Every
-    template is recorded on `ctx.template_measured`, passing ones too."""
-    from .templates import measure
+    naming a ref the board does not have is `template_unresolved`. A row
+    whose `kind` is `switching stage` also has each member cap's ground
+    return measured (`templates.ground_returns`): one
+    `template_ground_return` finding per template with a cap past its
+    `ground_return_mm` (`GROUND_RETURN_MM` by default) -- a template can
+    hold its members exactly where it was fitted and still be wrong, as an
+    output cap given only its VOUT partner is seated past the inductor, its
+    ground far from the chip's. WARN by default (all three names); the
+    `severity` map may promote any. Every template is recorded on
+    `ctx.template_measured`, passing ones too."""
+    from .templates import GROUND_RETURN_MM, ground_returns, measure
     sev = ctx.intent.severity_of('template', default=WARN)
     sev_unres = ctx.intent.severity_of('template_unresolved', default=WARN)
+    sev_ground = ctx.intent.severity_of('template_ground_return', default=WARN)
     for i, decl in enumerate(ctx.intent.templates):
         key = f"templates[{i}] ({decl['anchor']})"
         row = dict(measure(ctx.pcb, decl), index=i)
@@ -6730,6 +6747,25 @@ def rule_template(ctx) -> Iterator[Violation]:
                if m['worst_mm'] > tol + legality.EPS or m['side_differs']]
         row.update(passes=not off, off=len(off))
         ctx.template_measured.append(row)
+        if decl.get('kind') == 'switching stage':
+            limit = float(decl.get('ground_return_mm') or GROUND_RETURN_MM)
+            caps = ground_returns(ctx.pcb, decl)
+            far = sorted((c for c in caps if c['return_mm'] > limit + legality.EPS),
+                         key=lambda c: -c['return_mm'])
+            row['ground_return'] = {'limit_mm': limit, 'caps': caps, 'over': len(far)}
+            if far:
+                w = far[0]
+                yield Violation(
+                    rule='template_ground_return', severity=sev_ground, ref=w['ref'],
+                    block=ctx.owner.get(w['ref']),
+                    message=(f"{key}: {len(far)} of {len(caps)} cap(s) return their ground "
+                             f"more than {limit:g}mm from the chip's -- worst {w['ref']}, "
+                             f"{w['return_mm']:.2f}mm of pad-edge gaps from its {w['net']} pad "
+                             f"to {w['to']}"
+                             + (f" (via {', '.join(w['via'])})" if w['via'] else '')),
+                    measured={'index': i, 'over': len(far), 'max_mm': w['return_mm'],
+                              'worst': [c['ref'] for c in far[:NAMED_WORST]]},
+                    expected={'ground_return_mm': limit})
         if not off:
             continue
         worst = off[0]
@@ -6964,6 +7000,10 @@ _NON_RULE_SEVERITIES = frozenset({
     # Beside `template`: a template naming a ref the board does not have is
     # a different claim from a drift. WARN by default, like the rule.
     'template_unresolved',
+    # Beside `template` too: a switching stage's cap returning its ground
+    # far from the chip's is a claim about the template itself, which a
+    # member exactly at its pose can still break. WARN by default.
+    'template_ground_return',
     # #959 (#1001). Raised by `grade` itself when `mechanical.json` is read:
     # a part that moved off (or turned away from) its declared mechanical
     # pose. WARN for a move the grade-time anchor already reports at ERROR
@@ -10365,6 +10405,12 @@ def format_text(r: GradeResult) -> str:
                      + ('as drawn' if m['passes'] else
                         f"{m['off']} of {len(m['members'])} member(s) off")
                      + (f", worst {w['ref']} {w['worst_mm']:.2f}mm" if w else ''))
+        g = m.get('ground_return')
+        if g and g['caps']:
+            c = max(g['caps'], key=lambda c: c['return_mm'])
+            lines.append(f"    ground return: {len(g['caps']) - g['over']} of {len(g['caps'])} "
+                         f"cap(s) within {g['limit_mm']:g}mm of the chip's ground, longest "
+                         f"{c['ref']} {c['return_mm']:.2f}mm")
     rows = [e for e in r.edge_seating
             if e.get('along_edge_offset_mm') is not None]
     if rows:

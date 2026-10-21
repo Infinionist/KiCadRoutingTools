@@ -515,8 +515,10 @@ leaving that pose expensive.
        ground pad, the copper the figure shares.
      - A second part like one already seated (the second input cap) names
        the first.
-     - Name a cap's ground pad only where the drawing grounds it at the
-       chip's ground pin; a decap's ground usually goes to its own via;
+     - Name a cap's ground pad where the drawing joins it to the chip's
+       ground copper: at a PGND pin, or at a member's ground pad there, as
+       COUT's joins CIN's. A decap off the power loop usually grounds at
+       its own via;
    - `side`: where the drawing puts it, in the footprint frame. `-x`, `+x`,
      `-y` or `+y` means its centre is beyond that edge of the chip's
      courtyard, anywhere along it; two of different axes (`+x-y`) mean a
@@ -540,9 +542,12 @@ leaving that pose expensive.
      lies further from its partners;
    - a `note` naming what the drawing calls it.
 
-   Cite the datasheet (title, revision, section, figure) in `source`:
+   Give the sketch the `kind` your groups file names the candidate with
+   (`switching stage` or `rf front end`): a switching stage has its caps'
+   ground returns checked, by the fit and by the grade. Cite the datasheet
+   (title, revision, section, figure) in `source`:
    ```json
-   {"anchor": "U2", "source": "TI LMR36006 SNVSB48C, 11.1 and Figure 57",
+   {"anchor": "U2", "kind": "switching stage", "source": "TI LMR36006 SNVSB48C, 11.1 and Figure 57",
     "members": [
      {"ref": "C2", "pads": {"C2": ["1", "2"], "U2": ["2", "1"]}, "side": "+y", "note": "CHF across VIN 2 / PGND 1"},
      {"ref": "C5", "pads": {"C5": ["1", "2"], "U2": ["4", "3"]}, "side": "+y", "note": "CBOOT across BOOT 4 / NC-SW 3"},
@@ -564,6 +569,14 @@ leaving that pose expensive.
    - **What it prints.** Each member's pose, the gap of each of its legs
      (`legs 1.07 + 0.74 mm`), and its gap to the chip. A NOTE flags a member
      that ended beside another edge than its `side`.
+   - **For a switching stage, each cap's ground return**: the pad-edge gaps
+     from its ground pad to the chip's ground pins (or an external low-side
+     FET's), through other members' ground pads, as a surface pour would
+     join them. A NOTE flags one over 3 mm (`ground_return_mm` in the sketch
+     sets another). It is the check legs cannot make: a cap whose ground
+     pad names no partner is seated by its other pad alone, and an output
+     cap seated past the inductor read 10 mm here while every leg it was
+     given was short. Give that pad a partner and re-fit.
    - **What it writes.** The template goes into the intent, replacing that
      chip's row, so writing over the input and re-fitting as often as you
      like is safe.

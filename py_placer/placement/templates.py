@@ -34,7 +34,11 @@ import numpy as np
 
 #: Keys of one `templates[]` row and of one member.
 TEMPLATE_KEYS = {'anchor', 'members', 'tolerance_mm', 'source', 'note', 'why',
-                 'context', 'fitted'}
+                 'context', 'fitted', 'kind', 'ground_return_mm'}
+#: A row's `kind`, as the groups file names its template candidates
+#: (`grouping.TEMPLATE_KINDS` but `none`). A `switching stage`'s member caps
+#: have their ground return measured (`ground_returns`).
+KINDS = ('switching stage', 'rf front end')
 MEMBER_KEYS = {'ref', 'at', 'rot', 'note', 'pads'}
 #: How far (mm, a member pad's distance from its template position, the worst
 #: pad) a member may drift before the grade reports it: room for the anneal's
@@ -46,6 +50,14 @@ TEMPLATE_TOLERANCE_MM = 0.3
 #: template turned onto the anchor's pose: bread_dcmotor's C1 was refused at
 #: its template pose on 5 of 12 seeds and moved 4.75 mm.
 FIT_MARGIN_MM = 0.001
+#: How far (mm) a switching stage's member cap may return its ground to the
+#: chip's (`ground_returns`) before the grade warns; a row's
+#: `ground_return_mm` sets its own. Templates fitted with every cap's ground
+#: beside the chip's or a like cap's read 0.2-1.9 mm on fusb302_pd_dev,
+#: argus, bread_dcmotor, covg_patchclamp and bitaxe; an output cap given only
+#: its VOUT partner seated past the inductor at 8.2-10.5 mm (fusb, argus,
+#: bitaxe), and covg's input cap at 7.6 mm.
+GROUND_RETURN_MM = 3.0
 #: How far (mm, centre to centre) round a LOCKED anchor the fit takes the
 #: board's other locked parts as obstacles and partners.
 LOCKED_CONTEXT_MM = 30.0
@@ -147,6 +159,13 @@ def validate(raw) -> List[Dict]:
         if not _num(tol) or tol < 0:
             raise TemplateError(f"{where}.tolerance_mm: expected a non-negative number, "
                                 f"got {tol!r}")
+        kind = t.get('kind')
+        if kind is not None and kind not in KINDS:
+            raise TemplateError(f"{where}.kind: one of {', '.join(KINDS)}, got {kind!r}")
+        gr = t.get('ground_return_mm')
+        if gr is not None and (not _num(gr) or gr <= 0):
+            raise TemplateError(f"{where}.ground_return_mm: expected a positive number, "
+                                f"got {gr!r}")
         out.append(dict(t, anchor=a, members=members, tolerance_mm=float(tol)))
     for a, where in anchors.items():
         if a in owner:
@@ -206,6 +225,91 @@ def measure(pcb, decl) -> Dict:
     rows.sort(key=lambda r: -r['worst_mm'])
     return {'anchor': decl['anchor'], 'state': 'measured', 'members': rows,
             'tolerance_mm': decl['tolerance_mm']}
+
+
+# -- a switching stage's ground return ----------------------------------------
+
+def ground_return_rows(pcb, decl, rects_of) -> List[Dict]:
+    """Each member capacitor's ground return in a template: from its pad on
+    one of the anchor's grounds (`grouping.is_ground`, a net an anchor pad is
+    on) to the nearest ground pad of the anchor or of a member transistor on
+    that net (a controller's external low-side FET, where its switching
+    current returns), the least sum of pad-edge gaps over a chain through
+    other members' pads on it -- the copper a surface pour lays to join
+    them, as a datasheet's layout shares the input caps' ground with the
+    output caps' and the chip's PGND pins. `rects_of(ref)` gives a part's
+    connected pads as [(net id, rect)]. A row per measured cap:
+    `{ref, net, return_mm, via, to}` (`via`: the members the chain passes,
+    in order; `to`: the part it ends on)."""
+    import heapq
+    from .grouping import is_ground
+    from .legality import rect_gap
+    from .roles import infer_role
+    fps = pcb.footprints
+    a = decl['anchor']
+    refs = [a] + [m['ref'] for m in decl['members']]
+    pads = {r: rects_of(r) for r in refs}
+    name = lambda nid: getattr(pcb.nets.get(nid), 'name', '') or ''
+    chip_gnd = {nid for nid, _ in pads[a] if is_ground(name(nid))}
+    ends_at = {a} | {m['ref'] for m in decl['members']
+                     if 'transistor' in infer_role(fps[m['ref']], m['ref'], None)['role']}
+    rows = []
+    for m in decl['members']:
+        r = m['ref']
+        own = pads[r]
+        if len(own) != 2 or infer_role(fps[r], r, None)['role'] != 'capacitor':
+            continue
+        ends = [rect for nid, rect in own if nid in chip_gnd]
+        if len(ends) != 1:
+            continue
+        nid = next(n for n, _ in own if n in chip_gnd)
+        nodes = [(o, rect) for o in refs for n, rect in pads[o] if n == nid]
+        src = next(k for k, (o, rect) in enumerate(nodes) if o == r and rect is ends[0])
+        dist, prev, todo = {src: 0.0}, {}, [(0.0, src)]
+        best = None
+        while todo:
+            d, k = heapq.heappop(todo)
+            if d > dist.get(k, math.inf):
+                continue
+            if nodes[k][0] in ends_at:
+                best = k
+                break
+            for j, (o, rect) in enumerate(nodes):
+                if j == k or o == r:
+                    continue
+                nd = d + max(0.0, rect_gap(nodes[k][1], rect))
+                if nd < dist.get(j, math.inf) - 1e-12:
+                    dist[j], prev[j] = nd, k
+                    heapq.heappush(todo, (nd, j))
+        via, k = [], prev.get(best)
+        while k is not None and k != src:
+            if not via or via[-1] != nodes[k][0]:
+                via.append(nodes[k][0])
+            k = prev.get(k)
+        rows.append({'ref': r, 'net': name(nid), 'return_mm': round(dist[best], 3),
+                     'via': via[::-1], 'to': nodes[best][0]})
+    return rows
+
+
+def ground_returns(pcb, decl) -> List[Dict]:
+    """`ground_return_rows` on the board as placed."""
+    from .legality import pad_rect
+    return ground_return_rows(pcb, decl, lambda r: [
+        (p.net_id, pad_rect(p)) for p in _conn_pads(pcb.footprints[r])])
+
+
+def ground_returns_fitted(pcb, state, row) -> List[Dict]:
+    """`ground_return_rows` on a fitted row's own poses (the anchor at the
+    origin, unturned), so the fit can say what the template will hold."""
+    poses = {row['anchor']: (0.0, 0.0, 0.0)}
+    poses.update({m['ref']: (m['at'][0], m['at'][1], m['rot']) for m in row['members']})
+
+    def rects_of(r):
+        fp, part = pcb.footprints[r], state.parts[r]
+        part.ensure_rotation(poses[r][2])
+        return list(zip((p.net_id for p in _conn_pads(fp)),
+                        map(tuple, _pad_rects(part, fp, poses[r]))))
+    return ground_return_rows(pcb, row, rects_of)
 
 
 # -- fitting a sketch to the board's footprints -------------------------------
@@ -513,7 +617,7 @@ def _row(sketch, anchor, members, fitted, gap, each, off, notes, context) -> Dic
         row['fitted']['notes'] = list(notes)
     if context:
         row['fitted']['context'] = {o: list(p) for o, p in context.items()}
-    for k in ('source', 'note', 'why', 'context'):
+    for k in ('kind', 'ground_return_mm', 'source', 'note', 'why', 'context'):
         if k in sketch:
             row[k] = sketch[k]
     return row

@@ -1074,8 +1074,18 @@ draws them.
 - parts with no courtyard labelled, since each is fitted as the box round its
   pads, and the run names them.
 
+The sketch's `kind` (`switching stage` or `rf front end`, as the groups
+file names the candidate) goes into the row. For a switching stage the run
+also prints each member cap's ground return: the pad-edge gaps from its
+ground pad to the chip's ground pins, or a member transistor's, through the
+other members' ground pads. It adds a NOTE for one past 3 mm, or the
+sketch's `ground_return_mm`. An output cap whose ground pad names no partner
+is seated by its VOUT pad alone, and can end past the inductor with every leg
+short.
+
 `--write-intent` adds the row to an intent, replacing one for the same chip,
-and raises its `min_reader` to 13.
+and raises its `min_reader` to 13, or 14 for a row with a `kind` or
+`ground_return_mm`.
 
 ```bash
 python3 -X utf8 py_tools/fit_template.py board.kicad_pcb --pins U2
@@ -1085,6 +1095,7 @@ python3 -X utf8 py_tools/fit_template.py board.kicad_pcb --sketch u2.sketch.json
 
 `place_simple` seats and carries the template and prices each member's
 drift (`--template-weight`); `check_floorplan` grades it (`template`, a
+WARN), and a switching stage's ground returns (`template_ground_return`, a
 WARN). Exit 0 fitted. Exit 2 means one of:
 - an unreadable input;
 - a sketch the board cannot fit: a partner listed after its member, or no

@@ -703,7 +703,10 @@ def test_severity_keys_are_checked_against_the_rule_names():
                                         # #1211: a copy the board cannot
                                         # resolve
                                         'replicate_unresolved',
-                                        'template_unresolved'}
+                                        'template_unresolved',
+                                        # a switching stage's caps' ground
+                                        # return
+                                        'template_ground_return'}
     assert _SEVERITY_KEYS == expected, sorted(_SEVERITY_KEYS ^ expected)
     for name in sorted(expected):
         # Two names accept one direction only, and say so at load:

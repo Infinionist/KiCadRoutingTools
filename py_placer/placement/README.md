@@ -414,6 +414,17 @@ legality pass moved 1-2 members a seed up to 7.1 mm off their poses. The
 `plan-pcb-placement` skill's §3.5 is how an agent goes from the datasheet to
 the sketch.
 
+A template can hold its members exactly and still be wrong, so for a
+`switching stage` (the row's `kind`) `fit_template` and `check_floorplan`
+also measure each member cap's ground return: the pad-edge gaps from its
+ground pad to the chip's ground pins, or an external low-side FET's, through
+the other members' ground pads (`templates.ground_returns`). Past 3 mm it is
+a NOTE in the fit and a `template_ground_return` warning in the grade. On
+fusb302_pd_dev the output caps, fitted with only their VOUT pad named, sat
+past the inductor with their ground 10.5 mm from the chip's; named beside the
+input caps' ground as Figure 57 draws them, 1.8 mm, and the six judged seeds
+routed with nothing blocking, as before.
+
 ## Moving parts by hand: place_pose
 
 `py_placer/place_pose.py` applies a pose you chose and grades it, refusing a
@@ -582,7 +593,7 @@ contract.
   are still unused:
   1. Cost terms from the rules, such as switch-node length and input-loop
      area, which `check_floorplan` would also grade, since routing cannot see
-     them.
+     them. The caps' ground return is graded already (above), not priced.
   2. The router follows the datasheet's routing rules for those parts and the
      area they cover:
      - the input loop short, wide and on one layer, for low inductance;

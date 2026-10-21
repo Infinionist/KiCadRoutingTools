@@ -153,7 +153,7 @@ suspect, suspect_reason, why
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `why` (or `note` / `reason`), `context`, and the compiler-written `source` |
 | `keep_away[]` | `rule` (ONE rule in route.py's `--keep-away` syntax, `AGGRESSOR:VICTIM:GAP`), `why` (or `note` / `reason`), `context`, and the compiler-written `source` (see "`keep_away[]`" below; needs `min_reader` 10) |
 | `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why` (or `note` / `reason`), `context`, `source` (see "`replicate[]`" below; needs `min_reader` 11) |
-| `templates[]` | `anchor` (the chip), `members` (each `ref`, `at` [dx, dy] mm and `rot`, a quarter turn, in the chip's own frame; `pads` and `note` as the fit wrote them), `tolerance_mm`, `source`, `why` (or `note` / `reason`), `context`, and the fit-written `fitted` (see "`templates[]`" below; needs `min_reader` 13) |
+| `templates[]` | `anchor` (the chip), `members` (each `ref`, `at` [dx, dy] mm and `rot`, a quarter turn, in the chip's own frame; `pads` and `note` as the fit wrote them), `tolerance_mm`, `kind` (`switching stage` or `rf front end`), `ground_return_mm`, `source`, `why` (or `note` / `reason`), `context`, and the fit-written `fitted` (see "`templates[]`" below; needs `min_reader` 13, and 14 with `kind` or `ground_return_mm`) |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why` (or `note` / `reason`), `context`, and the compiler-written `source` (see "Arrays" below; needs `min_reader` 7) |
 | `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"`, `"mechanical"` or `"derived_default"`), `why` (or `note` / `reason`), `context`, `accept_courtyard_overlap` (a list of literal refs) (see "Fixed poses" below; needs `min_reader` 7) |
 | `legality_budget` | `overlap_area`, `oob_count`, `oob_amount` (`oob_area` refused — see below) |
@@ -199,10 +199,10 @@ the twelve `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
 `plan_board_overfull`, `plan_board_crowded`, `plan_fixed_overlap`,
 `plan_fixed_overlap_budget`), `edge_connector_side` (settable to `warn`
 only -- `error` is refused, because the rule is advisory by design),
-plus six more raised BESIDE a rule's own name —
+plus seven more raised BESIDE a rule's own name —
 `decap_pin_distance_inferred` and `decap_pin_uncovered`,
-`proximity_unresolved`, `keep_away_unresolved`, `replicate_unresolved` and
-`template_unresolved`.
+`proximity_unresolved`, `keep_away_unresolved`, `replicate_unresolved`,
+`template_unresolved` and `template_ground_return`.
 One measurement can support several claims, and
 an author must be able to set their severities apart: a pin inferred from a net
 name and a pin the pad declares are not the same evidence, and a proximity
@@ -213,7 +213,8 @@ without demoting the second.
 Every name defaults to **error** except these, which default to **warn**:
 `assembly_side`, `decap_ungraded`, `decap_pin_distance_inferred`,
 `decap_pin_uncovered`, `keep_away` and `keep_away_unresolved`, `replicate`
-and `replicate_unresolved`, `template` and `template_unresolved`,
+and `replicate_unresolved`, `template`, `template_unresolved` and
+`template_ground_return`,
 `keepout_allow_unresolved`,
 `intent_zone_overlap`, `fixed_pose_overlap_waived`, `plan_fixed_overlap` and
 the three `plan_*_crowded` findings; `pins_to_edge` and
@@ -306,6 +307,7 @@ Each `min_reader` level and the keys it covers:
 | 11 | `replicate[]` |
 | 12 | a `proximity[]` row whose `context.source` is `placement.crystals` |
 | 13 | `templates[]` |
+| 14 | `templates[].kind`, `templates[].ground_return_mm` |
 
 The emitter and the design-brief compiler stamp the level their output needs.
 
@@ -1101,6 +1103,25 @@ Two things read it:
   or on the other face is one finding naming the worst members; every
   template prints a line, and `--json` carries the readings as
   `templates[]`.
+- **The ground return** (`template_ground_return`, **warn** by default), on a
+  row whose `kind` is `switching stage`. A member can sit exactly at its
+  template pose and the template still be wrong: an output cap fitted with
+  only its VOUT pad named is seated past the inductor, its ground 10 mm from
+  the chip's on fusb302_pd_dev, where the datasheet's drawing joins it to the
+  input caps' ground beside the PGND pins. So each member capacitor with a
+  pad on one of the chip's grounds has its ground return measured: the least
+  sum of pad-edge gaps from that pad to the chip's nearest pad on that ground,
+  or a member transistor's (a controller's low-side FET, where its switching
+  current returns), through other members' pads on it -- the copper a surface
+  pour lays to join them (`templates.ground_returns`). A template with a cap
+  past `ground_return_mm` (default 3) is one finding naming the worst, and
+  the readings ride in its `templates[]` entry as `ground_return`. Templates
+  fitted with every cap's ground beside the chip's or a like cap's read
+  0.2-1.9 mm; output caps fitted with their VOUT partner alone read 8.2-10.5
+  mm. `fit_template.py` prints the same measure on the fitted poses, with a
+  NOTE for a cap past the limit, so the sketch can be fixed before anything
+  is placed. A row with no `kind`, or an `rf front end` (whose shunt parts
+  ground at their own vias), is not measured.
 
 ### A through-hole part is in a keep-out from either side
 

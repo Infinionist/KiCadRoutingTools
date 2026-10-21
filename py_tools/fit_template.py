@@ -46,6 +46,13 @@ pad-edge gaps the fit reached (`fitted.legs_mm`, one per named pad of the
 member, in the order of its pads; `legs_gap_mm` sums them). `--render` draws the
 fitted template in the chip's frame -- courtyards, pads, the chip's pad
 numbers, each member's legs -- to set beside the datasheet's drawing.
+A sketch's `kind` (`switching stage` or `rf front end`, as the groups file
+names the candidate) is copied to the row. For a switching stage the fit
+prints each member cap's ground return -- the pad-edge gaps from its
+ground pad, through other members' pads on that ground, to the chip's
+ground pins or a member transistor's (`placement.templates.ground_returns`)
+-- and a NOTE for one past `ground_return_mm` (3 mm, or the sketch's own),
+which the grade then warns about (`template_ground_return`).
 `--write-intent`
 writes INTENT with the row added to its `templates[]` (a row for the same
 anchor is replaced, so a re-fit may write over its own input) and
@@ -91,7 +98,8 @@ def main(argv=None):
     from list_nets import board_floor_knobs
     from placement import floorplan
     from placement.parser import extract_courtyard_sides
-    from placement.templates import FitError, TemplateError, fit, pin_table, render
+    from placement.templates import (GROUND_RETURN_MM, FitError, TemplateError, fit,
+                                     ground_returns_fitted, pin_table, render)
     if a.pins:
         try:
             pcb = parse_kicad_pcb(a.board)
@@ -150,6 +158,22 @@ def main(argv=None):
               f"  ({row['fitted']['off_chip_mm'][m['ref']]:.2f} mm off the chip)")
     for n in row['fitted'].get('notes') or ():
         print(f"  NOTE: {n}")
+    if row.get('kind') == 'switching stage':
+        limit = float(row.get('ground_return_mm') or GROUND_RETURN_MM)
+        caps = ground_returns_fitted(pcb, state, row)
+        row['fitted']['ground_return_mm'] = {c['ref']: c['return_mm'] for c in caps}
+        for c in caps:
+            print(f"  ground return {c['ref']:6s} {c['return_mm']:5.2f} mm to {c['to']}"
+                  + (f" via {', '.join(c['via'])}" if c['via'] else ''))
+        for c in caps:
+            if c['return_mm'] > limit:
+                print(f"  NOTE: {c['ref']} returns its ground {c['return_mm']:.2f} mm from the "
+                      f"chip's (over {limit:g}): give its ground pad a partner beside the "
+                      f"chip's ground, as the drawing joins them (an output cap names an "
+                      f"input cap's ground pad)")
+    elif not row.get('kind'):
+        print("  NOTE: the sketch has no `kind`: give it the groups file's (`switching stage` "
+              "or `rf front end`); a switching stage's caps have their ground return checked")
     near = [o for o in row['fitted'].get('context') or () if o not in crt]
     if near:
         boxed = boxed + near
@@ -171,7 +195,9 @@ def main(argv=None):
             return 2
         rows = [t for t in doc.get('templates') or () if t.get('anchor') != row['anchor']]
         doc['templates'] = rows + [row]
-        doc['min_reader'] = max(int(doc.get('min_reader') or 0), floorplan.TEMPLATES_READER)
+        doc['min_reader'] = max(int(doc.get('min_reader') or 0), floorplan.TEMPLATES_READER,
+                                *(floorplan.TEMPLATE_KIND_READER for t in doc['templates']
+                                  if 'kind' in t or 'ground_return_mm' in t))
         with open(a.write_intent, 'w', encoding='utf-8') as fh:
             json.dump(doc, fh, indent=1)
         try:
