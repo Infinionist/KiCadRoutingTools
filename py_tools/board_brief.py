@@ -511,16 +511,13 @@ def parts_section(pcb, pcb_file, skipped):
                'extent_source': src,
                'pads': len(pads),
                'side': getattr(fp, 'layer', None),
-               # WHERE THE PART IS, which this table has never carried. Six
-               # of the thirteen plan ops take a literal board coordinate
-               # (place_keepout.rect, place_fixed.at, place_at.at,
-               # place_array.origin, place_slots.slots, place_pack.zone), and
-               # `place_fixed` -- the op whose whole job is asserting a pose
-               # the mechanical drawing already fixed -- REQUIRES an `at` no
-               # section of this brief could supply. Reported as a fact: on
-               # an unplaced board it is the pile coordinate, which `state`
-               # already says is meaningless, and the two must be read
-               # together.
+               # WHERE THE PART IS, which this table has never carried.
+               # A declared pose -- an intent `fixed_poses[]` row, a design
+               # brief `fixed[].pose`, `place_pose set` -- takes a literal
+               # board coordinate, and no section of this brief could supply
+               # one. Reported as a fact: on an unplaced board it is the pile
+               # coordinate, which `state` already says is meaningless, and
+               # the two must be read together.
                'at': [round(fp.x, 6), round(fp.y, 6)],
                'rect': rect,
                'rotation': getattr(fp, 'rotation', None),
@@ -538,7 +535,7 @@ def parts_section(pcb, pcb_file, skipped):
     return out
 
 
-def mechanical_section(pcb, pcb_file, skipped):
+def mechanical_section(pcb, pcb_file, skipped, pile=False):
     """Which parts' positions are a mechanical fact, on what evidence.
 
     INFERENCE, NEVER AUTHORITY -- `--requirements` is the channel for fact,
@@ -560,10 +557,26 @@ def mechanical_section(pcb, pcb_file, skipped):
     a part alone at its coordinate is where someone put it, whatever state
     the rest of the board is in. A staged unaided board carries the real
     poses of exactly these parts, so an empty list here is the difference
-    between `place_fixed` having a coordinate to assert and not.
+    between a pose that can be declared (intent `fixed_poses[]`) and not.
+
+    `staged` is the other half, and on a pile it decides (#1353). Being
+    alone proves nothing there: `make_unplaced.py` spreads EVERY part on a
+    grid south of the outline, so each one is alone, and gp14 CM5's brief
+    called all 12 mechanical parts' staging coordinates assertable. On a
+    pile (`pile`, the state section's #1109 test) an unlocked part whose
+    courtyard leaves the outline is at a staging pose. A KiCad-locked part
+    is a decision wherever it is (#1103), and a part a stager left ON the
+    board (`stage_unaided` keeps the mechanical parts' real poses) is not
+    staged by this test.
     """
     from placement.part_class import mechanical_parts
     found = mechanical_parts(pcb)
+    staged = set()
+    if pile:
+        from placement.placement_state import footprints_outside
+        off = footprints_outside(pcb, pcb_file, sorted(found)) or {}
+        staged = {r for r in found if off.get(r) and not getattr(
+            pcb.footprints.get(r), 'locked', False)}
     at_coord = {}
     for ref, fp in (pcb.footprints or {}).items():
         at_coord.setdefault((round(fp.x, 4), round(fp.y, 4)), []).append(ref)
@@ -576,14 +589,18 @@ def mechanical_section(pcb, pcb_file, skipped):
                 (round(fp.x, 4), round(fp.y, 4)), ()) if r != ref)
         row = dict(rec)
         row['pose_shared_with'] = shared
+        row['staged'] = ref in staged
         out[ref] = row
     return {'refs': out,
             'note': 'INFERENCE from part class, not a mechanical drawing. '
                     'These are the parts whose position a real new board '
                     'would already know; `at` is [x, y, rotation] AS THE FILE '
-                    'HAS IT, so read `pose_shared_with` before treating one '
-                    'as a fact to assert with place_fixed. State real '
-                    'mechanical constraints with --requirements.'}
+                    'HAS IT, so read `pose_shared_with` and `staged` before '
+                    'treating one as a fact: a pose that is neither can be '
+                    'declared in the intent\'s `fixed_poses[]` (or the design '
+                    'brief\'s `fixed[].pose`), or set with `place_pose set` '
+                    'and `lock`. State real mechanical constraints with '
+                    '--requirements.'}
 
 
 def structure_section(pcb, pcb_file, skipped):
@@ -805,7 +822,8 @@ def build_brief(pcb, pcb_file, *, clearance=None, board_edge_clearance=None,
     brief['parts'] = _safe('parts', parts_section, skipped, pcb, pcb_file,
                            skipped)
     brief['mechanical'] = _safe('mechanical', mechanical_section, skipped, pcb,
-                                pcb_file, skipped)
+                                pcb_file, skipped,
+                                pile=bool((brief['state'] or {}).get('pile')))
     brief['structure'] = _safe('structure', structure_section, skipped, pcb,
                                pcb_file, skipped)
     brief['measurements'] = _safe('measurements', measurements_section,
@@ -983,22 +1001,34 @@ def format_text(b):
         L.append(f"  !! {len(pd['invalid'])} measurement(s) below are NULL: "
                  f"they are measured from part positions and this board has "
                  f"none yet")
-        L.append("     every part's input coordinate is meaningless, so an "
-                 "op that does not state a target has nothing to work from. "
-                 "State mechanical")
-        L.append("     poses with place_fixed and the rest with "
-                 "place_at/place_pack. `--fit WxH` still answers where a "
-                 "part can go at all.")
+        L.append("     every part's input coordinate is meaningless, so a "
+                 "step that does not state a target has nothing to work "
+                 "from. Declare")
+        L.append("     mechanical poses in the intent's `fixed_poses[]` (or "
+                 "the design brief's `fixed[].pose`), or set them with "
+                 "`place_pose set` + `lock`;")
+        L.append("     place_seed places the rest. `--fit WxH` still "
+                 "answers where a part can go at all.")
     mech = ((b.get('mechanical') or {}).get('refs')) or {}
     if mech:
         _fixed = sorted(r for r, v in mech.items()
-                        if not v.get('pose_shared_with'))
+                        if not v.get('pose_shared_with')
+                        and not v.get('staged'))
+        _staged = sorted(r for r, v in mech.items() if v.get('staged'))
         L.append(f"  mechanical: {len(mech)} part(s) whose position is a "
                  f"mechanical fact {sorted(mech)[:6]}"
                  f"{'...' if len(mech) > 6 else ''}")
-        L.append(f"    {len(_fixed)} of them sit alone at their coordinate, "
-                 f"so `at` is assertable with place_fixed: {_fixed[:6]}"
-                 f"{'...' if len(_fixed) > 6 else ''}")
+        if _staged:
+            # #1353: on a pile `alone` proves nothing -- a grid stager puts
+            # every part alone, off the board.
+            L.append(f"    {len(_staged)} of them sit at a STAGING pose off "
+                     f"the outline (the board is a pile): not a claim, "
+                     f"declare their real pose: {_staged[:6]}"
+                     f"{'...' if len(_staged) > 6 else ''}")
+        L.append(f"    {len(_fixed)} of them sit alone at their coordinate"
+                 + (" on the board" if _staged else "")
+                 + f", so `at` can be declared (intent `fixed_poses[]`): "
+                 f"{_fixed[:6]}{'...' if len(_fixed) > 6 else ''}")
     stx = b.get('structure') or {}
     for src, groups in (stx.get('groups') or {}).items():
         # A nulled source is named by position_dependent, not counted here --

@@ -77,7 +77,8 @@ serves those nets from the fill.
   `python3 -X utf8 py_tools/board_context.py <board> --json -o <ctx.json>`
   and read `emc_roles.roles`: each converter, crystal, oscillator and ESD
   array its pin functions name, every leg measured pad edge to pad edge in
-  `emc_roles.roles[].proximity[].legs`, and a ready row in
+  `emc_roles.roles[].proximity[].legs` (on a pile its `gap_mm` is null: a
+  staging pose measures nothing, #1353), and a ready row in
   `emc_roles.roles[].proximity[].row` with `max_mm` left null. Ask the user
   for the limits -- crystal to its load pins, input or bulk cap to the
   regulator's VIN and PGND, inductor to SW, ESD array to its connector --
@@ -216,7 +217,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   Run 39 found StickHub's U1 at 270 instead of the pile's 0 by hand: seed
   crossings 222 to 182, first-route blocking 31-37 to 16-19.
 - **Rotation and pin order.** A `CROSSED` pin-order pair in `board_context`
-  costs a via per net at every rotation. After rotating an IC, re-seat its
+  costs a via per net at every rotation. On a PILE the sheet withholds every
+  pose-derived claim (pin-order verdicts, leg distances, mating edges, cap
+  elections) unless the parts it reads are locked, and says so at the top
+  and under `pile` in the JSON (#1353); read those sections after seeding. After rotating an IC, re-seat its
   caps: one rotation left a decap at 9.57 mm while crossings and hpwl both
   improved.
 - **`place_pose` refuses a pad stack, but "legal" is still not

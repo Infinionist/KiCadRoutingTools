@@ -375,9 +375,11 @@ an edge entry the EMITTER inferred for the same ref, and says so under
 #711 asks for fixed poses to become `place_fixed` ops plus `must_lock`. Neither
 is available here, and both refusals are deliberate:
 
-- **`place_fixed`** and the rest of that plan-op vocabulary are named only in
-  comments in `py_tools/board_brief.py`. There is no plan-op implementation in
-  this repository; those ops live in a downstream consumer.
+- **`place_fixed`** and the rest of that plan-op vocabulary do not exist in
+  this repository; those ops live in a downstream consumer. `board_brief`
+  used to recommend them and now names the tools that do exist (#1353): a
+  pose is declared as an intent `fixed_poses[]` row (or a brief `fixed[]`
+  row's `pose`), or set with `place_pose set` and `lock`.
 - **`must_lock`** is refused on measured evidence. `emit_intent` writes it empty
   and its own comment records why: filling it made `place_seed --repair` treat
   those refs as seeder-owned and **lift the user's locks** — "unlock exactly the

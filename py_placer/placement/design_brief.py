@@ -1284,7 +1284,7 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
         'contradictions': [],
         'counts': counts,
         # #711 asks for `place_fixed` ops. There is no plan-op implementation
-        # in this tree -- `place_fixed` is named only in comments. Since #1054
+        # in this tree, and no tool names one (#1353). Since #1054
         # a row carrying a `pose` compiles to `fixed_poses[]` (above); every
         # row is still CARRIED here, and none is ever turned into
         # `must_lock`: filling must_lock made `place_seed --repair` treat

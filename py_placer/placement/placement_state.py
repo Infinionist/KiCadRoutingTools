@@ -343,6 +343,19 @@ def assess_placement(pcb_data, pcb_file: Optional[str] = None,
     return st
 
 
+def footprints_outside(pcb_data, pcb_file, refs) -> Optional[Dict[str, bool]]:
+    """`{ref: its courtyard leaves the outline}` for `refs`, measured as
+    `assess_placement`'s S3 measures it; None when the board has no usable
+    outline. On a pile this is what tells a STAGED pose (off the board)
+    from one a stager kept (#1353)."""
+    fps = [pcb_data.footprints[r] for r in refs
+           if r in (pcb_data.footprints or {})]
+    flags: Dict[str, bool] = {}
+    if _outside_fraction(pcb_data, pcb_file, fps, flags) is None:
+        return None
+    return flags
+
+
 def _outside_fraction(pcb_data, pcb_file, fps,
                       flags_out: Optional[Dict[str, bool]] = None
                       ) -> Optional[float]:
