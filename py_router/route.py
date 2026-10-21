@@ -698,6 +698,37 @@ def _ship_via_protection962(pcb_data, output_file, return_results, results_data,
     return record
 
 
+def _strip_written_copper(output_file, segments, vias, name_of):
+    """Delete `segments` and `vias` from the written file, in place. Returns
+    the (segments, vias) counts actually deleted, which the caller reports.
+
+    The name map rides whenever the file references nets by name
+    (`board_uses_name_nets`, the writer's own test). remove_*_from_content
+    resolves each block in its own dialect, but a name-ref block can match a
+    target only through the map. The late passes gated the map on the version
+    stamp (`is_kicad_10`) instead, so on a pre-KiCad-10 file whose copper
+    carries name refs -- the mixed dialect this repo's own chain writes -- they
+    matched NOTHING and printed the model's count anyway (#1312: imx6ulz's
+    strict collapse "removed 291" and the file kept all 3014 segments)."""
+    from kicad_parser import board_uses_name_nets
+    from kicad_writer import (remove_segments_from_content,
+                              remove_vias_from_content)
+    with open(output_file, 'r', encoding='utf-8') as _f:
+        content = _f.read()
+    nmap = name_of if board_uses_name_nets(content) else None
+    n_s = n_v = 0
+    if segments:
+        content, n_s = remove_segments_from_content(content, segments,
+                                                    net_id_to_name=nmap)
+    if vias:
+        content, n_v = remove_vias_from_content(content, vias,
+                                                net_id_to_name=nmap)
+    if n_s or n_v:
+        with open(output_file, 'w', encoding='utf-8') as _f:
+            _f.write(content)
+    return n_s, n_v
+
+
 def _late_strict_collapse1063(pcb_data, output_file, return_results, results_data,
                               write_model, input_signature, scope_names,
                               keep_input_copper):
@@ -790,24 +821,19 @@ def _late_strict_collapse1063(pcb_data, output_file, return_results, results_dat
             pcb_data.segments = [s for s in pcb_data.segments if id(s) not in gone]
             pcb_data.vias = [v for v in pcb_data.vias if id(v) not in gone]
             bump_copper_epoch(pcb_data)
+            n_s, n_v = len(removed), len(dropped)
         else:
-            from kicad_parser import is_kicad_10 as _k10_1063
-            from kicad_writer import (remove_segments_from_content as _rsc1063,
-                                      remove_vias_from_content as _rvc1063)
-            with open(output_file, 'r', encoding='utf-8') as _f:
-                _c = _f.read()
-            _map = name_of if _k10_1063(_c) else None
-            if removed:
-                _c, _ = _rsc1063(_c, removed, net_id_to_name=_map)
-            if dropped:
-                _c, _ = _rvc1063(_c, dropped, net_id_to_name=_map)
-            with open(output_file, 'w', encoding='utf-8') as _f:
-                _f.write(_c)
-        print(f"  Strict collapse (#1063, end of run): removed {len(removed)} "
+            n_s, n_v = _strip_written_copper(output_file, removed, dropped,
+                                             name_of)
+            if (n_s, n_v) != (len(removed), len(dropped)):
+                print(f"  WARNING: strict collapse (#1063): chose "
+                      f"{len(removed)} segment(s) and {len(dropped)} via(s), "
+                      f"found {n_s} and {n_v} in the written file")
+        print(f"  Strict collapse (#1063, end of run): removed {n_s} "
               f"redundant segment(s)"
-              + (f" and {len(dropped)} via(s) they freed" if dropped else "")
+              + (f" and {n_v} via(s) they freed" if n_v else "")
               + f" on {_stats.get('nets', 0)} net(s)")
-        return len(removed), len(dropped)
+        return n_s, n_v
     except Exception as _e:                                     # noqa: BLE001
         print(f"  (end-of-run strict collapse skipped: {type(_e).__name__}: {_e})")
         return 0, 0
@@ -1047,24 +1073,19 @@ def _late_dangling_via_sweep1166(pcb_data, output_file, return_results,
             pcb_data.segments = [x for x in pcb_data.segments if id(x) not in gone]
             pcb_data.vias = [x for x in pcb_data.vias if id(x) not in gone]
             bump_copper_epoch(pcb_data)
+            n_s, n_v = len(removed), len(dropped)
         else:
-            from kicad_parser import is_kicad_10 as _k10_1166
-            from kicad_writer import (remove_segments_from_content as _rsc1166,
-                                      remove_vias_from_content as _rvc1166)
-            with open(output_file, 'r', encoding='utf-8') as _f:
-                _c = _f.read()
-            _map = name_of if _k10_1166(_c) else None
-            if removed:
-                _c, _ = _rsc1166(_c, removed, net_id_to_name=_map)
-            if dropped:
-                _c, _ = _rvc1166(_c, dropped, net_id_to_name=_map)
-            with open(output_file, 'w', encoding='utf-8') as _f:
-                _f.write(_c)
-        print(f"  Dangling vias (#1166, end of run): removed {len(dropped)} "
-              f"via(s) joining fewer than two layers and {len(removed)} "
+            n_s, n_v = _strip_written_copper(output_file, removed, dropped,
+                                             name_of)
+            if (n_s, n_v) != (len(removed), len(dropped)):
+                print(f"  WARNING: dangling-via sweep (#1166): chose "
+                      f"{len(removed)} segment(s) and {len(dropped)} via(s), "
+                      f"found {n_s} and {n_v} in the written file")
+        print(f"  Dangling vias (#1166, end of run): removed {n_v} "
+              f"via(s) joining fewer than two layers and {n_s} "
               f"segment(s) of the branches they ended, on "
               f"{_stats.get('nets', 0)} net(s)")
-        return len(removed), len(dropped)
+        return n_s, n_v
     except Exception as _e:                                     # noqa: BLE001
         print(f"  (end-of-run dangling-via sweep skipped: "
               f"{type(_e).__name__}: {_e})")
@@ -1135,22 +1156,17 @@ def _late_orphan_sweep659(pcb_data, output_file, return_results, results_data,
             # the board on disk -- not pcb_data -- is the final state. Re-parse
             # it, and strip what the sweep condemns from the file text (the
             # oracle's own debris pass works the same way).
-            from kicad_parser import parse_kicad_pcb as _pk, is_kicad_10 as _k10
-            from kicad_writer import (remove_segments_from_content as _rsc,
-                                      remove_vias_from_content as _rvc)
+            from kicad_parser import parse_kicad_pcb as _pk
             _pcb = _pk(output_file)
             _n, _s, _strip, _vstrip, _nv = _roi659([], _pcb, _scope(_pcb))
             if _n and (_strip or _vstrip):
-                with open(output_file, 'r', encoding='utf-8') as _f:
-                    _c = _f.read()
-                _map = ({nid: n.name for nid, n in _pcb.nets.items()}
-                        if _k10(_c) else None)
-                if _strip:
-                    _c, _ = _rsc(_c, _strip, net_id_to_name=_map)
-                if _vstrip:
-                    _c, _ = _rvc(_c, _vstrip, net_id_to_name=_map)
-                with open(output_file, 'w', encoding='utf-8') as _f:
-                    _f.write(_c)
+                _s, _nv = _strip_written_copper(
+                    output_file, _strip, _vstrip,
+                    {nid: n.name for nid, n in _pcb.nets.items()})
+                if (_s, _nv) != (len(_strip), len(_vstrip)):
+                    print(f"  WARNING: late orphan sweep (#659): chose "
+                          f"{len(_strip)} segment(s) and {len(_vstrip)} "
+                          f"via(s), found {_s} and {_nv} in the written file")
         else:
             return
         if _n:
@@ -5704,26 +5720,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 _fo_segs, _fo_vias = file_only_copper(
                     output_file, pcb_data, sweep_scope_ids)
                 if _fo_segs or _fo_vias:
-                    # Both helpers return (content, count) and need the net
-                    # dialect map on KiCad 10 files -- same call shape as the
-                    # #659 orphan strip above.
-                    from kicad_parser import is_kicad_10 as _k10_rc
-                    from kicad_writer import (
-                        remove_segments_from_content as _rsc_rc,
-                        remove_vias_from_content as _rvc_rc)
-                    with open(output_file, 'r', encoding='utf-8') as _fh:
-                        _content = _fh.read()
-                    _nmap = ({nid: n.name for nid, n in pcb_data.nets.items()}
-                             if _k10_rc(_content) else None)
-                    _ns = _nv_rc = 0
-                    if _fo_segs:
-                        _content, _ns = _rsc_rc(_content, _fo_segs,
-                                                net_id_to_name=_nmap)
-                    if _fo_vias:
-                        _content, _nv_rc = _rvc_rc(_content, _fo_vias,
-                                                   net_id_to_name=_nmap)
-                    with open(output_file, 'w', encoding='utf-8') as _fh:
-                        _fh.write(_content)
+                    # The dialect map rides on any file with name refs, not
+                    # only a KiCad-10 stamp (#1312) -- see _strip_written_copper.
+                    _ns, _nv_rc = _strip_written_copper(
+                        output_file, _fo_segs, _fo_vias,
+                        {nid: n.name for nid, n in pcb_data.nets.items()})
                     print(f"Output reconcile: removed {_ns} segment(s) "
                           f"and {_nv_rc} via(s) that were in the written "
                           f"file but NOT on the board pcb_data describes "

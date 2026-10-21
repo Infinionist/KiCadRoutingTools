@@ -1581,6 +1581,11 @@ def remove_segments_from_content(content: str, segments: List,
     (a duplicate with the same endpoints/layer/net is interchangeable). The whole
     block (including its trailing uuid) is removed, not just the net token.
 
+    Pass ``net_id_to_name`` whenever the file references nets by name
+    (``kicad_parser.board_uses_name_nets``), whatever its version stamp: a
+    ``(net "name")`` block matches a target only through the map, so a
+    pre-KiCad-10 file with name refs matched nothing without it (#1312).
+
     Returns ``(modified_content, count_removed)``.
     """
     if not segments:
@@ -1701,7 +1706,9 @@ def remove_vias_from_content(content: str, vias: List,
     of a ripped/re-routed net that are no longer on the final board (#103 rip-
     existing; without this the old via AND its reroute's replacement both ship,
     stacking same-net drill pairs). Matched by position + net token; duplicates
-    are interchangeable. Returns ``(modified_content, count_removed)``.
+    are interchangeable. ``net_id_to_name`` as for the segment twin: required
+    whenever the file has name refs. Returns ``(modified_content,
+    count_removed)``.
     """
     if not vias:
         return content, 0
