@@ -130,9 +130,11 @@ def main():
               str(unseated))
         if 'J3' in out:
             p = state.parts['J3']
-            band = state.edge_gate.rect_outside_amount(p.rect())
-            check('(a) at its band, read on the courtyard at the margin',
-                  7.0 < band <= 7.4, f'{band:.4f}')
+            from placement.legality import BoardOutlineGate
+            band = BoardOutlineGate(state.pcb_data.board_info,
+                                    0.0).rect_outside_amount(p.rect())
+            check('(a) at its band, read on the courtyard at zero margin '
+                  '(#1301)', 7.0 < band <= 7.4, f'{band:.4f}')
 
         # 2. (b) ears: bounds east at 43, the straight edge at 40.
         ears = [(0, 0), (43, 0), (43, 4), (40, 5), (40, 25), (43, 26), (43, 30), (0, 30)]
@@ -161,7 +163,7 @@ def main():
         why = unseated.get('J1', '')
         check('(c) unseated', 'J1' not in out and bool(why), why)
         check('(c) the reason gives the reading it never leaves',
-              'reads at least 11.10mm wherever it stands' in why, why)
+              'reads at least 10.00mm wherever it stands' in why, why)
         check('(c) and the two lengths',
               'its courtyard is 40.00mm along a 30.00mm edge' in why, why)
 

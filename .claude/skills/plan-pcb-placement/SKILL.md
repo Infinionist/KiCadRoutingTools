@@ -317,7 +317,11 @@ it. Then decide, from the part's function and its datasheet:
   board edge inside the body (a USB-C or barrel jack's shell past the edge),
   write that distance as `overhang_mm.min`, `max` at or above it. Seated
   flush instead, ch32v003_usb's USB-C J1 sat 0.88 mm deeper than its drawing
-  and the board routed with about 15 mm more copper a seed.
+  and the board routed with about 15 mm more copper a seed. The band is
+  read at zero margin, on the drawn body or else the courtyard (#1301): an
+  overhang of x reads x, so write the distance the part reaches past the
+  edge and never add the board's edge margin to it. check_floorplan's
+  `overhang_basis` says which of the two it read.
 
 Write these into the intent's `edge_connectors[]` entries, the rows into
 `fixed_poses[]` instead (a ref in both is refused), or into the brief,

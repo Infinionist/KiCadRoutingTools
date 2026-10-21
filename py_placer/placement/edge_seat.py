@@ -16,8 +16,8 @@ The seat is read with the grade's own measurements (`rule_edge_connector`):
   edge;
 * the distance from the edge puts the part past the outline by the low end
   of the entry's `overhang_mm` band as the grade reads it
-  (`connector_geometry.band_amount`: the drawn body, else the courtyard at
-  the board margin) -- flush, without one, and a hair inside a positive
+  (`connector_geometry.band_amount`: the drawn body, else the courtyard, at
+  zero margin, #1301) -- flush, without one, and a hair inside a positive
   minimum -- and no nearer the edge than keeps every pad's copper (the
   pads on a copper layer, not a silk-drawn pin) the board's edge clearance
   inside the outline where the part stands, not its bounding box (#1325);
@@ -185,10 +185,10 @@ class _Probe:
     def band_read(self, ref, edge, pose) -> Tuple[float, str]:
         """`(amount, basis)`: the overhang the grade reads at `pose`, and
         the currency it reads it in (`connector_geometry.band_amount`)."""
-        from .connector_geometry import band_amount
-        st = self.state
-        legacy = st.edge_gate.rect_outside_amount(st.parts[ref].rect(*pose))
-        return band_amount(self.geo, ref, edge, legacy, st.edge_gate.margin, pose=pose)[:2]
+        from .connector_geometry import band_amount, courtyard_overhang
+        # #1301: the courtyard at ZERO margin, as the grade reads it
+        legacy = courtyard_overhang(self.geo, self.state.parts[ref].rect(*pose))
+        return band_amount(self.geo, ref, edge, legacy, 0.0, pose=pose)[:2]
 
     def copper_clear(self, ref, pose) -> bool:
         """Every pad's copper the board's edge clearance inside the outline
@@ -324,7 +324,8 @@ def _free_stretches(probe, entry, edge, axis, coord, rot, lo, hi, fixed, tally=N
                 if mine is not None and theirs is not None:
                     cand += [theirs[axis] - mine[axis + 2], theirs[axis + 2] - mine[axis]]
     b, m = probe.pcb.board_info.board_bounds, state.edge_gate.margin
-    cand += [b[axis] + m - cr[axis], b[axis + 2] - m - cr[axis + 2]]
+    cand += [b[axis] + m - cr[axis], b[axis + 2] - m - cr[axis + 2],
+             b[axis] - cr[axis], b[axis + 2] - cr[axis + 2]]   # and the band's, at zero margin
     cand = sorted({round(a, 6) for a in cand if lo - EPS <= a <= hi + EPS})
     # only the fixed parts the line passes near can conflict with it
     span = ((lo + cr[0], lo_p, hi + cr[2], hi_p) if axis == 0
