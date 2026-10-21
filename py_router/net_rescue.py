@@ -1169,6 +1169,10 @@ def cap_move_reweld_spec(config, pcb_data, moves) -> dict:
         'net_widths_by_name': oracle_net_widths_by_name(
             config, pcb_data.nets, fields=('power_net_widths',)),
         'net_clearances_by_name': config.net_clearances_by_name(pcb_data.nets),
+        # #1290: the run's resolved edge floor and #581 same-net pad via
+        # clearance -- a re-weld is this run's copper like any other.
+        'board_edge_clearance': config.board_edge_clearance,
+        'same_net_pad_clearance': config.same_net_pad_clearance,
     }
 
 

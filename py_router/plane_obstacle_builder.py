@@ -672,19 +672,27 @@ def _is_rectangular_outline(board_outline: List[Tuple[float, float]],
                             tolerance: float = 0.1) -> bool:
     """Check if board outline is approximately rectangular.
 
-    Returns True if all vertices are within tolerance of the bounding box corners.
+    Returns True if every EDGE of the outline runs along one side of the
+    bounding box (both of its endpoints within tolerance of that side).
+
+    Testing the vertices alone (each on SOME side) passed every outline whose
+    corners touch its box -- a trapezoid, a chamfered rectangle, a flat-top
+    hexagon -- and its callers then stamped the rectangular edge band, which
+    never models the slanted edges: the plane builders and every
+    make_local_window map (net rescue, the oracle's straps, plane pad taps)
+    routed a 72-degree trapezoid's copper up to and past the edge, while the
+    main router's polygon band held --board-edge-clearance (#1290).
     """
     if not board_outline or len(board_outline) < 4:
         return False
 
     min_x, min_y, max_x, max_y = board_bounds
-    corners = [(min_x, min_y), (min_x, max_y), (max_x, min_y), (max_x, max_y)]
-
-    # Check each vertex - must be on an edge of the bounding box
-    for vx, vy in board_outline:
-        on_edge = (abs(vx - min_x) < tolerance or abs(vx - max_x) < tolerance or
-                   abs(vy - min_y) < tolerance or abs(vy - max_y) < tolerance)
-        if not on_edge:
+    sides = ((0, min_x), (0, max_x), (1, min_y), (1, max_y))
+    n = len(board_outline)
+    for i in range(n):
+        a, b = board_outline[i], board_outline[(i + 1) % n]
+        if not any(abs(a[axis] - v) < tolerance and abs(b[axis] - v) < tolerance
+                   for axis, v in sides):
             return False
     return True
 

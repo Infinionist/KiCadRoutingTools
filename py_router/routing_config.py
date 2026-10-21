@@ -4,7 +4,7 @@ Configuration classes and coordinate utilities for PCB routing.
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, FrozenSet
 from dataclasses import dataclass, field
 
 from routing_constants import FORBIDDEN_LAYER_COST
@@ -386,6 +386,13 @@ class GridRouteConfig:
     # consults it (KiCad's Type=='track' binds tracks only). An empty map is
     # a strict no-op. Like the layer map: no CLI flag, no GUI control.
     track_clearances: Dict[int, float] = field(default_factory=dict)
+    # #1295: a .kicad_dru "keep pairs apart" track rule (!AB.isCoupledDiffPair())
+    # exempts a diff pair's P against its own N, which the per-net map above
+    # cannot say -- it raises the partner's stamp too. This holds the
+    # pair-exact track-rule value of every pair KiCad couples by name,
+    # frozenset({P, N}) -> mm, which pair_clearance reads instead of that map.
+    # Engine-computed (kicad_dru.install_track_clearances); empty = inert.
+    track_partner_clearances: Dict[FrozenSet[int], float] = field(default_factory=dict)
     # #530: the board's design rules resolved in KiCad's order
     # (design_rules.DesignRules), installed engine-side by
     # kicad_dru.install_layer_clearances for both fronts. None until then.
@@ -413,6 +420,13 @@ class GridRouteConfig:
     # for shipping (cleanup_pipeline, the seam re-asks, the plane-fragility
     # field). Read by the engines from here so both fronts see one value.
     quick: int = 0
+    # #1293: the P<->N clearance of each diff pair a .kicad_dru coupled-pair
+    # rule (AB.isCoupledDiffPair()) sets, keyed frozenset({P, N}) ->
+    # {'track': {layer: mm}, 'layer': {layer: mm}, 'stack': mm or None}, the
+    # pair_clearance kinds. A layer is listed only where that rule is what
+    # KiCad grades the pair at. Engine-computed (route_diff); no CLI flag and
+    # no GUI control -- the rules file is the source. Empty = inert.
+    coupled_pair_clearances: Dict[FrozenSet[int], dict] = field(default_factory=dict)
 
     def net_via(self, net_id: int) -> Tuple[float, float]:
         """(diameter, drill) this net's vias are drawn at."""
@@ -564,13 +578,26 @@ class GridRouteConfig:
           it (check_drc's `_track_pair_cl`). The router side reads the
           per-obstacle-net map, an over-approximation of check_drc's
           pair-exact rule. Net-0 copper is in no class and missing from that
-          map, so it is priced at the widest track rule;
+          map, so it is priced at the widest track rule. A diff pair's P
+          against its own N on a board with a "keep pairs apart" rule reads
+          its pair-exact value (`track_partner_clearances`, #1295) instead;
         * 'stack' -- via vs via, which meet on every layer: the max over the
           stack (check_drc's `_stack_cl`). `layer` is ignored.
+
+        A diff pair's P against its own N, where a coupled-pair rule sets it
+        (`coupled_pair_clearances`, #1293), is that rule's value: KiCad's
+        last matching rule replaces the classes and the base.
 
         With no class map, no layer rule and no track rule it returns `base`
         unchanged, so a site that swaps its flat term for this call is
         byte-identical on such a board."""
+        if self.coupled_pair_clearances and net_a != net_b:
+            cp = self.coupled_pair_clearances.get(frozenset((net_a, net_b)))
+            if cp is not None:
+                v = (cp.get('stack') if kind == 'stack'
+                     else (cp.get(kind) or {}).get(layer))
+                if v is not None:
+                    return v
         clr = self.clearance if base is None else base
         nc = self.net_clearances
         if nc:
@@ -588,6 +615,10 @@ class GridRouteConfig:
         if layer is not None:
             clr = self.layer_clearance(layer, clr)
         if kind == 'track' and self.track_clearances:
+            tp = (self.track_partner_clearances.get(frozenset((net_a, net_b)))
+                  if self.track_partner_clearances else None)
+            if tp is not None:
+                return tp if tp > clr else clr
             if not net_a or not net_b:
                 widest = max(self.track_clearances.values())
                 if widest > clr:
@@ -618,14 +649,20 @@ class GridRouteConfig:
                 mv = max(m.values())
                 if mv > v:
                     v = mv
+        for cp in (self.coupled_pair_clearances or {}).values():
+            for mv in ([cp.get('stack')] + list((cp.get('track') or {}).values())
+                       + list((cp.get('layer') or {}).values())):
+                if mv is not None and mv > v:
+                    v = mv
         return v
 
     def pair_clearance_inert(self) -> bool:
         """True when no channel can move a pair off the floor it is given: no
-        class map, no .kicad_dru layer rule, no track rule. A hot loop may
-        then keep its flat term instead of pricing every item."""
+        class map, no .kicad_dru layer rule, no track rule, no coupled-pair
+        rule. A hot loop may then keep its flat term instead of pricing every
+        item."""
         return not (self.net_clearances or self.layer_clearances
-                    or self.track_clearances)
+                    or self.track_clearances or self.coupled_pair_clearances)
 
     def pad_pair_clearance_before_override(self, pad, other_net: int,
                                            layer: Optional[str] = None, *,

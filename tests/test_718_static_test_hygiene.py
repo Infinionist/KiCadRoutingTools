@@ -1016,8 +1016,8 @@ _UNRESOLVABLE = {}
 #: added `mutate_1211.py`; 90 until `mutate_1042.py` and `mutate_1081.py`
 #: went with the film tools they mutated; 88 until the placement retirement
 #: deleted 62 batteries of the code it removed (56 in ecd673eb, 3 in
-#: 5dccf2fa, 3 in e1e4777e).
-_BATTERY_COUNT = 26
+#: 5dccf2fa, 3 in e1e4777e); 26 before #1295 added `mutate_1295.py`.
+_BATTERY_COUNT = 27
 
 #: A floor well under today's 484, not a target. Same purpose as
 #: `test_the_scanners_still_match_something`: prove the corpus is populated.

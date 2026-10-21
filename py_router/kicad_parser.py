@@ -2831,6 +2831,46 @@ def footprint_pose(fp_text: str):
 
 _FP_PAD_RE = re.compile(r'\(pad\s+("(?:[^"\\]|\\.)*"|\S+)\s+(\w+)')
 
+#: A pad's number, type and shape, in both spellings KiCad reads (#1290): the
+#: quoted `(pad "1" smd rect` and the older unquoted `(pad 1 smd rect`, which
+#: pcbnew still loads. Group 1 is a quoted number, group 2 a bare one; a bare
+#: token reads as the same token quoted.
+PAD_HEAD_RE = re.compile(r'\(pad\s+(?:"([^"]*)"|([^\s()"]+))\s+(\w+)\s+(\w+)')
+#: A string node's value, quoted or bare (`(pinfunction "GND")`, `(pinfunction
+#: GND)`): group 1 quoted, group 2 bare.
+_STR_OR_BARE = r'(?:"([^"]*)"|([^\s()"]+))'
+#: A net reference whose NAME is bare -- `(net GND)` or `(net 3 GND)` -- as a
+#: footprint written in the older unquoted spelling has it (#1290). Group 1 is
+#: the name; a lone number, `(net 5)`, is an id and never matches.
+_BARE_NET_REF_RE = re.compile(r'\(net\s+(?:\d+\s+)?(?!\d+\))([^\s()"]+)\)')
+
+
+def pad_net_from_text(pad_text: str, name_to_id) -> Tuple[int, str]:
+    """(net_id, net_name) of one pad block's `(net ...)` node, in each spelling
+    pcbnew reads: `(net 3 "GND")`, `(net "GND")` (KiCad 10), and the unquoted
+    `(net 3 GND)` / `(net GND)` of footprints written in the older spelling
+    (#1290). A bare name resolves by NAME through the board's net table, as
+    pcbnew resolves it on a board with no numeric table; the id is the
+    fallback when the table does not know the name. (0, "") when the pad has
+    no net."""
+    m = re.search(r'\(net\s+(\d+)\s+"%s"\)' % _ESC_STR, pad_text)
+    if m:
+        return int(m.group(1)), _unescape_kicad_string(m.group(2))
+    m = re.search(r'\(net\s+"%s"\)' % _ESC_STR, pad_text)
+    if m:
+        if name_to_id:
+            return (name_to_id.get(m.group(1), 0),
+                    _unescape_kicad_string(m.group(1)))
+        return 0, ""
+    m = _BARE_NET_REF_RE.search(pad_text)
+    if m:
+        name = m.group(1)
+        if name in (name_to_id or {}):
+            return name_to_id[name], name
+        num = re.match(r'\(net\s+(\d+)\s', m.group(0))
+        return (int(num.group(1)), name) if num else (0, "")
+    return 0, ""
+
 
 def footprint_pad_count(fp_text: str) -> int:
     """Number of pads with COPPER in one footprint block's TEXT.
@@ -4109,6 +4149,17 @@ def extract_nets(content: str, kicad_version: int = 0) -> Tuple[Dict[int, Net], 
                                      name=_unescape_kicad_string(net_name))
             name_to_id[net_name] = synthetic_id
             synthetic_id += 1
+        # #1290: a footprint written in the older unquoted spelling names its
+        # pad's net bare -- `(net GND)` or `(net 3 GND)` -- and pcbnew reads
+        # it as that name. A second pass, so a file with no bare names keeps
+        # exactly the ids above.
+        for m in re.finditer(_BARE_NET_REF_RE, content):
+            net_name = m.group(1)
+            if net_name in name_to_id:
+                continue
+            nets[synthetic_id] = Net(net_id=synthetic_id, name=net_name)
+            name_to_id[net_name] = synthetic_id
+            synthetic_id += 1
     else:
         # Numeric table (KiCad 9, whatever the stamp says): (net <id> "name")
         net_pattern = r'\(net\s+(\d+)\s+"%s"\)' % _ESC_STR
@@ -4119,6 +4170,14 @@ def extract_nets(content: str, kicad_version: int = 0) -> Tuple[Dict[int, Net], 
             # in-file references.
             nets[net_id] = Net(net_id=net_id, name=_unescape_kicad_string(net_name))
             name_to_id[net_name] = net_id
+        # #1290: `(net N NAME)` with the name bare, as the older spelling
+        # writes it. Never overrides an id the quoted pass above declared.
+        for m in re.finditer(r'\(net\s+(\d+)\s+([^\s()"]+)\)', content):
+            net_id = int(m.group(1))
+            if net_id in nets or m.group(2) in name_to_id:
+                continue
+            nets[net_id] = Net(net_id=net_id, name=m.group(2))
+            name_to_id[m.group(2)] = net_id
 
     return nets, name_to_id
 
@@ -4515,7 +4574,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             _tags = re.search(r'\(tags\s+"((?:[^"\\]|\\.)*)"\)', fp_text[:_tag_end])
             if _tags and _unescape_kicad_string(_tags.group(1)).startswith('net tie'):
                 group_strings = [', '.join(
-                    re.findall(r'\(pad\s+"((?:[^"\\]|\\.)*)"', fp_text))]
+                    q or b for q, b in re.findall(
+                        r'\(pad\s+(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))', fp_text))]
         for grp in group_strings:
             pads_in_group = [p.strip() for p in grp.split(',') if p.strip()]
             if len(pads_in_group) >= 2:
@@ -4573,16 +4633,17 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
 
         # Simpler approach: find pad starts and extract info
         # Note: pad number can be empty string (pad "") so use [^"]* not [^"]+
-        for pad_match in re.finditer(r'\(pad\s+"([^"]*)"\s+(\w+)\s+(\w+)', fp_text):
+        for pad_match in PAD_HEAD_RE.finditer(fp_text):
             pad_start = pad_match.start()
             # Find end of this pad block (string-aware paren matching).
             pad_end = find_matching_paren(fp_text, pad_start)
 
             pad_text = fp_text[pad_start:pad_end]
 
-            pad_num = pad_match.group(1)
-            pad_type = pad_match.group(2)  # smd, thru_hole, etc.
-            pad_shape = pad_match.group(3)  # circle, rect, roundrect, etc.
+            pad_num = (pad_match.group(1) if pad_match.group(1) is not None
+                       else pad_match.group(2))
+            pad_type = pad_match.group(3)  # smd, thru_hole, etc.
+            pad_shape = pad_match.group(4)  # circle, rect, roundrect, etc.
 
             # Extract pad local position and rotation
             pad_at_match = AT_NODE_RE.search(pad_text)
@@ -4677,28 +4738,19 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             if not custom_resolved:
                 size_x, size_y, rect_rotation = _resolve_pad_rect(size_x, size_y, pad_rotation)
 
-            # Extract net - try KiCad 9 format first, then KiCad 10
-            net_match = re.search(r'\(net\s+(\d+)\s+"%s"\)' % _ESC_STR, pad_text)
-            if net_match:
-                net_id = int(net_match.group(1))
-                net_name = _unescape_kicad_string(net_match.group(2))
-            else:
-                # KiCad 10: (net "name") with no numeric ID
-                net_match_v10 = re.search(r'\(net\s+"%s"\)' % _ESC_STR, pad_text)
-                if net_match_v10 and name_to_id:
-                    net_id = name_to_id.get(net_match_v10.group(1), 0)
-                    net_name = _unescape_kicad_string(net_match_v10.group(1))
-                else:
-                    net_id = 0
-                    net_name = ""
+            # Extract net: KiCad 9 `(net N "name")`, KiCad 10 `(net "name")`,
+            # or either one unquoted (#1290).
+            net_id, net_name = pad_net_from_text(pad_text, name_to_id)
 
             # Extract pinfunction
-            pinfunc_match = re.search(r'\(pinfunction\s+"([^"]*)"\)', pad_text)
-            pinfunction = pinfunc_match.group(1) if pinfunc_match else ""
+            pinfunc_match = re.search(r'\(pinfunction\s+%s\)' % _STR_OR_BARE, pad_text)
+            pinfunction = ((pinfunc_match.group(1) if pinfunc_match.group(1) is not None
+                            else pinfunc_match.group(2)) if pinfunc_match else "")
 
             # Extract pintype
-            pintype_match = re.search(r'\(pintype\s+"([^"]*)"\)', pad_text)
-            pintype = pintype_match.group(1) if pintype_match else ""
+            pintype_match = re.search(r'\(pintype\s+%s\)' % _STR_OR_BARE, pad_text)
+            pintype = ((pintype_match.group(1) if pintype_match.group(1) is not None
+                        else pintype_match.group(2)) if pintype_match else "")
 
             # Extract drill size for through-hole pads. Oval/slot drills are
             # (drill oval w h); take max(w, h) so the pad keeps drill>0 (TH)

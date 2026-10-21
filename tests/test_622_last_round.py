@@ -44,7 +44,7 @@ def main():
         elif script == 'whole_gate.py':
             if '--hot' in args:
                 json.dump({'hot': [{'at': [0.0, 0.0]}]}, open(args[args.index('--hot') + 1], 'w'))
-            i = int(re.search(r'/p(\d+)\.json$', args[0]).group(1))
+            i = int(re.search(r'[\\/]p(\d+)\.json$', args[0]).group(1))
             # (fewer findings each round: a new best every round, the loop never NOT CONVERGING)
             out, rc = f'dive 0 static {10 - i} shape 0 swim 0, pitch 0 in the plan, band 0.0 mm', 1
         elif script == 'whole_solve.py':

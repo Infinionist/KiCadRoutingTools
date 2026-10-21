@@ -2055,8 +2055,12 @@ def swap_pad_nets_in_content(content: str, pad1: Pad, pad2: Pad) -> str:
             if key != component_ref:
                 continue
 
-            # Find every pad with this number in this footprint
-            pad_pattern = rf'\(pad\s+"{re.escape(pad_number)}"\s+\w+\s+\w+'
+            # Find every pad with this number in this footprint, quoted or in
+            # the older unquoted spelling KiCad still reads (#1290)
+            _num = re.escape(pad_number)
+            _bare = (f'|{_num}(?=\\s)'
+                     if pad_number and re.fullmatch(r'[^\s()"]+', pad_number) else '')
+            pad_pattern = rf'\(pad\s+(?:"{_num}"{_bare})\s+\w+\s+\w+'
             for pad_match in re.finditer(pad_pattern, fp_text):
                 pad_start_rel = pad_match.start()
                 # Find end of this pad block
@@ -2078,6 +2082,10 @@ def swap_pad_nets_in_content(content: str, pad1: Pad, pad2: Pad) -> str:
                 if not net_match:
                     # KiCad 10: (net "name") with no numeric ID
                     net_match = re.search(r'\(net\s+"(?:[^"\\]|\\.)*"\)', pad_text)
+                if not net_match:
+                    # the older spelling's bare name, (net 3 GND) / (net GND)
+                    net_match = re.search(r'\(net\s+(?:\d+\s+)?(?!\d+\))[^\s()"]+\)',
+                                          pad_text)
                 if net_match:
                     # Convert to absolute positions in content
                     abs_start = fp_start + pad_start_rel + net_match.start()

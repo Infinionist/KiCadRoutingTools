@@ -571,7 +571,7 @@ def loop(solve, out, rounds, env, log):
                 # earlier round found it, or the seed): both sides of the island failed -- the solve hears of it.
                 # Only a cut the flip answers, one from before it, is dropped (zynq K42: DQ10's cut at C98, made again
                 # after its flip, never reached the solve)
-                m = re.search(r'/c(\d+)\.json$', f)
+                m = re.search(r'[\\/]c(\d+)\.json$', f)
                 k = int(m.group(1)) if m else 0
                 given = fl(env.get('SEED_FLIPS', '').split(',') + [os.path.join(out, f'{nm}{j}.json')
                                                                    for j in range(1, k) for nm in ('p', 'q', 'qk')])
@@ -992,8 +992,9 @@ def held_plan(loopd, env, i=None):
     pre = 'held_' if i is None else f'held{i}_'
     if i is None and os.path.isfile(O('plan.json')):
         return O('plan.json')
-    ps = sorted((f for f in glob.glob(O('p*.json')) if re.search(r'/p\d+\.json$', f)),
-                key=lambda f: int(re.search(r'/p(\d+)\.json$', f).group(1)))
+    # (either separator: glob and os.path.join give '\' on Windows, and a '/'-only match there held no round at all)
+    ps = sorted((f for f in glob.glob(O('p*.json')) if re.search(r'[\\/]p\d+\.json$', f)),
+                key=lambda f: int(re.search(r'[\\/]p(\d+)\.json$', f).group(1)))
     if not ps:
         return None
     src = ps[-1]
@@ -1012,7 +1013,7 @@ def held_plan(loopd, env, i=None):
         bs = json.load(open(O('benches.json')))
     except (OSError, ValueError):
         bs = {}
-    rb = bs.get(re.search(r'/p(\d+)\.json$', src).group(1))
+    rb = bs.get(re.search(r'[\\/]p(\d+)\.json$', src).group(1))
     if rb:
         env = dict(env, BENCH=rb)
         if i is None:
@@ -1030,7 +1031,7 @@ def snap_failed(loopd, plan):
     """the NETS a held plan's snap left unlaid (held_plan's logs: each snap's last word, SNAP FAILED -- a lane a sweep
     laid after it failed once is laid; a pair is two nets): zKP K40 r1, rounds 3 and 1 each with six FAILED lines, laid
     10 and 6 open -- four pairs among the one's, one among the other's"""
-    m = re.search(r'/(held\d*_)plan\.json$', plan or '')
+    m = re.search(r'[\\/](held\d*_)plan\.json$', plan or '')
     if not m:
         return None
     n = 0
@@ -1061,7 +1062,7 @@ def pick_by_snap(loopd, env, plan, say):
         held_i = None
     sc = {}
     for p in glob.glob(os.path.join(loopd, 'p*.json')):
-        m = re.search(r'/p(\d+)\.json$', p)
+        m = re.search(r'[\\/]p(\d+)\.json$', p)
         a = p[:-len('.json')] + '.audit'
         if not m or int(m.group(1)) == held_i or not os.path.isfile(a):
             continue
@@ -1105,7 +1106,7 @@ def lay_rounds(loopd, d, env, res, lay_, say, plan=None):
         held_i = int(m_.group(1))
     sc = {}
     for p in glob.glob(os.path.join(loopd, 'p*.json')):
-        m = re.search(r'/p(\d+)\.json$', p)
+        m = re.search(r'[\\/]p(\d+)\.json$', p)
         a = p[:-len('.json')] + '.audit'
         if not m or int(m.group(1)) == held_i or not os.path.isfile(a):
             continue
