@@ -2262,6 +2262,21 @@ def _underpad_shrink_rescue(footprint, pcb_data, grid, layers, up_kw,
     return tracks, vias_to_add, failed_nets
 
 
+def ball_surface_layer(pad, footprint=None):
+    """The concrete copper layer a ball's surface escape is drawn on, or None.
+
+    A wildcard is no layer: `'*.Cu'` also ends in `.Cu`, and a track written
+    on it is a file KiCad refuses to load -- the #652 surface rescue ran over
+    open_weather_station U8's grid of through-hole thermal pads and wrote 17
+    GND tracks on "*.Cu". A through-hole ball has copper on every layer, so
+    its surface track runs on the part's own mount layer."""
+    layers = list(getattr(pad, 'layers', None) or ())
+    lay = next((l for l in layers if l.endswith('.Cu') and not l.startswith('*')), None)
+    if lay is None and '*.Cu' in layers:
+        lay = getattr(footprint, 'layer', None) or 'F.Cu'
+    return lay
+
+
 def _surface_gap_escape(footprint, pcb_data, tracks, vias_to_add,
                         failed_nets, track_width, clearance, exit_margin):
     """Vialess surface escape for terminally dropped balls (#652 directive 1).
@@ -2423,7 +2438,7 @@ def _surface_gap_escape(footprint, pcb_data, tracks, vias_to_add,
                  and not ball_has_copper(p, vias_to_add + _bv, tracks + _bt, track_width)]
         for p in fpads:
             done = False
-            lay = next((l for l in (p.layers or []) if l.endswith('.Cu')), None)
+            lay = ball_surface_layer(p, footprint)
             if lay is None:
                 continue
             bx, by = p.global_x, p.global_y
