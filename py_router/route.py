@@ -214,6 +214,38 @@ def compute_stale_input_segments(orig_seg_by_net, scope_ids, final_segments,
         full_sig=_seg_span_sig, pos_sig=_seg_span_sig, final_ids=final_ids)
 
 
+def mirror_stale_strip(pcb_data, stale_segments, stale_vias,
+                       emitted_segments, emitted_vias) -> bool:
+    """Take the stale-stripped input copper off the board too. Returns True
+    when pcb_data changed (the caller bumps the copper epoch).
+
+    The #284 re-emit clause can strip an original that is STILL on the board
+    (a routed twin reproduced its span, so the file keeps only the emitted
+    copy); mirroring that removal into pcb_data, like every other subtractive
+    step, keeps the board from carrying copper the file won't have (ottercast
+    Net-(C46-Pad1) sliver, found by KICAD_BOARD_LEDGER). Identity-based;
+    absent objects are a no-op.
+
+    Except when the "twin" IS the original. A restore that puts the input
+    file's own objects on the write-list -- #134's last-resort restore of a
+    pre-existing net, whose saved route is its custody registration -- makes
+    each of them its own re-emitted twin: the file strips the input copy and
+    writes the emitted one, so the board must keep the object. Removing it
+    took the net out of pcb_data while the file shipped it, and every later
+    pass routed through copper it could not see (#1310: glasgow /RD restored
+    whole, then crossed by /D0's octolinear smoothing and a GND tap via; 30
+    DRC violations on an input that grades clean).
+    """
+    emitted = {id(x) for x in emitted_segments} | {id(x) for x in emitted_vias}
+    seg_ids = {id(s) for s in stale_segments if id(s) not in emitted}
+    via_ids = {id(v) for v in stale_vias if id(v) not in emitted}
+    if seg_ids:
+        pcb_data.segments = [s for s in pcb_data.segments if id(s) not in seg_ids]
+    if via_ids:
+        pcb_data.vias = [v for v in pcb_data.vias if id(v) not in via_ids]
+    return bool(seg_ids or via_ids)
+
+
 def _write_passthrough_output(input_file: str, output_file: str) -> None:
     """Write the output as an unchanged copy of the input (issue #86).
 
@@ -4168,19 +4200,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
               f"{len(_derived_v)} original via(s) are absent from the final "
               f"board but no pass reported them -- stripping (geometry-matched)")
 
-    # Uniform contract, stale-strip edition: the #284 re-emit clause can strip
-    # an original that is STILL on the board (a routed twin reproduced its
-    # span, so the file keeps only the emitted copy) -- mirror that removal
-    # into pcb_data like every other subtractive step, or the board carries
-    # copper the file won't have (ottercast Net-(C46-Pad1) sliver, found by
-    # KICAD_BOARD_LEDGER). Identity-based; absent objects are a no-op.
-    _stale_ids = {id(s) for s in _stale_input_segs}
-    if _stale_ids:
-        pcb_data.segments = [s for s in pcb_data.segments if id(s) not in _stale_ids]
-    _stale_via_ids = {id(v) for v in stale_input_vias}
-    if _stale_via_ids:
-        pcb_data.vias = [v for v in pcb_data.vias if id(v) not in _stale_via_ids]
-    if _stale_ids or _stale_via_ids:
+    # Uniform contract, stale-strip edition: mirror the strips into pcb_data
+    # (mirror_stale_strip says which, and why not all).
+    if mirror_stale_strip(pcb_data, _stale_input_segs, stale_input_vias,
+                          _emitted_segs, _emitted_vias):
         bump_copper_epoch(pcb_data)
 
     # Board-vs-file ledger (KICAD_BOARD_LEDGER=1): audit the pipeline contract
