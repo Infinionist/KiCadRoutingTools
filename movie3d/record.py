@@ -94,7 +94,12 @@ def body_height(ref, name):
 
 def _not_assembled(fp):
     """No body to draw: no 3D model AND nothing placed there (a test pad,
-    a solder jumper) -- stage3d's rule (#1098)."""
+    a solder jumper) -- stage3d's rule (#1098) -- or a DNP part, model or
+    not (#1350): the GLB is exported with `--no-dnp`, so it never gets its
+    model, and the box it got instead drew a part the board will not carry
+    (imx6ulz_4l: 23 DNP 0402s drawn as boxes, reported as model fallbacks)."""
+    if getattr(fp, 'dnp', False):
+        return True
     return (not getattr(fp, 'has_model', False)
             and set(getattr(fp, 'attrs', ()) or ()) & {'board_only', 'exclude_from_pos_files'})
 
@@ -152,7 +157,8 @@ def part_scene(ref, fp, part, colour, fixed):
         body = [round(x0 + ix, 4), round(y0 + iy, 4), round(x1 - ix, 4), round(y1 - iy, 4), h]
     side = 'B' if (fp.layer or '').startswith('B') else 'F'
     return {'ref': ref, 'side': side, 'pads': pads, 'court': court, 'body': body,
-            'color': list(colour) if colour else None, 'fixed': fixed}
+            'color': list(colour) if colour else None, 'fixed': fixed,
+            'dnp': bool(getattr(fp, 'dnp', False))}
 
 
 class Recorder(Story):
@@ -575,16 +581,21 @@ def attach_models(a, rec):
     matched = set(info['matched'])
     for p in sc['parts']:
         p['model'] = p['ref'] in matched
-    boxed = sorted(p['ref'] for p in sc['parts'] if not p['model'] and p['body'])
-    bare = sorted(p['ref'] for p in sc['parts'] if not p['model'] and not p['body'])
+    # a DNP part is not populated: counted apart, never as a fallback (#1350)
+    dnp = sorted(p['ref'] for p in sc['parts'] if p.get('dnp'))
+    fitted = [p for p in sc['parts'] if not p.get('dnp')]
+    boxed = sorted(p['ref'] for p in fitted if not p['model'] and p['body'])
+    bare = sorted(p['ref'] for p in fitted if not p['model'] and not p['body'])
     sc['glb'] = {'path': info['path'], 'matched': sorted(matched)}
-    rec.model_report = {'models': len(matched), 'parts': len(sc['parts']), 'boxes': boxed,
-                        'bare': bare, 'cached': info['cached']}
-    print(f"record: {len(matched)} of {len(sc['parts'])} parts drawn from their KiCad model "
-          f"({'cached' if info['cached'] else f'exported in {time.time() - t0:.1f} s'}"
+    rec.model_report = {'models': len(matched), 'parts': len(fitted), 'boxes': boxed,
+                        'bare': bare, 'dnp': dnp, 'cached': info['cached']}
+    print(f"record: {len(matched)} of {len(fitted)} populated parts drawn from their KiCad "
+          f"model ({'cached' if info['cached'] else f'exported in {time.time() - t0:.1f} s'}"
           + (f"; {info['note']}" if info['note'] else '') + "); "
           + (f"{len(boxed)} fell back to a box ({', '.join(boxed)})" if boxed else 'none fell back to a box')
-          + (f"; {len(bare)} have no model and nothing assembled ({', '.join(bare)})" if bare else ''))
+          + (f"; {len(bare)} have no model and nothing assembled ({', '.join(bare)})" if bare else '')
+          + (f"; {len(dnp)} DNP part(s) not populated, so drawn as pads: "
+             f"{', '.join(dnp[:8])}{'...' if len(dnp) > 8 else ''}" if dnp else ''))
 
 
 def own_args(ap, work_required=True):
