@@ -634,6 +634,9 @@ class Repair(_Boards):
 class Summaries(_Boards):
     def run_seed(self, *argv):
         env = dict(os.environ, PYTHONHASHSEED='0', KRT_NO_BANNER='1')
+        # The 0.55 floor these fixtures were built against: they declare no
+        # edge rule, which #1301 resolves to the 0.2 fab floor.
+        argv = (*argv, '--board-edge-clearance', '0.55')
         proc = subprocess.run([sys.executable, '-X', 'utf8', SEED, *argv],
                               capture_output=True, text=True, env=env, timeout=600)
         summary = None

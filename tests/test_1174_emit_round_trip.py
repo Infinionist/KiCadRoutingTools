@@ -723,9 +723,12 @@ class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
                                'overhang_mm': {'min': 1.5, 'max': 2.0}}]},
                           fh)
             out = os.path.join(td, 's.kicad_pcb')
+            # 0.55: the edge floor this fixture was measured at -- it
+            # declares none, which #1301 resolves to the 0.2 fab floor.
             r = check([PY, '-X', 'utf8',
                        os.path.join(ROOT, 'py_placer', 'place_seed.py'),
-                       path, out, '--intent', ip, '--force'],
+                       path, out, '--intent', ip, '--force',
+                       '--board-edge-clearance', '0.55'],
                       **({'accept': True} if code == 0
                          else {'refuse': refuse, 'code': code}))
             evidence(out, 'written seed')

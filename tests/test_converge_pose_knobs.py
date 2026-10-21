@@ -68,10 +68,12 @@ def test_projectless_board_falls_back_and_says_so():
     assert not os.path.exists(os.path.splitext(BOARD)[0] + '.kicad_pro'), (
         "fixture grew a .kicad_pro -- update this test")
     c, e, knobs = converge._pose_knobs(BOARD, None, None)
-    assert (c, e) == (0.25, 0.55)
+    # #1301: the edge falls back to the fab edge floor routing writes back.
+    assert (c, e) == (0.25, 0.2)
     assert knobs['clearance']['source'] == 'fixed default'
-    assert knobs['board_edge_clearance']['source'] == 'fixed default'
-    print("  PASS: a projectless board falls back to the old defaults, labeled")
+    assert (knobs['board_edge_clearance']['source']
+            == 'fab edge floor (what routing writes)')
+    print("  PASS: a projectless board falls back, labeled")
 
 
 def test_poses_json_discloses_knobs_and_drops():

@@ -3036,7 +3036,8 @@ def build_parser():
                         'vetoes legal poses)')
     q.add_argument('--board-edge-clearance', type=float, default=None,
                    help='pose-legality edge clearance (default: the board\'s '
-                        'own min_copper_edge_clearance, else 0.55)')
+                        'own min_copper_edge_clearance, else the fab edge '
+                        'floor routing writes, 0.2)')
     q.add_argument('--route', action='store_true',
                    help='also run tier 3 (a scoped route) on the top poses')
     q.add_argument('--route-top', type=int, default=2,

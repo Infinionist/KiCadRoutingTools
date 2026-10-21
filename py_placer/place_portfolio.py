@@ -153,7 +153,9 @@ Examples:
     p.add_argument("--clearance", type=float, default=None,
                    help=f"Min courtyard gap in mm (default: {defaults.CLEARANCE})")
     p.add_argument("--board-edge-clearance", type=float, default=None,
-                   help="Hard clearance from board edge in mm (default: 0.55)")
+                   help="Hard clearance from board edge in mm (default: "
+                        "the board's own min_copper_edge_clearance, else the "
+                        "fab edge floor routing writes, 0.2)")
     p.add_argument("--crossing-penalty", type=float, default=30.0,
                    help="Cost per airwire crossing (default: 30, guidance)")
     p.add_argument("--length-weight", type=float, default=0.3,

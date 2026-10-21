@@ -244,8 +244,11 @@ def test_place_seed_charges_a_band_pad_it_placed_and_not_one_it_inherited():
         src = pile(board, td)
         out = os.path.join(td, 'cli.kicad_pcb')
         with band_gate(False):
+            # 0.55: the edge floor the in-process seeds above use (#1301
+            # moved the unset default to the 0.2 fab floor).
             rc, s, err = _place_seed_in_process(
-                [src, out, '--intent', ipath, '--clearance', CLEARANCE])
+                [src, out, '--intent', ipath, '--clearance', CLEARANCE,
+                 '--board-edge-clearance', 0.55])
         seeded = dict(s['keepout_copper_seeded'])
         assert rc == 4 and seeded.get('J3', 0) > 0.9, (rc, seeded)
         assert s['oob_keepout_copper_count'] >= 1, s

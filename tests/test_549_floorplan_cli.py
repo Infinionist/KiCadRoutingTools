@@ -270,7 +270,8 @@ def test_grading_knobs_resolve_from_the_board_and_are_disclosed():
         assert k in s, f"JSON_SUMMARY lost {k}"
         assert 'value' in s[k] and 'source' in s[k], s[k]
         assert s[k]['source'] in ('cli', 'board netclass', 'board constraint',
-                                  'fixed default'), s[k]
+                                  'fixed default',
+                                  'fab edge floor (what routing writes)'), s[k]
     code, out, _ = _run(BOARD, '--intent', _emit_once(), '-q',
                         '--clearance', '0.11')
     s = _summary(out)

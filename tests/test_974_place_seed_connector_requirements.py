@@ -139,7 +139,18 @@ def _write(tmp, name, board, intent):
     return bpath, ipath
 
 
+def _floor(extra):
+    """`extra`, at the 0.55 edge floor these fixtures were measured at
+    unless it names one: they declare no edge rule, which #1301 resolves to
+    the 0.2 fab floor."""
+    extra = list(extra)
+    if '--board-edge-clearance' not in extra:
+        extra += ['--board-edge-clearance', '0.55']
+    return extra
+
+
 def _cli(bpath, ipath, out, extra):
+    extra = _floor(extra)
     if os.path.exists(out):
         os.remove(out)
     r = subprocess.run([sys.executable, '-X', 'utf8', SEED, bpath, out,
@@ -150,6 +161,7 @@ def _cli(bpath, ipath, out, extra):
 
 
 def _runner(mode, bpath, ipath, out, extra):
+    extra = _floor(extra)
     if os.path.exists(out):
         os.remove(out)
     r = subprocess.run([sys.executable, '-X', 'utf8', '-c', RUNNER, mode,

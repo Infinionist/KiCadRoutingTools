@@ -208,7 +208,7 @@ def build_parser():
     p.add_argument('--board-edge-clearance', type=float, metavar='MM',
                    help="board-edge clearance for the outline gate (default: "
                         "the board's own min_copper_edge_clearance, else "
-                        "0.55)")
+                        "the fab edge floor routing writes, 0.2)")
     p.add_argument('--health', action='store_true',
                    help="also report the routability signals from the intent's "
                         "`health` block: how far each block sits from the parts "

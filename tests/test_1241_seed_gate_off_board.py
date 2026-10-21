@@ -72,9 +72,12 @@ def _run(path, doc, code, refuse=None, out_name='s.kicad_pcb',
                         'kind': floorplan.KIND, 'units': 'mm',
                         'blocks': [], 'edge_connectors': []}, **doc), fh)
     out = os.path.join(td, out_name)
+    # The edge floor these fixtures were measured at: they declare none,
+    # which #1301 resolves to the 0.2 fab floor, not the old fixed 0.55.
     r = check([PY, '-X', 'utf8'] + (['-c', _BLIND_SEARCH] if blind else [])
               + [os.path.join(ROOT, 'py_placer', 'place_seed.py'),
-                 path, out, '--intent', ip] + list(flags),
+                 path, out, '--intent', ip, '--board-edge-clearance', '0.55']
+              + list(flags),
               **({'accept': True} if code == 0
                  else {'refuse': refuse, 'code': code}))
     evidence(out, 'written seed')

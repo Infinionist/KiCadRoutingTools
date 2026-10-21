@@ -203,7 +203,9 @@ class Reads(unittest.TestCase):
         with Spy() as resolved:
             ctx = L.EdgeCopperContext.for_board(pcb, BOARDS['esp_prog'], 0.25, None)
         self.assertEqual(resolved.counts.get('read_design_rules'), 2)
-        self.assertEqual((ctx.required, ctx.source), (0.55, 'fixed default'))
+        # #1301: esp_prog declares no edge rule -> the floor routing writes.
+        self.assertEqual((ctx.required, ctx.source),
+                         (0.2, 'fab edge floor (what routing writes)'))
         with Spy() as given:
             ctx = L.EdgeCopperContext.for_board(pcb, BOARDS['esp_prog'], 0.25, 0.4)
         self.assertEqual(given.counts.get('read_design_rules'), 1)
@@ -270,7 +272,8 @@ class Order(unittest.TestCase):
                         L.grade_pad_edge_clearance(pcb, 0.55, path)
                     with self.assertRaises(kind):
                         L.grade_pad_legality(pcb, 0.25, exact=False, pcb_file=path)
-                    self.assertEqual(list_nets.board_floor_knobs(path, 0.25, None)[1], 0.55)
+                    # #1301: unreadable reads as unset -> the fab edge floor.
+                    self.assertEqual(list_nets.board_floor_knobs(path, 0.25, None)[1], 0.2)
 
     def test_the_unreadable_rules_row_precedes_the_project_row(self):
         with tempfile.TemporaryDirectory(prefix='krt975_') as tmp:
@@ -562,7 +565,8 @@ class Labels(unittest.TestCase):
                           given['pad_edge']['required_mm']), ('caller argument', 0.5, 0.5))
         resolved = L.grade_pad_legality(pcb, 0.25, exact=False, pcb_file=path)
         self.assertEqual((resolved['pad_edge']['source'], resolved['pad_edge']['argument_mm'],
-                          resolved['pad_edge']['required_mm']), ('fixed default', None, 0.55))
+                          resolved['pad_edge']['required_mm']),
+                         ('fab edge floor (what routing writes)', None, 0.2))
 
 
 if __name__ == '__main__':

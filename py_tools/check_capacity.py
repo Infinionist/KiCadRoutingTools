@@ -91,7 +91,11 @@ def main(argv=None):
             board_edge_clearance=a.board_edge_clearance)
     except Exception as e:                       # noqa: BLE001
         clearance = 0.25 if a.clearance is None else a.clearance
-        edge = 0.55 if a.board_edge_clearance is None else a.board_edge_clearance
+        edge = a.board_edge_clearance
+        if edge is None:
+            # The floor routing writes back for an unset rule (#1301).
+            from list_nets import unset_board_edge_clearance
+            edge = unset_board_edge_clearance(a.board)[0]
         floors = {'error': f"{type(e).__name__}: {e}"}
 
     # #837. Flag > intent > undeclared, and the SOURCE is printed, because

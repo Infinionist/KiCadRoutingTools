@@ -74,7 +74,7 @@ Examples:
     parser.add_argument("--board-edge-clearance", type=float, default=None,
                         help="Hard clearance from board edge in mm (default: "
                              "the board's own min_copper_edge_clearance, else "
-                             "0.55)")
+                             "the fab edge floor routing writes, 0.2)")
     parser.add_argument("--crossing-penalty", type=float, default=10.0,
                         help="Cost in mm per airwire crossing (default: 10)")
     parser.add_argument("--length-weight", type=float, default=1.0,

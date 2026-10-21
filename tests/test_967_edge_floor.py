@@ -145,7 +145,8 @@ class EdgeFloor(unittest.TestCase):
         board = self.fixture()
         s, _ = self.cli(board, 'set', 'Y1', '124.7', '103.2', '--rot', '270', floor=None)
         self.assertEqual(s['knobs']['board_edge_clearance']['requested'], None)
-        self.assertEqual(s['pad_edge_after']['source'], 'fixed default')
+        self.assertEqual(s['pad_edge_after']['source'],
+                         'fab edge floor (what routing writes)')   # #1301
         pro = board.with_suffix('.kicad_pro')
         pro.write_text(json.dumps({'board': {'design_settings': {'rules': {
             'min_copper_edge_clearance': .60}}},

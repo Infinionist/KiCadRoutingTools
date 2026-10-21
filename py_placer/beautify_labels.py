@@ -80,7 +80,8 @@ Exit codes:
     parser.add_argument("--board-edge-clearance", type=float, default=None,
                         help="Hard clearance from the board edge in mm "
                              "(default: the board's own "
-                             "min_copper_edge_clearance, else 0.55)")
+                             "min_copper_edge_clearance, else the fab edge "
+                             "floor routing writes, 0.2)")
     parser.add_argument("--include-hidden", action="store_true",
                         help="Also place hidden labels (they stay hidden; "
                              "only their pose/size is tidied)")
