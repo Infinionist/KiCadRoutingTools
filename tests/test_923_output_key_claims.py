@@ -118,6 +118,14 @@ UNRESOLVED_OK = {
     'regrade.exact_open': (
         "route.py's JSON_REGRADE / --json-out key, not a board_score document",
         'py_router/route.py', "record['exact_open']"),
+    # #1303: the skills cite route_diff's intra-pair verdict in paragraphs
+    # about board_score's `diff_pairs`.
+    'intra_pair_matching[].delta_mm': (
+        "route_diff.py's JSON_SUMMARY key, not a board_score document",
+        'py_router/route_diff.py', "'intra_pair_matching': intra_pair_reports"),
+    'intra_pair_matching[].status': (
+        "route_diff.py's JSON_SUMMARY key, not a board_score document",
+        'py_router/route_diff.py', "'intra_pair_matching': intra_pair_reports"),
 }
 
 FAILURES = []

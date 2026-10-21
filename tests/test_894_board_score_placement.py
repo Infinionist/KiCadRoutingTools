@@ -161,8 +161,9 @@ def test_board_score_still_sums_exactly_nine_components():
             found.append([k.value for k in node.value.keys
                           if isinstance(k, ast.Constant)])
     check('exactly one `parts` literal', len(found) == 1, str(len(found)))
-    check('it has nine members and `placement` is not one of them',
-          len(found[0]) == 9 and 'placement' not in found[0],
+    # ten since #1303 split the pair-rule rows out of `drc` into `diff_pairs`
+    check('it has ten members and `placement` is not one of them',
+          len(found[0]) == 10 and 'placement' not in found[0],
           str(sorted(found[0])))
 
 

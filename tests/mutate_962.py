@@ -252,8 +252,8 @@ ROWS = [
      '    cd = cd',
      (T_VIP,), 'KILLED'),
     ('board-score-blocks-on-via-in-paste', 's',
-     "             and t not in VIA_PASTE_TYPES}",
-     "             }",
+     "             and t not in VIA_PASTE_TYPES and t not in PAIR_RULE_TYPES}",
+     "             and t not in PAIR_RULE_TYPES}",
      (T_OOB,), 'KILLED'),
 ]
 
