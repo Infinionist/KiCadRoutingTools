@@ -1198,8 +1198,12 @@ Options:
   --layer, -l         Routing layer (default: the layer the component is mounted on)
   --width, -w         Track width in mm
   --extension         Extension past pad edge before bend (mm)
-  --clearance         Min clearance to other-net pads in mm; stubs that would
-                      graze a foreign pad are shortened or dropped
+  --clearance         Min clearance to other-net copper in mm (default: the
+                      board's Default net-class clearance, else 0.1, capped by
+                      --clearance-ceiling). A fan that would graze is
+                      shortened; a straight escape that cannot clear is retried
+                      at lower clearances when --escalation allows, and
+                      dropped only when none clears (#1328)
   --nets, -n          Net patterns to include
   --grid-step         Routing grid step in mm (default: 0.1). Fanned stub ends
                       are snapped to this grid so the router gets on-grid

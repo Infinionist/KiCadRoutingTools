@@ -246,7 +246,16 @@ BGA_DIFF_PAIR_GAP = 0.1  # mm
 
 # QFN Fanout defaults
 QFN_TRACK_WIDTH = 0.1  # mm
+# The QFN clearance when NEITHER --clearance NOR the board names one (#1328): a
+# board with no project, or a Default class left unset. An omitted --clearance
+# otherwise takes the board's Default net class (qfn_fanout.resolve_qfn_clearance),
+# and the GUI QFN panel's Clearance spin shows this until its override is ticked.
 QFN_CLEARANCE = 0.1  # mm
+# #1328: the step a QFN stub escalates its clearance down by when it cannot
+# escape at the run clearance (qfn_fanout.qfn_clearance_ladder). Small, so the
+# clearance recorded for an escalated stub is within one step of what its copper
+# actually needs.
+QFN_ESCALATION_STEP = 0.005  # mm
 QFN_EXTENSION = 0.05  # mm - extension past pad edge before bend (0.1 -> 0.05: s2 rescan, -25 verdict on 65 QFN boards -- shorter stubs leave routing room)
 
 # Differential Pair defaults

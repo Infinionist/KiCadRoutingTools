@@ -62,6 +62,137 @@ LAST_ERASED_SETS: Dict = {}
 # unclamped), `clamped`, `max_stub_mm`, `allow_via_in_pad`.
 LAST_UNDERPAD_REPORT: Dict = {}
 
+# #1328: the surface-fan stubs the last run escaped BELOW its clearance, one
+# dict per stub -- `net`, `pad` ("U1.5") and `clearance` (the rung it cleared
+# at). Refreshed by every generate_qfn_fanout call; EMPTY when nothing
+# escalated. The narrowing itself is in the fab_tiers ledger (one
+# ``clearance`` row per stub), which is what JSON_SUMMARY design_rules and the
+# end-of-run line read; this list is the per-pad view a test or the GUI can
+# read without parsing that.
+LAST_ESCALATED: List[Dict] = []
+
+
+def resolve_qfn_clearance(explicit, default_class, ceiling=None):
+    """The clearance a QFN fanout escapes at, and the lines that say why (#1328).
+
+    ONE resolver for both fronts: qfn_fanout.py's main (``--clearance`` /
+    ``--clearance-ceiling``) and the GUI QFN panel (its Clearance override box,
+    the Basic tab's ceiling). It reads the way route.py reads its own flags:
+
+    * ``explicit`` given (``--clearance``, or the panel's box ticked) -> that;
+    * omitted -> the board's Default net class clearance (``default_class``,
+      ``list_nets.board_default_netclass_clearance`` on the CLI, the live
+      board's Default class in the GUI);
+    * no Default class either (a board with no project, or a 0 the project
+      leaves as "unset") -> ``routing_defaults.QFN_CLEARANCE``;
+
+    then capped by ``ceiling`` (tighten-only). This used to default to
+    QFN_CLEARANCE (0.1) whatever the board declared, and the fanout writeback
+    clamps every net class to the clearance it ran at, so the chain's own
+    ``--clearance-ceiling 0.15`` lowered steppenprobe's Default and Power
+    classes 0.15 -> 0.1 and every later route step routed the board at 0.1
+    -- while the same fanout escaped 31/31 pads at 0.15. A pad that cannot
+    escape at the resolved value escalates on its own (see
+    :func:`qfn_clearance_ladder`), so the floor drops only where a pad needs it.
+
+    Returns ``(clearance, lines)``.
+    """
+    lines = []
+    if explicit is not None:
+        value = float(explicit)
+    else:
+        dc = None
+        try:
+            dc = float(default_class) if default_class is not None else None
+        except (TypeError, ValueError):
+            dc = None
+        if dc is not None and dc > 0:
+            value = dc
+            lines.append(f"--clearance not given; escaping at the board Default "
+                         f"net-class clearance {value:g}mm.")
+        else:
+            import routing_defaults as _rd
+            value = float(_rd.QFN_CLEARANCE)
+            lines.append(f"--clearance not given and the board declares no Default "
+                         f"net class; escaping at the fallback {value:g}mm.")
+    if ceiling is not None:
+        try:
+            ceiling = float(ceiling)
+        except (TypeError, ValueError):
+            ceiling = None
+    if ceiling is not None and ceiling < value - 1e-12:
+        lines.append(f"--clearance-ceiling {ceiling:g}: clearance capped at it for "
+                     f"this run (was {value:g}).")
+        value = ceiling
+    return value, lines
+
+
+def qfn_clearance_ladder(clearance, copper_layer_count):
+    """The clearances BELOW ``clearance`` a stub may escalate to, descending
+    (#1328) -- empty when no descent is allowed.
+
+    A surface stub that cannot escape at the run clearance (its straight
+    segment grazes foreign copper, so it would be dropped) is retried at these,
+    in order, and keeps the first that clears. The policy is the run's
+    escalation policy (``--escalation`` / the GUI's Escalation choice, default
+    ``routing_defaults.ESCALATION``): nothing under ``off``; down to the
+    deepest rung of ``fab_tiers.escalation_rungs`` otherwise -- the tier's fab
+    floor under ``fab``, raised to the board's own declared minimum (or its
+    Default class when that is unset, #1160) under ``board``.
+
+    The steps are ``routing_defaults.QFN_ESCALATION_STEP`` apart, plus each
+    tier rung's own clearance, so the rung a stub keeps is within one step of
+    what its copper actually needs -- that is the value the writeback records,
+    never the fab floor it was allowed to reach."""
+    from fab_tiers import escalation_rungs
+    import routing_defaults as _rd
+    rungs = escalation_rungs(copper_layer_count)
+    if not rungs:
+        return []
+    floor = min(r['clearance'] for r in rungs)
+    if floor >= clearance - 1e-9:
+        return []
+    step = _rd.QFN_ESCALATION_STEP
+    vals = {round(r['clearance'], 4) for r in rungs
+            if floor - 1e-9 <= r['clearance'] < clearance - 1e-9}
+    k = 1
+    while clearance - k * step > floor + 1e-9:
+        vals.add(round(clearance - k * step, 4))
+        k += 1
+    vals.add(round(floor, 4))
+    return sorted(vals, reverse=True)
+
+
+def _record_escalations(footprint, pcb_data, escalated, clearance):
+    """#1328: publish the stubs that escaped below ``clearance`` and disclose
+    them as route.py discloses its own descents -- a ``clearance`` row per stub
+    in the fab_tiers ledger (JSON_SUMMARY ``design_rules`` and the end-of-run
+    ``Design rules`` line), a fab-tier escalation when the rung is below the
+    tier's nominal floor, and the clearance ledger, whose minimum is the floor
+    the writeback records: the rung the stub cleared at, never lower."""
+    if not escalated:
+        return
+    from fab_tiers import note_narrowing, warn_fab_escalation, escalation_rungs
+    import clearance_ledger
+    rungs = escalation_rungs(len(pcb_data.board_info.copper_layers or ()) or 2)
+    nominal = rungs[0]['clearance'] if rungs else None
+    ref = footprint.reference
+    for stub, cl in escalated:
+        name = stub.pad.net_name
+        where = f"{ref}.{stub.pad.pad_number}"
+        LAST_ESCALATED.append({'net': name, 'pad': where, 'clearance': round(cl, 4)})
+        note_narrowing(stub.net_id, 'clearance', clearance, cl, 'qfn escape',
+                       net_name=name)
+        clearance_ledger.record(cl)
+        if nominal is not None and cl < nominal - 1e-9:
+            warn_fab_escalation(f"qfn escape {where}")
+    lo = min(cl for _, cl in escalated)
+    names = ', '.join(f"{e['pad']} {e['net']} {e['clearance']:g}"
+                      for e in LAST_ESCALATED)
+    print(f"  Clearance escalation (#1328): {len(escalated)} stub(s) could not "
+          f"escape at {clearance:g} mm and escaped at a lower clearance "
+          f"(smallest {lo:g} mm): {names[:300]}")
+
 
 def axis_offset_ladder(pad_width, via_size, step, mode='near'):
     """Signed offsets along the escape axis, under KICAD_QFN_ONPAD_REACH (#846).
@@ -1344,6 +1475,7 @@ def generate_qfn_fanout(footprint: Footprint,
     default, and what the CLI passes) is fully inert.
     """
     LAST_CANCEL_SKIPPED.clear()
+    LAST_ESCALATED.clear()          # #1328
     # #619: and the erased-set report, for the same reason. `generate_qfn_fanout`
     # returns early on several paths that never reach `_underpad_via_escape`
     # (no recognised layout, no pad_infos, a cancel), and the surface fan never
@@ -1644,22 +1776,51 @@ def generate_qfn_fanout(footprint: Footprint,
     from check_drc import _segment_to_rings_distance as _seg_rings_dist
     from check_drc import _point_on_board as _pt_on_board
 
-    def _seg_hits_edge(p1, p2):
-        if not _edge_rings:
+    # #1328: a stub that cannot escape at `clearance` retries at the rungs of
+    # qfn_clearance_ladder (empty under --escalation off). Each rung gets its
+    # own obstacle map and edge model, built the first time a stub needs it;
+    # the run clearance keeps the ones built above, so a run in which nothing
+    # escalates checks exactly what it always did. A .kicad_dru rule on the
+    # escape layer REPLACES the pair clearance there (#498, applied to
+    # `clearance` above) and would pin every rung's map back to it, so a ruled
+    # escape layer does not escalate: the board states that layer's clearance.
+    _esc_ladder = ([] if _lcl_498.get(layer) is not None else
+                   qfn_clearance_ladder(clearance, len(pcb_data.board_info.copper_layers or ())
+                                        or 2))
+    _rung_ctx = {clearance: (_obstacles, _obs_cfg, margin,
+                             (_edge_clear, _edge_rings, _edge_outer, _edge_cutouts))}
+
+    def _ctx(cl):
+        c = _rung_ctx.get(cl)
+        if c is None:
+            _cfg = GridRouteConfig(layers=list(_obs_cfg.layers), track_width=track_width,
+                                   clearance=cl)
+            install_layer_clearances(_cfg, None, None, pcb_data)  # #498
+            _obs = build_base_obstacle_map(pcb_data, _cfg, nets_to_route=_fanned_net_ids,
+                                           extra_clearance=track_width / 2)
+            c = (_obs, _cfg, cl + track_width / 2,
+                 _board_edge_model(pcb_data, cl, board_edge_clearance))
+            _rung_ctx[cl] = c
+        return c
+
+    def _seg_hits_edge(p1, p2, cl=clearance):
+        _ec, _er, _eo, _ecut = _ctx(cl)[3]
+        if not _er:
             return False
         for (x, y) in (p1, p2):
-            if not _pt_on_board(x, y, _edge_outer, _edge_cutouts):
+            if not _pt_on_board(x, y, _eo, _ecut):
                 return True
-        return _seg_rings_dist(p1[0], p1[1], p2[0], p2[1], _edge_rings) \
-            < track_width / 2 + _edge_clear - 1e-6
+        return _seg_rings_dist(p1[0], p1[1], p2[0], p2[1], _er) \
+            < track_width / 2 + _ec - 1e-6
 
-    def _seg_grazes(p1, p2, net_id):
+    def _seg_grazes(p1, p2, net_id, cl=clearance):
+        _obs, _cfg, _margin, _ = _ctx(cl)
         # Board edge first (issue #288) - independent of net.
-        if _seg_hits_edge(p1, p2):
+        if _seg_hits_edge(p1, p2, cl):
             return True
         # Foreign tracks / vias via the shared obstacle map (issue #149 part 2).
         if _obs_layer_idx is not None and not check_line_clearance(
-                _obstacles, p1[0], p1[1], p2[0], p2[1], _obs_layer_idx, _obs_cfg):
+                _obs, p1[0], p1[1], p2[0], p2[1], _obs_layer_idx, _cfg):
             return True
         # Foreign pads, geometric + rotation-exact (issue #123).
         for pad in foreign_pads:
@@ -1667,7 +1828,7 @@ def generate_qfn_fanout(footprint: Footprint,
                 continue
             if pad.drill <= 0 and layer not in (pad.layers or []):
                 continue
-            if _seg_hits_pad(p1[0], p1[1], p2[0], p2[1], pad, margin=margin):
+            if _seg_hits_pad(p1[0], p1[1], p2[0], p2[1], pad, margin=_margin):
                 return True
         # Existing copper of the part's other fanned nets (issue #257).
         for s in _fanned_existing_segs:
@@ -1676,34 +1837,35 @@ def generate_qfn_fanout(footprint: Footprint,
             if segment_to_segment_distance(
                     p1[0], p1[1], p2[0], p2[1],
                     s.start_x, s.start_y, s.end_x, s.end_y) \
-                    < s.width / 2 + track_width / 2 + clearance - 1e-6:
+                    < s.width / 2 + track_width / 2 + cl - 1e-6:
                 return True
         for v in _fanned_existing_vias:
             if v.net_id == net_id:
                 continue
             if point_to_segment_distance(v.x, v.y, p1[0], p1[1], p2[0], p2[1]) \
-                    < v.size / 2 + track_width / 2 + clearance - 1e-6:
+                    < v.size / 2 + track_width / 2 + cl - 1e-6:
                 return True
         return False
 
-    def _hits_neighbour_reserve(p1, p2, net_id):
+    def _hits_neighbour_reserve(p1, p2, net_id, cl=clearance):
         for a, b, rn in _neighbour_reserve:
             if rn == net_id:
                 continue
             if segment_to_segment_distance(p1[0], p1[1], p2[0], p2[1],
                                            a[0], a[1], b[0], b[1]) \
-                    < track_width + clearance - 1e-6:
+                    < track_width + cl - 1e-6:
                 return True
         return False
 
-    def _fan_grazes(p1, p2, net_id):
-        return _seg_grazes(p1, p2, net_id) or _hits_neighbour_reserve(p1, p2,
-                                                                      net_id)
+    def _fan_grazes(p1, p2, net_id, cl=clearance):
+        return _seg_grazes(p1, p2, net_id, cl) or _hits_neighbour_reserve(p1, p2,
+                                                                          net_id, cl)
 
     qfn_dropped: List[str] = []
     n_short = 0
     n_ext_short = 0
     kept_stubs: List[FanoutStub] = []
+    _escalated: List[Tuple[FanoutStub, float]] = []      # #1328
     # The per-stub graze test scans every foreign pad; on a crowded board this
     # loop is where the QFN seconds go, so count it out to the status line.
     for _sti, (stub, pad_info) in enumerate(zip(stubs, pad_infos)):
@@ -1717,33 +1879,44 @@ def generate_qfn_fanout(footprint: Footprint,
                 f"QFN fanout {getattr(footprint, 'reference', '?')}: "
                 f"clearing stub {stub.pad.net_name or stub.net_id}")
         nid = stub.net_id
-        if _seg_grazes(stub.pad_pos, stub.corner_pos, nid):
+        # The straight escape at the run clearance, then (#1328) at each
+        # escalation rung below it: the first clearance it clears at is the
+        # stub's, and its fan is shortened at that same clearance.
+        stub_cl = None
+        for cl in [clearance] + _esc_ladder:
+            if not _seg_grazes(stub.pad_pos, stub.corner_pos, nid, cl):
+                stub_cl = cl
+                break
             # #513 item 15 (ice4pi): a straight escape toward a nearby board
             # edge used to be DROPPED outright; on an edge-hugging row that
             # left the whole side unescaped unless the operator hand-tuned
             # --extension 0.0. When the ONLY offender is the board edge,
             # shrink the extension toward 0 first -- the escape still clears
             # the pad, it just bends sooner.
-            recovered = False
-            if _seg_hits_edge(stub.pad_pos, stub.corner_pos):
+            if _seg_hits_edge(stub.pad_pos, stub.corner_pos, cl):
                 for _t in [1.0 - i / 9.0 for i in range(1, 9)] + [0.0]:
                     _sl = pad_info.pad_width / 2 + extension * _t
                     _c2, _e2 = calculate_fanout_stub(
                         pad_info, layout, _sl, max_diagonal_length, grid_step,
                         angle_ref_off=side_max_off.get(pad_info.side, 0.0))
-                    if not _seg_grazes(stub.pad_pos, _c2, nid):
+                    if not _seg_grazes(stub.pad_pos, _c2, nid, cl):
                         stub.corner_pos, stub.stub_end = _c2, _e2
-                        recovered = True
+                        stub_cl = cl
                         n_ext_short += 1
                         break
-            if not recovered:
-                # The perpendicular escape itself hits a foreign pad (or even
-                # the zero-extension escape violates the edge) - cannot fan out.
-                if stub.pad.net_name and stub.pad.net_name not in qfn_dropped:
-                    qfn_dropped.append(stub.pad.net_name)
-                continue
-        if _fan_grazes(stub.corner_pos, stub.stub_end, nid):
-            if not _seg_grazes(stub.corner_pos, stub.stub_end, nid):
+                if stub_cl is not None:
+                    break
+        if stub_cl is None:
+            # The perpendicular escape itself hits a foreign pad (or even
+            # the zero-extension escape violates the edge) - cannot fan out,
+            # at the run clearance or at any rung escalation allows.
+            if stub.pad.net_name and stub.pad.net_name not in qfn_dropped:
+                qfn_dropped.append(stub.pad.net_name)
+            continue
+        if stub_cl < clearance - 1e-9:
+            _escalated.append((stub, stub_cl))
+        if _fan_grazes(stub.corner_pos, stub.stub_end, nid, stub_cl):
+            if not _seg_grazes(stub.corner_pos, stub.stub_end, nid, stub_cl):
                 n_nb_short += 1
             # Shorten the 45 fan toward the corner until it clears (worst case
             # collapse it entirely - the straight escape is already clear).
@@ -1753,7 +1926,7 @@ def generate_qfn_fanout(footprint: Footprint,
             for i in range(1, 9):
                 t = 1.0 - i / 9.0  # walk inward from current tip toward corner
                 cand = (cx + (ex - cx) * t, cy + (ey - cy) * t)
-                if not _fan_grazes(stub.corner_pos, cand, nid):
+                if not _fan_grazes(stub.corner_pos, cand, nid, stub_cl):
                     new_end = cand
                     break
             # Re-snap the shortened tip ON GRID (#446). calculate_fanout_stub
@@ -1772,8 +1945,9 @@ def generate_qfn_fanout(footprint: Footprint,
             # searched INWARD of the clearing point only (never back out toward
             # the graze). If nothing on-grid clears, keep the unsnapped point --
             # a clear-but-off-grid tip is strictly better than a violation.
-            new_end = _snap_tip_on_grid(stub.corner_pos, new_end, nid,
-                                        grid_step, _fan_grazes)
+            new_end = _snap_tip_on_grid(
+                stub.corner_pos, new_end, nid, grid_step,
+                lambda _p1, _p2, _n, _c=stub_cl: _fan_grazes(_p1, _p2, _n, _c))
             stub.stub_end = new_end
             n_short += 1
         kept_stubs.append(stub)
@@ -1785,6 +1959,7 @@ def generate_qfn_fanout(footprint: Footprint,
         print(f"  Pad-clearance: shortened {n_short} fan(s), "
               f"{n_ext_short} straight escape(s) near the board edge (#513); "
               f"dropped {len(qfn_dropped)} stub(s) grazing a foreign pad (issue #123)")
+    _record_escalations(footprint, pcb_data, _escalated, clearance)
     stubs = kept_stubs
 
     # A stub that REACHES a same-net pad ends there (#1332). Every check above
@@ -1930,9 +2105,12 @@ def main():
     import routing_defaults as defaults
     parser.add_argument('--extension', type=float, default=defaults.QFN_EXTENSION,
                         help='Extension past pad edge before bend (mm)')
-    parser.add_argument('--clearance', type=float, default=defaults.QFN_CLEARANCE,
-                        help='Min clearance to other-net pads (mm); stubs that '
-                             'would graze a foreign pad are shortened or dropped')
+    parser.add_argument('--clearance', type=float, default=None,
+                        help='Min clearance to other-net copper (mm); stubs that '
+                             'would graze it are shortened, or escalated to a lower '
+                             'clearance when --escalation allows (#1328). Default: '
+                             "the board's Default net-class clearance (else "
+                             f'{defaults.QFN_CLEARANCE}), capped by --clearance-ceiling')
     parser.add_argument('--nets', '-n', nargs='*',
                         help='Net patterns to include')
     parser.add_argument('--grid-step', type=float, default=defaults.GRID_STEP,
@@ -1985,6 +2163,14 @@ def main():
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
     from fix_kicad_drc_settings import warn_if_missing_project_floor
     warn_if_missing_project_floor(args.pcb)  # #441: a dropped sibling .kicad_pro strands the DRC floor
+    # #1328: an omitted --clearance is the board's Default net class, as on
+    # route.py -- not QFN_CLEARANCE, which the writeback then stamped on every
+    # class (resolve_qfn_clearance, shared with the GUI QFN panel).
+    from list_nets import board_default_netclass_clearance
+    args.clearance, _clr_lines = resolve_qfn_clearance(
+        args.clearance, board_default_netclass_clearance(args.pcb))
+    for _l in _clr_lines:
+        print(_l)
     # This front registers --clearance-ceiling (add_fab_tier_args does) and used
     # to IGNORE it, so the spelling CLAUDE.md tells a chain to use did nothing.
     __import__('fab_tiers').apply_clearance_ceiling(args, 'qfn_fanout')
@@ -2138,8 +2324,11 @@ def main():
     # The planner uses drc_grazes to retry the fanout with a thinner --width (and,
     # for the underpad method, a smaller via) toward the fab floor until it's clean.
     # Mirrors bga_fanout (#130/#122). Best-effort: a DRC hiccup must never fail the
-    # fanout. drc_grazes is graded at --clearance.
+    # fanout. drc_grazes is graded at the clearance the output project is written
+    # with: the run clearance, or the lowest rung an escalated stub took (#1328).
     import json as _json
+    import clearance_ledger as _ledger
+    eff_clearance = _ledger.effective(args.clearance)
     # A stub-less via-in-pad escape emits a via but no track, so vias count as
     # escapes too -- tracks alone undercounts and grades those pads as failed.
     escaped_net_ids = ({t['net_id'] for t in tracks if t.get('net_id') is not None}
@@ -2158,7 +2347,7 @@ def main():
             import io as _io, contextlib as _cl
             from check_drc import run_drc as _run_drc
             with _cl.redirect_stdout(_io.StringIO()):  # keep JSON_SUMMARY output clean
-                _viols = _run_drc(out_path, clearance=args.clearance,
+                _viols = _run_drc(out_path, clearance=eff_clearance,
                                   quiet=True, max_print=0, check_sizes=False)
             # #962: via-in-paste rows (and their accepted protected/inherited
             # twins) are a fab-protection finding, not a clearance graze; a
@@ -2182,10 +2371,11 @@ def main():
 
     # Establish this fanout's clearance floor in the output .kicad_pro so the next
     # pipeline step and check_drc grade at the clearance the fanout used -- only
-    # lowers, never tightens (issue #160).
-    import clearance_ledger as _cl
+    # lowers, never tightens (issue #160). #1328: an escalated stub lowers it to
+    # the rung that stub cleared at -- what the copper uses, never the fab floor
+    # the ladder was allowed to reach -- and fix_project_for_output's #1160
+    # record discloses a Default class lowered by that descent.
     from fix_kicad_drc_settings import fanout_fix_kwargs
-    eff_clearance = _cl.effective(args.clearance)
     # The one fanout writeback decision (fix_kicad_drc_settings), which the GUI
     # fanout tab applies to the live board. #1195: None when this run drew no
     # copper; the via floors only when it drew a via (stub mode never does, and
@@ -2249,6 +2439,9 @@ def main():
         # Smallest copper clearance any step actually routed at; downstream steps
         # and check_drc grade the board at this floor.
         'min_clearance_used': eff_clearance,
+        # #1328: the stubs escaped below `clearance` (pad, net, the rung each
+        # cleared at); their rows are also in design_rules.
+        'escalated': list(LAST_ESCALATED),
     }
     # #846: what --allow-via-in-pad actually did. Before this, the only
     # machine-readable numbers a fanout run published were escape counts, so

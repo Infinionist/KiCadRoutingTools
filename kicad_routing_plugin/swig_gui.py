@@ -2810,13 +2810,18 @@ class RoutingDialog(wx.Dialog):
             _qo = getattr(_ft, 'qfn_options', None)
             if _qo is not None:
                 for _n, _v in (('qfn_track_width', defaults.QFN_TRACK_WIDTH),
-                               ('qfn_clearance', defaults.QFN_CLEARANCE)):
+                               ('qfn_clearance', defaults.QFN_CLEARANCE),
+                               # #1328: unchecked = the board's Default class,
+                               # qfn_fanout.py's omitted --clearance.
+                               ('qfn_clearance_check', False)):
                     _ctl = getattr(_qo, _n, None)
                     if _ctl is not None:
                         try:
                             _ctl.SetValue(_v)
                         except Exception:
                             pass
+                if getattr(_qo, 'qfn_clearance', None) is not None:
+                    _qo.qfn_clearance.Enable(False)
         except Exception:
             pass
         try:

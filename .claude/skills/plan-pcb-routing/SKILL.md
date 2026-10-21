@@ -648,7 +648,8 @@ Use the printed flags as-is:
   to signal routing with `failed > 0` unexpected — those balls are dropped from the
   output and will fail later as "no rippable blockers".
 - **Also check `drc_grazes` (even when `failed == 0`).** The summary's
-  `drc_grazes` (graded at the fanout `--clearance`) reports sub-clearance grazes the
+  `drc_grazes` (graded at the floor the fanout writes back: its `--clearance`, or
+  for `qfn_fanout` the lowest rung a pad escalated to, #1328) reports sub-clearance grazes the
   escape left in the output: `via_segment` / `pad_via` are the #130 classes (an
   escape via too close to a foreign track or pad), `segment_segment` is the #179
   class (two escape **stubs** grazing — typically the 45° fans of two adjacent pads
@@ -2434,8 +2435,19 @@ fine-pitch edge where the surface fan has no room, add `--escape-method underpad
 `--allow-via-in-pad` so the via can sit on its own pad and stagger inward — see
 "Crowded fine-pitch QFN edge" above.
 
+**Clearance (#1328).** Omitted, `--clearance` is the board's Default net-class
+clearance, as on `route.py`; in a chain pass `--clearance-ceiling <floor>` and it
+caps that, never lowering a class the part does not need lowered. A pad whose
+straight escape cannot clear at it is retried at lower clearances (under the
+default `--escalation fab`; `off` drops it instead) and keeps the first that
+clears: the run prints `Clearance escalation (#1328): N stub(s) ...`, the
+`JSON_SUMMARY` lists them in `escalated` and as `clearance` rows (site
+`qfn escape`) in `design_rules`, and the project floor written back is the
+lowest rung actually used. So a short `failed` list is rarely a reason to pass a
+lower `--clearance` by hand; read `escalated` first.
+
 Like `bga_fanout.py`, `qfn_fanout.py` ends with a `JSON_SUMMARY` carrying
-`drc_grazes` (graded at `--clearance`). **Parse it after the fanout:** if
+`drc_grazes` (graded at the floor it writes back). **Parse it after the fanout:** if
 `drc_grazes.segment_segment > 0` the 45° escape stubs of two adjacent tight-pitch
 pads (often a diff pair) are grazing at the wrist — re-run with a thinner
 `--width` toward the fab floor until it's 0 (issue #179; see the `drc_grazes`

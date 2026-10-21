@@ -78,12 +78,42 @@ counts as neither requested nor failed.
 | `--output`, `-o` | Output PCB file | qfn_fanout_test.kicad_pcb |
 | `--layer`, `-l` | Routing layer for the stubs; any layer but the part's own warns, since the stubs then miss its SMD pads (#96). GUI: the QFN panel's **Escape layer** | the layer the part is mounted on |
 | `--width`, `-w` | Track width (mm) | 0.1 |
+| `--clearance` | Clearance to other-net copper (mm). Omitted, it is the board's **Default net-class** clearance, as on `route.py` (0.1 only when the board declares no Default class); `--clearance-ceiling` caps it. GUI: the QFN panel's **Clearance** box, unchecked = the board's value (#1328) | the board's Default class |
 | `--extension` | Extension past pad edge before bend (mm) | 0.1 |
 | `--nets`, `-n` | Net patterns to include | All nets |
 | `--escape-method` | `stub` (surface 45° fan) or `underpad` (via-drop); with `--nets`, `underpad` also escapes **interior (under-body) pads** (issue #410) | stub |
 | `--via-size` | Underpad escape via outer diameter (mm) | 0.45 |
 | `--via-drill` | Underpad escape via drill diameter (mm) | 0.25 |
 | `--allow-via-in-pad` | Underpad escape: let the via overlap its **own** pad so it can stagger *inward* (via-in-pad) | off |
+
+### Clearance: the board's own, escalating only where a pad needs it (#1328)
+
+An omitted `--clearance` is the board's Default net-class clearance, capped by
+`--clearance-ceiling` -- the reading `route.py` gives its own flags, through one
+resolver (`resolve_qfn_clearance`) that the GUI QFN panel calls too. It used to
+default to 0.1, and since a fanout's writeback clamps every net class to the
+clearance it escaped at, a chain's `--clearance-ceiling 0.15` lowered the
+Default and Power classes 0.15 -> 0.1 and every later step routed the board at
+0.1, while the same part escaped every pad at 0.15.
+
+A surface stub whose straight escape cannot clear at the run clearance used to
+be dropped. When `--escalation` allows a descent (the default, `fab`), it is
+retried down a ladder (`qfn_clearance_ladder`: 0.005 mm steps plus the tier's
+own rungs, to the deepest rung `fab_tiers.escalation_rungs` allows -- the fab
+floor under `fab`, the board's declared minimum under `board`, nothing under
+`off`) and keeps the first clearance it clears at; its 45-degree fan is
+shortened at that same clearance. A `.kicad_dru` rule on the escape layer
+states that layer's clearance, so a ruled layer does not escalate.
+
+Each escalated stub is disclosed the way `route.py` discloses a descent: a
+`clearance` row (site `qfn escape`) in `JSON_SUMMARY.design_rules` and the
+end-of-run `Design rules [...]` line, a fab-tier escalation when the rung is
+below the tier's nominal floor, and `JSON_SUMMARY.escalated` (pad, net, rung).
+The project floor written back is the lowest rung a stub actually cleared at --
+never the fab floor the ladder was allowed to reach -- and a Default class it
+lowers is recorded and announced by the writeback's descent record (#1160), so
+the next step says so. A run in which nothing escalates writes the run
+clearance, as before. `drc_grazes` is graded at that written floor.
 
 ### Under-pad (via-drop) escape — `--escape-method underpad` (issue #164)
 
