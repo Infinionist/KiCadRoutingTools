@@ -523,16 +523,22 @@ _FAST_BOARD_RE = re.compile(r"^s\d+_fast\.kicad_pcb$")    # a --quick board: nev
 
 def _read_score(path):
     """(blocking, vias, copper_mm, segments, floorplan, joins) from a
-    quick_score / board_score JSON, or None. `floorplan` is
-    `blocking_by.floorplan`, the check_floorplan errors already summed into
-    `blocking` (0 when the score graded no floorplan); `joins` is
+    quick_score / board_score JSON, or None. `floorplan` is the placement's
+    own defects already summed into `blocking`: `blocking_by.floorplan` (the
+    check_floorplan errors) plus `blocking_by.assembly` (check_assembly's
+    count), 0 when the score graded neither; `joins` is
     `joins_needed`, the joins the open nets still need (0 at blocking 0, None
     when an older score does not say)."""
     try:
         with open(path, encoding="utf-8") as f:
             doc = json.load(f)
         q = doc.get("quality") or {}
-        fp = (doc.get("blocking_by") or {}).get("floorplan")
+        by = doc.get("blocking_by") or {}
+        # the placement's own defects, as quick_score.judge_key reads them:
+        # floorplan errors plus check_assembly's count (both 0 when ungraded)
+        fp = None
+        if by.get("floorplan") is not None or by.get("assembly") is not None:
+            fp = int(by.get("floorplan") or 0) + int(by.get("assembly") or 0)
         blocking = int(doc["blocking"])
         joins = doc.get("joins_needed")
         return (blocking, int(q["vias"]), float(q["copper_mm"]),

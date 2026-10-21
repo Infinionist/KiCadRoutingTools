@@ -718,7 +718,10 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
    python3 -X utf8 py_router/route.py {in} {out} --nets '*' --json-out {dir}/route.json
    ```
 2. **Fast-route and score the seeds `wk/<run>/judge.json` names** (the
-   `--judge` legal seeds, floorplan-clean first, then lowest `final.cost`):
+   `--judge` legal seeds, buildable and floorplan-clean first, then lowest
+   `final.cost`; place_simple grades each seed with `check_assembly
+   --baseline` against the board it was placed from, and WARNS about a
+   judged seed that is NOT BUILDABLE):
    ```bash
    python3 -X utf8 py_placer/judge_seeds.py wk/<run>/judge.json \
        --chain wk/<run>/judge_chain.txt --intent wk/<run>/intent.json
@@ -737,21 +740,24 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
    the nets without a zone (level 2 skips the plane finalize, which joins a
    poured net's pads; the score lists those apart as `poured`), the
    floorplan's errors as `board_score --intent` grades them
-   (`blocking_by.floorplan`, summed into `blocking`), `joins_needed`, and
+   (`blocking_by.floorplan`, summed into `blocking`), the assembly as
+   `board_score --baseline` grades it against the board the seeds were
+   placed from (`blocking_by.assembly`, summed the same way; judge_seeds
+   reads that board from judge.json's `baseline`), `joins_needed`, and
    `board_score`'s via, copper and segment counts. (`board_score` itself
    would count DRC grazes that level 2 leaves for the full route's cleanup,
    which say nothing about the placement.) It ends by ranking the seeds
    and naming the best. `--jobs N` routes N seeds at once: a judging route
    takes up to about 1.3 GB on a small board and 5 GB on a 350-part one.
    Never ship a `--quick` board.
-3. **Keep the best** by floorplan errors first, then blocking, then
-   `joins_needed`, then vias, copper_mm, segments
-   (`quick_score.judge_key`): every seed whose floorplan
-   grades clean ranks above every seed that does not, since a route cannot
-   clear a floorplan error. Copy its placement (`s<S>.kicad_pcb`, never the
+3. **Keep the best** by the placement's own defects first (floorplan errors
+   plus the assembly count), then blocking, then `joins_needed`, then vias,
+   copper_mm, segments (`quick_score.judge_key`): every seed whose floorplan
+   grades clean and whose assembly is buildable ranks above every seed that
+   is not, since a route can clear neither. Copy its placement (`s<S>.kicad_pcb`, never the
    `--quick` board) to `wk/<run>/final.kicad_pcb` with `copy_board.py`. A
-   kept seed is not finished while its `floorplan` is above 0, whatever its
-   route.
+   kept seed is not finished while its `floorplan` or `assembly` is above 0,
+   whatever its route.
 
 In `place` mode that placement is the result. Run
 `python3 -X utf8 py_tools/route_review.py wk/<run>/s<S>_fast.kicad_pcb --json wk/<run>/review.json`

@@ -38,7 +38,7 @@ this one: `tests/stress/placement_ab/route_placed.py`), it runs the placement
 skill's flow first and films it after: the skill's seeds are placed
 (--scattered seeds started scattered, then --clustered started clustered, then
 the opt-in --anchored started anchored, as place_simple's default seeds), the
---judge legal seeds place_simple names (`judge_order`: floorplan-clean first,
+--judge legal seeds place_simple names (`judge_order`: buildable and floorplan-clean first,
 then the objective's cheapest) are fast-routed (the chain
 with `--quick 2`) and scored by quick_score, the best (`quick_score.judge_key`)
 is routed in full. The movie films that seed's

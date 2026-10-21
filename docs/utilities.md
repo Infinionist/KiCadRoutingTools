@@ -942,9 +942,13 @@ does (check_floorplan's errors, `blocking_by.floorplan`, summed into
 `blocking`): a route cannot clear a floorplan error, so the judge ranks by
 it first (`judge_key`: floorplan errors, then blocking, then `joins_needed`
 -- board_score's own count of the joins the open nets still need, #1340 --
-then vias, copper, segments; #1296). It leaves DRC and assembly out: level 2 skips the
-passes that fix grazes, so DRC on its board measures the polish it skipped,
-not the placement. The JSON has `board_score`'s keys, so the GUI's candidates
+then vias, copper, segments; #1296). With `--baseline BOARD` (the board the
+seed was placed from) it grades the assembly as `board_score --baseline`
+does (check_assembly's count, `blocking_by.assembly`, summed into
+`blocking`), and `judge_key` ranks it with the floorplan errors: no route
+makes a NOT BUILDABLE placement buildable. It leaves DRC out: level 2 skips
+the passes that fix grazes, so DRC on its board measures the polish it
+skipped, not the placement. The JSON has `board_score`'s keys, so the GUI's candidates
 table reads either, and it lists what it leaves out in `ungraded`, by
 `board_score`'s component names (`components[k].reason` says why): a converge
 ledger compares two rows' graded sets before their `blocking`, so a quick row
@@ -952,7 +956,7 @@ followed by a full one reads as incommensurable, not as a full row that
 graded fewer components (#1323).
 
 ```bash
-python3 -X utf8 py_tools/quick_score.py s0_fast.kicad_pcb --intent intent.json --json s0_fast.score.json
+python3 -X utf8 py_tools/quick_score.py s0_fast.kicad_pcb --intent intent.json --baseline pile.kicad_pcb --json s0_fast.score.json
 ```
 
 Exit 0 when no net blocks, 4 when some do, 2 when check_connected gave no
@@ -993,7 +997,9 @@ python3 -X utf8 py_placer/judge_seeds.py wk/run/judge.json --chain wk/run/judge_
 - Per seed: `s<S>_route/` made afresh with the placement copied in
   (`copy_board`, siblings included), every step's output in
   `s<S>_route/chain.log`, the last board copied to `s<S>_fast.kicad_pcb` and
-  scored by `quick_score.py` (with `--intent`) into `s<S>_fast.score.json`,
+  scored by `quick_score.py` (with `--intent`, and `--baseline` from
+  judge.json's `baseline`, the board the seeds were placed from) into
+  `s<S>_fast.score.json`,
   the names the skill and the GUI's candidates table read. A step's non-zero
   exit is logged and the chain goes on; a step whose `{out}` was not written
   stops that seed.
@@ -1370,7 +1376,7 @@ first runs the flow: places the skill's seeds (`--scattered` and
 `--clustered`, default 6 each, and the opt-in `--anchored`, default 0, as
 place_simple's default seeds; `--jobs` at a
 time), fast-routes the `--judge` (default 6) legal seeds place_simple
-names (floorplan-clean first, then the objective's cheapest; the chain with
+names (buildable and floorplan-clean first, then the objective's cheapest; the chain with
 `--quick 2`, scored by `quick_score.py`), and routes the best
 (`quick_score.judge_key`) in full. The movie films that seed's placement -- the one routed
 in full -- then:

@@ -328,7 +328,7 @@ python3 -X utf8 py_placer/judge_seeds.py wk/tig/judge.json --chain wk/tig/judge_
 Each seed's score is `quick_score`'s (`--intent` passed through): `blocking`
 (with the floorplan's errors in it, `blocking_by.floorplan`), `joins_needed`
 and `quality` (vias, copper_mm, segments). The runner ranks the seeds by
-`quick_score.judge_key` (floorplan errors first, then blocking, then
+`quick_score.judge_key` (floorplan errors plus the assembly count first, then blocking, then
 `joins_needed`, then vias, copper, segments) and names the best; copy its
 placement (`wk/tig/s<S>.kicad_pcb`, never the `--quick` board) to
 `wk/tig/final.kicad_pcb` with `copy_board.py`; in `full` mode the skill then

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score a `route.py --quick 2` board: the seed judge's score.
 
-    quick_score.py FAST.kicad_pcb [--intent INTENT] [--json OUT]
+    quick_score.py FAST.kicad_pcb [--intent INTENT] [--baseline PILE] [--json OUT]
 
 - **blocking** is the board's own connectivity, graded the way `board_score`
   grades a full route (`check_connected`: unrouted nets plus the joins each
@@ -17,19 +17,24 @@
   decap past its pin limit, a claim past its `max_mm`), summed into
   `blocking` as board_score sums it. A route cannot clear such a finding, so
   a seed that carries one cannot be DONE as placed (#1296).
+- **assembly**, with `--baseline` (the board the seed was placed from), is
+  `board_score --baseline`'s own assembly component: check_assembly against
+  that board, its blocking count (1 at least when NOT BUILDABLE) summed into
+  `blocking`. No route makes a NOT BUILDABLE placement buildable either.
 - **quality** (vias, copper_mm, segments) is `board_score`'s own, counted on
   FAST.kicad_pcb.
 
-DRC and assembly are left out: level 2 skips the passes that fix grazes, so
-DRC on its board measures the polish it skipped, not the placement. The keys
+DRC is left out: level 2 skips the passes that fix grazes, so DRC on its
+board measures the polish it skipped, not the placement. The keys
 are `board_score --json`'s (`blocking`, `blocking_by`, `quality`), so a
 seed's `s<S>_fast.score.json` reads the same either way, and what it leaves
 out is listed in `ungraded`, by board_score's own component names (#1323): a
 converge ledger holds quick and full rows side by side, and it compares two
 rows' graded sets before it compares their `blocking`.
 
-Rank seeds by `judge_key`: floorplan errors first (every seed that grades
-clean before any that does not), then blocking, then `joins_needed` (the
+Rank seeds by `judge_key`: the placement's own defects first (floorplan
+errors plus the assembly count; every seed that grades clean before any that
+does not), then blocking, then `joins_needed` (the
 joins the open nets still need, board_score's own, #1340), then vias,
 copper_mm, segments. Never grade a board to ship with it: route that one in
 full and run `board_score`.
@@ -93,9 +98,9 @@ UNGRADED = {
     'undersized': '--quick 2 leaves the copper polish for the full route; '
                   'sizes are graded on the full route',
     'floorplan': 'no --intent given; the floorplan is ungraded',
-    'assembly': 'quick_score grades the route; check_assembly grades the '
-                'placement',
-    'assembly.courtyard_gating': 'quick_score runs no check_assembly',
+    'assembly': 'no --baseline given; the assembly is ungraded',
+    'assembly.courtyard_gating': 'no --baseline given: check_assembly\'s '
+                                 'moved-part courtyard gate is not armed',
     'impedance': 'quick_score grades no impedance',
     'length': 'quick_score grades no length matching',
     'net_widths': 'quick_score grades no per-net widths',
@@ -105,19 +110,22 @@ UNGRADED = {
 }
 
 
-def quick_score(board, intent=None):
+def quick_score(board, intent=None, baseline=None):
     """The score document. With `intent`, the floorplan is graded as
     `board_score --intent` grades it (`score_floorplan`: check_floorplan's
     ERROR findings) and summed into `blocking`; without it, or when
-    check_floorplan could not grade, `floorplan` is listed in `ungraded`."""
+    check_floorplan could not grade, `floorplan` is listed in `ungraded`.
+    With `baseline` (the board the seed was placed from), the assembly is
+    graded as `board_score --baseline` grades it (`score_assembly`) and its
+    count summed into `blocking` the same way."""
     import tempfile
-    from board_score import quality, score_floorplan
+    import board_score
     blk, by, poured, joins = connectivity(board)
     reasons = dict(UNGRADED)
     components = {}
     if intent:
         with tempfile.TemporaryDirectory(prefix='quick_score_') as tmp:
-            fp = score_floorplan(ROOT, board, intent, tmp)
+            fp = board_score.score_floorplan(ROOT, board, intent, tmp)
         if fp.get('ran'):
             reasons.pop('floorplan')
             components['floorplan'] = fp
@@ -126,27 +134,45 @@ def quick_score(board, intent=None):
                 blk += fp['count']
         else:
             reasons['floorplan'] = fp.get('reason') or reasons['floorplan']
+    if baseline:
+        with tempfile.TemporaryDirectory(prefix='quick_score_') as tmp:
+            asm = board_score.score_assembly(ROOT, board, intent, tmp,
+                                             baseline=baseline)
+        if asm.get('ran'):
+            reasons.pop('assembly')
+            reasons.pop('assembly.courtyard_gating')
+            components['assembly'] = asm
+            by['assembly'] = asm['count']
+            if blk is not None:
+                blk += asm['count']
+        else:
+            reasons['assembly'] = asm.get('reason') or reasons['assembly']
     ungraded = sorted(reasons)
     components.update({k: {'ran': False, 'reason': reasons[k]} for k in ungraded})
     return {'blocking': blk, 'blocking_by': by, 'joins_needed': joins, 'poured': poured,
-            'quality': quality(board), 'ungraded': ungraded, 'components': components,
+            'quality': board_score.quality(board), 'ungraded': ungraded,
+            'components': components,
             'score': 'quick_score: connectivity of the nets without a zone (route.py --quick 2)'
-                     + (', and the floorplan' if 'floorplan' not in reasons else '')}
+                     + (', and the floorplan' if 'floorplan' not in reasons else '')
+                     + (', and the assembly' if 'assembly' not in reasons else '')}
 
 
 def judge_key(score):
     """How the seed judge ranks scored seeds, best first (sort ascending).
 
-    Floorplan errors come first, ahead of the route: a seed check_floorplan
-    grades with an ERROR (a decap past its pin limit) cannot be DONE as
-    placed whatever its route does, so every seed that grades clean ranks
-    above every seed that does not (#1296). Then `blocking`, then
+    The placement's own defects come first, ahead of the route: a seed
+    check_floorplan grades with an ERROR (a decap past its pin limit), or
+    check_assembly grades NOT BUILDABLE, cannot be DONE as placed whatever
+    its route does, so every seed that grades clean ranks above every seed
+    that does not (#1296). The floorplan errors and the assembly count are
+    summed, as board_score sums them into `blocking`. Then `blocking`, then
     `joins_needed` (#1340): `blocking` counts an unrouted net as 1 whatever
     its size, so between equal blockings a board missing a 17-pad rail (16
     joins) must lose to one with a single open pad (1 join) -- by vias it
     won, its missing rail reading as fewer vias. Only then vias, copper_mm,
-    segments. A floorplan nobody graded (no --intent) counts as 0, so a run
-    scored without an intent ranks as it did before; `joins_needed` absent
+    segments. A floorplan or assembly nobody graded (no --intent, no
+    --baseline) counts as 0, so a run scored without them ranks as it did
+    before; `joins_needed` absent
     (a score written before it existed) is 0 at blocking 0 and last
     otherwise; any other value that is not a number sorts last."""
     def num(v):
@@ -154,10 +180,10 @@ def judge_key(score):
                 else float('inf'))
     by = score.get('blocking_by') if isinstance(score.get('blocking_by'), dict) else {}
     q = score.get('quality') if isinstance(score.get('quality'), dict) else {}
-    fp = by.get('floorplan')
+    fp, asm = by.get('floorplan'), by.get('assembly')
     blk = num(score.get('blocking'))
     joins = score.get('joins_needed')
-    return (0 if fp is None else num(fp), blk,
+    return ((0 if fp is None else num(fp)) + (0 if asm is None else num(asm)), blk,
             0 if joins is None and blk == 0 else num(joins),
             num(q.get('vias')), num(q.get('copper_mm')), num(q.get('segments')))
 
@@ -168,9 +194,13 @@ def main(argv=None):
     ap.add_argument('--intent',
                     help="the run's intent: grade the floorplan as `board_score --intent` "
                          "does (check_floorplan's errors, summed into blocking)")
+    ap.add_argument('--baseline',
+                    help="the board the seed was placed from (the pile): grade the assembly "
+                         "as `board_score --baseline` does (check_assembly's count, summed "
+                         "into blocking)")
     ap.add_argument('--json', help='write the score here')
     a = ap.parse_args(argv)
-    sc = quick_score(a.board, intent=a.intent)
+    sc = quick_score(a.board, intent=a.intent, baseline=a.baseline)
     if a.json:
         with open(a.json, 'w', encoding='utf-8') as fh:
             json.dump(sc, fh, indent=1)
@@ -180,11 +210,17 @@ def main(argv=None):
     print(f"blocking={sc['blocking']} joins_needed={sc['joins_needed']} vias={q.get('vias')} "
           f"copper_mm={q.get('copper_mm')} segments={q.get('segments')} "
           f"(poured, not counted: {p.get('broken')} joins)"
-          + (f" floorplan={fp}" if fp is not None else ''))
+          + (f" floorplan={fp}" if fp is not None else '')
+          + (f" assembly={sc['blocking_by']['assembly']}"
+             if sc['blocking_by'].get('assembly') is not None else ''))
     if fp:
         rules = sorted(set(sc['components']['floorplan'].get('violations') or ()))
         print(f"FLOORPLAN: {fp} error(s) ({', '.join(map(str, rules))}): a route cannot "
               f"clear them, so this placement cannot be DONE as it stands")
+    if sc['blocking_by'].get('assembly'):
+        asm = sc['components']['assembly']
+        print(f"ASSEMBLY: NOT BUILDABLE ({asm.get('count_basis')}): a route cannot "
+              f"change that, so this placement cannot be DONE as it stands")
     print(f"UNGRADED (the full route's board_score grades these): {', '.join(sc['ungraded'])}")
     return 2 if sc['blocking'] is None else (4 if sc['blocking'] else 0)
 

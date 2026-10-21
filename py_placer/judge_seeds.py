@@ -47,8 +47,12 @@ read. A step's non-zero exit is logged and the chain goes on (route.py exits
 non-zero when nets fail, and the fast route still judges); a step whose
 `{out}` was not written stops that seed.
 
+The assembly is graded too, against the board the seeds were placed from
+(judge.json's `baseline`, which place_simple writes), as `--baseline`.
+
 At the end the scored seeds are ranked by `quick_score.judge_key` (floorplan
-errors, blocking, joins_needed, then vias, copper_mm, segments) and the best
+errors plus the assembly count, blocking, joins_needed, then vias, copper_mm,
+segments) and the best
 is named; the kept board is the skill's to copy (its placement, never the
 `--quick` board). `JSON_SUMMARY:` carries every seed's score and the ranking.
 
@@ -151,7 +155,7 @@ def step_argv(line, subst):
     return argv, added
 
 
-def judge_seed(run, s, steps, intent, lock):
+def judge_seed(run, s, steps, intent, lock, baseline=None):
     """Route seed `s` by the chain and score it. -> its result dict."""
     from copy_board import copy_board
     t0 = time.time()
@@ -190,7 +194,8 @@ def judge_seed(run, s, steps, intent, lock):
         if os.path.exists(score):
             os.remove(score)
         qs = [sys.executable, '-X', 'utf8', os.path.join(ROOT, 'py_tools', 'quick_score.py'),
-              fast, '--json', score] + (['--intent', intent] if intent else [])
+              fast, '--json', score] + (['--intent', intent] if intent else []) \
+            + (['--baseline', baseline] if baseline else [])
         with open(log_path, 'a', encoding='utf-8') as log:
             log.write(f"$ {' '.join(shlex.quote(a) for a in qs)}\n")
             log.flush()
@@ -212,8 +217,10 @@ def _line(res):
     sc = res['score']
     q = sc.get('quality') or {}
     fp = (sc.get('blocking_by') or {}).get('floorplan')
+    asm = (sc.get('blocking_by') or {}).get('assembly')
     return (f"blocking {sc.get('blocking')} joins_needed {sc.get('joins_needed')} "
             + (f"floorplan {fp} " if fp is not None else '')
+            + (f"assembly {asm} " if asm is not None else '')
             + f"vias {q.get('vias')} copper_mm {q.get('copper_mm')} segments {q.get('segments')}")
 
 
@@ -279,15 +286,25 @@ def main(argv=None):
           f"{max(1, a.jobs)} at a time")
     if not a.intent:
         print('  NOTE: no --intent: quick_score leaves the floorplan ungraded')
+    # the board the seeds were placed from, which place_simple records: the
+    # assembly is graded against it, as board_score --baseline grades it
+    baseline = doc.get('baseline') if isinstance(doc, dict) else None
+    if baseline and not os.path.isfile(baseline):
+        print(f'  NOTE: judge.json names baseline {baseline}, which is not a file: '
+              f'quick_score leaves the assembly ungraded')
+        baseline = None
+    elif not baseline:
+        print('  NOTE: judge.json names no baseline: quick_score leaves the assembly ungraded')
     lock = threading.Lock()
     with ThreadPoolExecutor(max_workers=max(1, a.jobs)) as pool:
-        results = list(pool.map(lambda s: judge_seed(run, s, steps, a.intent, lock), named))
+        results = list(pool.map(lambda s: judge_seed(run, s, steps, a.intent, lock, baseline),
+                                named))
     from quick_score import judge_key
     scored = sorted((r for r in results if 'score' in r), key=lambda r: judge_key(r['score']))
     failed = [r for r in results if 'failed' in r]
     if scored:
-        print('judge_seeds: ranked by quick_score.judge_key (floorplan, blocking, '
-              'joins_needed, vias, copper_mm, segments):')
+        print('judge_seeds: ranked by quick_score.judge_key (floorplan errors + assembly, '
+              'blocking, joins_needed, vias, copper_mm, segments):')
         for r in scored:
             print(f"  seed {r['seed']}: {_line(r)}")
         print(f"judge_seeds: best seed {scored[0]['seed']}: keep its placement "

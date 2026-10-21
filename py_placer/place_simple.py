@@ -11,7 +11,8 @@ started scattered, then 6 with each group gathered (`--scattered`,
 `--clustered`, and the opt-in `--anchored`), one process each, and names the
 `--judge` (6) legal seeds for a judging route, printed and written to
 judge.json beside the boards: those `check_floorplan --intent` grades
-without an error first, then the fewest errors, each lot by lowest cost.
+without an error and `check_assembly --baseline` grades buildable first,
+then the fewest such defects, each lot by lowest cost.
 `--seeds LIST` places the seeds it lists instead, and names the judged ones
 the same way.
 
@@ -301,6 +302,37 @@ def _floorplan(board, intent):
     return {'errors': fp['count'], 'rules': sorted({str(r) for r in fp.get('violations') or ()})}
 
 
+def _assembly(board, baseline, intent):
+    """The placed board's assembly verdict as the judge and `board_score
+    --baseline` grade it (`board_score.score_assembly`: check_assembly
+    against the board this seed was placed from, so a courtyard pair a moved
+    part entered gates): `{'blocking': N, 'buildable': bool, 'fired': [...]}`
+    -- `blocking` is board_score's assembly count, 0 when buildable -- or
+    `{'blocking': None, 'reason': ...}` when check_assembly could not grade
+    the board. No route can make a NOT BUILDABLE placement buildable, so a
+    seed that is one cannot be DONE as placed."""
+    from board_score import score_assembly
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with tempfile.TemporaryDirectory(prefix='place_simple_asm_') as tmp:
+        asm = score_assembly(root, board, intent, tmp, baseline=baseline)
+    if not asm.get('ran'):
+        return {'blocking': None, 'reason': asm.get('reason')}
+    fired = sorted(k for k, v in (asm.get('conjuncts') or {}).items()
+                   if isinstance(v, int) and not isinstance(v, bool) and v)
+    return {'blocking': asm['count'], 'buildable': asm['buildable'], 'fired': fired}
+
+
+def _asm_text(asm):
+    """'NOT BUILDABLE (courtyard_blocking)', '' when buildable or absent."""
+    if not asm:
+        return ''
+    if asm.get('blocking') is None:
+        return f"assembly not graded ({asm.get('reason')})"
+    if asm.get('buildable'):
+        return ''
+    return f"NOT BUILDABLE ({', '.join(asm.get('fired') or ()) or 'check_assembly'})"
+
+
 def _fp_text(fp):
     """'3 floorplan error(s) (decap_pin_distance)', '' when clean or absent."""
     e = (fp or {}).get('errors')
@@ -389,7 +421,8 @@ def _many_seeds(ap, a):
             fin = summary['final']
             ill = summary.get('illegal') or []
             start = summary.get('start')
-            fpt = _fp_text(summary.get('floorplan'))
+            fpt = ', '.join(t for t in (_fp_text(summary.get('floorplan')),
+                                        _asm_text(summary.get('assembly'))) if t)
             print(f"  seed {s}{f' ({start})' if start in ('clustered', 'anchored') else ''}: "
                   f"cost {fin['cost']:.1f}, {summary['moves']} moves in "
                   f"{summary['seconds']['anneal']} s"
@@ -404,7 +437,9 @@ def _many_seeds(ap, a):
 
 def judge_order(reports):
     """`{seed: report}` (each seed's summary or `--json` report) -> its legal
-    seeds in judging order: floorplan errors first, then `final.cost` (#1296).
+    seeds in judging order: the placement's own defects first -- floorplan
+    errors plus check_assembly's blocking count, summed as board_score sums
+    them -- then `final.cost` (#1296).
 
     A seed check_floorplan grades with an ERROR cannot be DONE as placed, and
     the limit it breaks often lowers its cost (it stopped paying to hold the
@@ -413,10 +448,20 @@ def judge_order(reports):
     judge kept s8. Such a seed is ranked below every seed that grades clean,
     not dropped: when none grades clean, the fewest errors are still judged
     rather than nothing. A seed whose floorplan was not graded ranks after
-    every graded one. A seed that left a part illegal is never judged."""
+    every graded one. A seed that left a part illegal is never judged.
+
+    A NOT BUILDABLE seed is the same kind of defect: no route makes it
+    buildable, and the anneal reports `illegal []` while check_assembly gates
+    a courtyard pair it does not model (the mixer's seeds, every one NOT
+    BUILDABLE on its potentiometers' bodies). Its assembly count joins the
+    floorplan errors. A report written before the assembly grade existed
+    counts 0; one check_assembly could not grade ranks with the ungraded."""
     def rank(s):
         e = (reports[s].get('floorplan') or {}).get('errors')
-        return (e is None, e or 0, reports[s]['final']['cost'], s)
+        asm = reports[s].get('assembly')
+        b = 0 if asm is None else asm.get('blocking')
+        return (e is None or b is None, (e or 0) + (b or 0),
+                reports[s]['final']['cost'], s)
     return sorted((s for s, r in reports.items() if not r.get('illegal')), key=rank)
 
 
@@ -425,7 +470,9 @@ def _name_judged(a, seeds, summaries):
     (`judge_order`), printed and written to `judge.json` beside the seeds'
     boards (`judge` in judging order; `scattered`, `clustered`, `anchored` and
     `illegal` list the seeds by start and verdict, `floorplan` each seed's
-    floorplan errors)."""
+    floorplan errors, `assembly` its check_assembly blocking count, and
+    `baseline` the board the seeds were placed from, which judge_seeds hands
+    quick_score so the fast route's score grades assembly the same way)."""
     judge = judge_order({s: summaries[s] for s in seeds if s in summaries})[:a.judge]
     doc = {'judge': judge,
            'scattered': [s for s in seeds if summaries.get(s, {}).get('start')
@@ -440,13 +487,27 @@ def _name_judged(a, seeds, summaries):
            # each placed seed's check_floorplan --intent errors (None: not
            # graded), keyed by seed as JSON keys must be
            'floorplan': {str(s): (summaries[s].get('floorplan') or {}).get('errors')
-                         for s in seeds if s in summaries}}
+                         for s in seeds if s in summaries},
+           # each placed seed's check_assembly blocking count (0 buildable,
+           # None not graded) against the board it was placed from
+           'assembly': {str(s): (summaries[s].get('assembly') or {}).get('blocking')
+                        for s in seeds if s in summaries},
+           'baseline': (os.path.abspath(a.board) if getattr(a, 'board', None)
+                        else None)}
     path = os.path.join(os.path.dirname(a.out.format(seed=seeds[0])), 'judge.json')
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(doc, f, indent=1)
     print(f"place_simple: judge seeds {', '.join(map(str, judge)) or 'none'} "
-          f"(the {a.judge} legal seeds of lowest cost, floorplan-clean first) -> {path}")
+          f"(the {a.judge} legal seeds of lowest cost, buildable and floorplan-clean "
+          f"first) -> {path}")
     for s in judge:
+        asm = summaries[s].get('assembly') or {}
+        if asm.get('blocking'):
+            print(f"  WARNING: seed {s} is judged {_asm_text(asm)}: it cannot be DONE as "
+                  f"placed (fewer than {a.judge} legal seeds are buildable and clean)")
+        elif asm and asm.get('blocking') is None:
+            print(f"  WARNING: seed {s} is judged with its {_asm_text(asm)}: grade it with "
+                  f"check_assembly --baseline before keeping it")
         fp = summaries[s].get('floorplan') or {}
         if fp.get('errors'):
             print(f"  WARNING: seed {s} is judged with {_fp_text(fp)}: it cannot be DONE "
@@ -554,7 +615,8 @@ def main(argv=None):
                     help=f'in a run of several seeds, how many legal seeds to name for a '
                          f'judging route, printed and written to judge.json beside the '
                          f'boards: those check_floorplan --intent grades without an error '
-                         f'first, then by lowest cost (default {JUDGED_SEEDS})')
+                         f'and check_assembly grades buildable first, then by lowest cost '
+                         f'(default {JUDGED_SEEDS})')
     ap.add_argument('--jobs', type=int, default=0,
                     help='with several seeds, how many run at once (default: one per '
                          'seed, at most 4)')
@@ -785,6 +847,9 @@ def main(argv=None):
     # report only, the exit code and the placement are untouched
     fp = _floorplan(a.out, a.intent)
     print(f"  floorplan: {_fp_text(fp) or 'no error'} (check_floorplan --intent)")
+    # and its assembly, against the board it was placed from: report only
+    asm = _assembly(a.out, a.board, a.intent)
+    print(f"  assembly: {_asm_text(asm) or 'buildable'} (check_assembly --baseline)")
     final.pop('per_group', None)
     final.pop('per_hint', None)
     report = {'final': final, 'moves': res['moves'], 'seed': a.seed,
@@ -792,7 +857,7 @@ def main(argv=None):
                         else 'scattered'), 'runs': k + 1,
               'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
-              'illegal': illegal, 'refused': refused, 'floorplan': fp,
+              'illegal': illegal, 'refused': refused, 'floorplan': fp, 'assembly': asm,
               'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
@@ -800,7 +865,7 @@ def main(argv=None):
         json.dump(report, open(a.json, 'w', encoding='utf-8'), indent=1)
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
-                                           'refused', 'floorplan', 'seconds')}))
+                                           'refused', 'floorplan', 'assembly', 'seconds')}))
     return 4 if illegal or refused else 0
 
 
