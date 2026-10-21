@@ -545,7 +545,12 @@ def legality_findings(model) -> Dict[str, object]:
             _g = grade_body_overlap(pcb, _clr,
                                     intent_waivers=getattr(
                                         model, 'intent_waivers', ()),
-                                    pcb_file=getattr(model, 'pcb_file', None))
+                                    pcb_file=getattr(model, 'pcb_file', None),
+                                    # #1298: the courtyard pairs a declared
+                                    # pose accepts, as check_assembly reads
+                                    # them
+                                    courtyard_waivers=getattr(
+                                        model, 'courtyard_waivers', ()))
             # UNWAIVED courtyard pairs only -- the advisory population. It is
             # NOT a superset of the blocking list below (a waiver-voided pair
             # blocks while staying labelled waived), which is why this key is
@@ -2241,6 +2246,7 @@ def main(argv=None):
             from placement.legality import format_waiver_warnings
             _it = load_intent(args.intent)
             model.intent_waivers = _it.waiver_pairs()
+            model.courtyard_waivers = _it.fixed_pose_courtyard_waivers()
             # #946 item 5 / #1017. The intent is a fully GEOMETRIC document --
             # blocks[].zone, keepouts[].rect/circle,
             # edge_connectors[].along_edge_band -- and this reader used it for

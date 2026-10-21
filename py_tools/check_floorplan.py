@@ -804,6 +804,50 @@ def main(argv=None):
                 doc['fixed_poses'] = (list(doc.get('fixed_poses') or ())
                                       + _fixed)
                 doc['min_reader'] = max(int(doc.get('min_reader') or 0), 7)
+        # #1298: declared poses that overlap EACH OTHER at those poses (a
+        # human layout's FID inside a connector's courtyard). Compiled
+        # silently, they made every placement honouring the intent grade NOT
+        # BUILDABLE on a pair no move can clear. A courtyard overlap is
+        # written as an explicit waiver the author can delete; a pad or hole
+        # conflict, which no waiver covers, is said and left alone.
+        _decl_cy, _decl_hard = [], []
+        if len(doc.get('fixed_poses') or ()) >= 2:
+            try:
+                from list_nets import board_floor_knobs
+                from placement.floorplan import (accept_declared_overlaps,
+                                                 declared_pose_overlaps)
+                _dc, _de, _ = board_floor_knobs(args.board, args.clearance,
+                                                args.board_edge_clearance)
+                _already = ([tuple(w.get('pair') or ()) for w in
+                             doc.get('overlap_waivers') or ()]
+                            + [(str(f['ref']), str(o))
+                               for f in doc['fixed_poses']
+                               for o in f.get('accept_courtyard_overlap')
+                               or ()])
+                _decl_cy, _decl_hard = declared_pose_overlaps(
+                    doc['fixed_poses'], pcb, args.board, clearance=_dc,
+                    board_edge_clearance=_de, waived=_already)
+                _wrote = accept_declared_overlaps(doc, _decl_cy)
+                _ctx['declared_pose_overlaps'] = {
+                    'accepted': [list(p) for p in _wrote],
+                    'hard': [c['pair'] for c in _decl_hard]}
+            except Exception as exc:                         # noqa: BLE001
+                print(f"  WARNING: declared poses not checked against each "
+                      f"other: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if _decl_cy:
+            print(f"  WARNING: {len(_decl_cy)} pair(s) of declared poses "
+                  f"overlap each other by courtyard at those poses: "
+                  + '; '.join(f"{c['pair'][0]}<->{c['pair'][1]} "
+                              f"({c['reason']})" for c in _decl_cy)
+                  + " -- written as fixed_poses[].accept_courtyard_overlap "
+                    "(courtyard only: check_assembly and the plan check waive "
+                    "exactly these pairs). Delete a ref from that list to "
+                    "refuse its overlap instead.", file=sys.stderr)
+        for c in _decl_hard:
+            print(f"  WARNING: declared poses {c['pair'][0]} and "
+                  f"{c['pair'][1]} also conflict past their courtyards: "
+                  f"{c['reason']} -- no waiver covers pads or holes, and "
+                  f"stage 0 refuses the pair; move one pose", file=sys.stderr)
         if not args.quiet:
             for line in _rc.format_rows(_rows):
                 print(line)

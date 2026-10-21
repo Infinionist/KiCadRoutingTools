@@ -8,8 +8,10 @@ pad/hole/oob legality echo -- both conjuncts in one JSON.
 
 Needs NO intent to be meaningful (unlike check_floorplan's legality rule,
 which skips without a budget): a bare board grades honestly. --intent adds
-authored overlap waivers, and a declared `mating:<ref>` keep-out, which
-replaces the plug region derived from the board (#1098).
+authored overlap waivers, the courtyard pairs a declared pose accepts
+(`fixed_poses[].accept_courtyard_overlap`, courtyard only, #1298), and a
+declared `mating:<ref>` keep-out, which replaces the plug region derived from
+the board (#1098).
 
 --baseline <board> computes the loop currency: advisory pairs NEW relative
 to the baseline board (dense real boards ship hundreds of by-design
@@ -64,6 +66,8 @@ def main():
     p.add_argument("board")
     p.add_argument("--intent", default=None, metavar="JSON",
                    help="Floorplan intent; its overlap_waivers are read, "
+                        "its fixed_poses[].accept_courtyard_overlap waive "
+                        "those COURTYARD pairs only (#1298), "
                         "a keep-out it names `mating:<ref>` replaces the "
                         "plug mating region derived from the board (#1098), "
                         "and a declared assembly.body_edge_mm makes the "
@@ -172,6 +176,11 @@ def main():
               f"intersections rather than clearance grazes.")
 
     waivers = ()
+    # #1298: the pairs a declared pose accepts a COURTYARD overlap with
+    # (`fixed_poses[].accept_courtyard_overlap`). Courtyard-only: they reach
+    # the courtyard channel through `grade_body_overlap(courtyard_waivers=)`
+    # and never the containment gate, which `waivers` above also reach.
+    courtyard_waivers = ()
     declared_keepouts = ()
     # #1255: the body-to-edge band the intent declares (None = nothing
     # declared, and the census reports against the derived default without
@@ -183,6 +192,7 @@ def main():
             from placement.floorplan import load_intent
             _intent = load_intent(args.intent)
             waivers = _intent.waiver_pairs()
+            courtyard_waivers = _intent.fixed_pose_courtyard_waivers()
             body_edge_mm = _intent.body_edge_mm()
             edge_claim_refs = _intent.edge_claim_refs()
             # #1098: the intent's keep-outs, so a declared `mating:<ref>`
@@ -201,7 +211,8 @@ def main():
     _cy_sev_arg = None if args.ignore_project_severity else 'auto'
     g = grade_body_overlap(pcb, clearance, intent_waivers=waivers,
                            pcb_file=args.board,
-                           courtyard_severity=_cy_sev_arg)
+                           courtyard_severity=_cy_sev_arg,
+                           courtyard_waivers=courtyard_waivers)
     leg = grade_pad_legality(pcb, clearance, worst_n=0, pcb_file=args.board,
                              declared_keepouts=declared_keepouts)
     # #697: name any pair graded ABOVE `clearance` and what raised it, or the
@@ -641,6 +652,23 @@ def main():
               f"KiCad's own DRC reports none of them. Fab containment, pad "
               f"and locked-contact channels are graded as usual. "
               f"--ignore-project-severity grades them at error.")
+    # #1298: the courtyard pairs a DECLARED pose accepted by name -- waived,
+    # and said so, never silently. A pair can only get here from the intent
+    # (`accept_courtyard_overlap`), which check_floorplan --emit-intent
+    # writes, with a warning, for declared poses that overlap each other.
+    fixed_waived = [q for q in g['pairs']
+                    if q.waiver == legality.FIXED_POSE_WAIVER]
+    if fixed_waived:
+        print(f"  COURTYARD ACCEPTED BY A DECLARED POSE ({len(fixed_waived)}): "
+              f"waived, named in the intent's "
+              f"fixed_poses[].accept_courtyard_overlap -- courtyard only; a "
+              f"drawn-body containment, pads and holes keep their gates")
+        for q in fixed_waived:
+            _what = (f"pin(s) {', '.join(q.pins)} under its courtyard"
+                     if q.kind == 'pin_in_courtyard'
+                     else f"depth {q.depth_mm}mm")
+            print(f"    {q.a} <-> {q.b}  {q.kind}  {q.area_mm2}mm2  {_what}  "
+                  f"side {q.side}")
     courtyard_gating = []
     if g['courtyard_blocking'] and moved_refs is not None:
         courtyard_gating = legality.courtyard_gating(
@@ -999,6 +1027,13 @@ def main():
                 1 for q in g['advisory_pairs'] if q.kind == 'courtyard'
                 and q not in g['courtyard_blocking_pairs']),
             'courtyard_synthetic_refs': g['courtyard_synthetic_refs'],
+            # #1298: courtyard / pin pairs waived because a declared pose
+            # accepts them by name (`fixed_poses[].accept_courtyard_overlap`),
+            # and the accepted pairs that named nothing or matched nothing.
+            'courtyard_fixed_pose_waived': [q._asdict() for q in fixed_waived],
+            'courtyard_waivers_unresolved':
+                g.get('courtyard_waivers_unresolved') or [],
+            'courtyard_waivers_unused': g.get('courtyard_waivers_unused') or [],
             # #1250: test points whose pad copper lies under another part's
             # drawn body, every one (`testpoint_covered_pairs`), and the
             # subset that GATES -- a member moved vs --baseline. Like

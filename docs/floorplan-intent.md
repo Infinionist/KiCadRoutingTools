@@ -480,16 +480,44 @@ refused), must not name the entry's own ref, and must be on the board (else the
 pose is refused, and the grade raises `fixed_pose_unresolved`). The measured
 overlap is disclosed in `fixed_seated[ref].courtyard_waived`, in a stage-0 note,
 and in the grade as `fixed_pose_overlap_waived` (**warn**; a waiver that
-measures no overlap says so too). The waiver is read by stage 0 only
-(`Intent.courtyard_waiver_pairs`): it is NOT an `overlap_waivers[]` pair, whose
-consumers also exempt the drawn-body containment gate, so `check_assembly` and
-`render_placement` still judge the pair's bodies. Stage 0 does honour an
+measures no overlap says so too). Stage 0 and the plan check read it through
+`Intent.courtyard_waiver_pairs`; since #1298 `check_assembly --intent` and
+`render_placement --intent` read it too (`Intent.fixed_pose_courtyard_waivers`,
+handed to `grade_body_overlap(courtyard_waivers=...)`), COURTYARD ONLY: the
+pair's courtyard overlap, and a frame pin under the courtyard, are waived and
+listed as waived -- label `fixed_pose_accepted`, the section `COURTYARD
+ACCEPTED BY A DECLARED POSE`, JSON `courtyard_fixed_pose_waived` -- whatever
+the parts' class or KiCad lock, like an `overlap_waivers[]` pair. It is NOT
+one: those also exempt the drawn-body containment gate, and this does not, so
+one part sitting inside the other's drawn body still gates, as do pads and
+holes. A named ref the board lacks is a WARNING there, and a pair whose
+courtyards do not overlap a note (`courtyard_waivers_unresolved` /
+`_unused`). Stage 0 does honour an
 `overlap_waivers[]` pair's courtyard the same way. Nor does it spend the
 overlap: the pair's area still counts in `legality.overlap_area` and in
 `plan_check`'s `plan_fixed_overlap` (a warn) and its budget, since the board
 carries exactly the finding KiCad's DRC reports -- declare the budget to fit
 it. A pose also overlapping a part the waiver does not name (U30 and
 TP2, once TP2 is placed or declared) is still refused.
+
+**Declared poses that overlap each other (#1298).** A human layout's poses,
+compiled from `mechanical.json` or the brief, can overlap each other -- on
+glasgow_revC J5's courtyard overlaps MK2's by 4.07 mm2 and each fiducial sits
+in a mounting hole's; on CM5_MINIMA_3 the two module halves overlap by
+14.58 mm2 -- and compiled silently they made every placement that honours the
+intent NOT BUILDABLE on a pair no move can clear. `check_floorplan
+--emit-intent` therefore measures the emitted `fixed_poses[]` against each
+other with the plan check's own predicate (`floorplan.declared_pose_overlaps`,
+stage 0's `_fixed_pose_check`) and, for every pair whose COURTYARDS overlap
+there, writes the other ref into one entry's `accept_courtyard_overlap`, with a
+`note` saying who wrote it and why, and prints a WARNING naming each pair. The
+waiver is explicit, in the file, where the author can delete a ref to refuse
+the overlap instead; check_assembly never infers one. A pair that also
+conflicts by pad clearance or by holes (glasgow's fiducials against their
+mounting holes' copper ring, CM5's module halves' shared holes) is named in a
+second WARNING: no waiver covers pads or holes, so stage 0 and the plan check
+still refuse it until a pose moves. Both lists are in the emitted intent's
+`context.declared_pose_overlaps` (`accepted`, `hard`).
 
 **A shared ORIGIN is a stack only when something physical is shared
 (#1204).** check_assembly's COINCIDENT ORIGINS conjunct (run 19: three parts
