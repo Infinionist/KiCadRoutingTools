@@ -122,9 +122,13 @@ it was, how to tell, and the board.
   tact switch (Omron B3U-1000P) can sit anywhere; a side-actuated one (B3U-3000P)
   belongs at the edge. Check the datasheet before you give a button an edge.
 - **Mounting holes, fiducials and logos** are in no functional group. Holes and
-  fiducials are mechanical: place and lock them first (an unlocked part with a
-  copper pad must be in a group, or `check_groups` reports an ERROR). A pad-less
-  logo is never placed.
+  fiducials are mechanical: declare their poses in the intent's
+  `fixed_poses[]` (from `mechanical.json` or the brief), which seats and holds
+  them with no lock -- and leave them unlocked, since a KiCad lock voids the
+  marker waiver on their courtyard pairs (SKILL.md §3.1). Place and lock
+  first only a hole or fiducial no declaration names: an unlocked part with a
+  copper pad must be in a group or seated by `fixed_poses[]`, or
+  `check_groups --intent` reports an ERROR. A pad-less logo is never placed.
 - **A wireless module** (an ESP32 module, a Pico) is the core. Its antenna end needs
   its keep-out at the edge.
 

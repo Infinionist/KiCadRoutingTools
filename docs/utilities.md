@@ -639,7 +639,13 @@ such pairs by design. Always gating: pad copper off the outline, a pad
 intersection between parts, copper landing on a KiCad-locked part, a stack of
 parts at one origin, a containment, and (when `--intent` declares
 `assembly.body_edge_mm`) a body inside the body-to-edge band. `--intent` also
-reads `overlap_waivers` and a `mating:<ref>` keep-out. Courtyards are graded
+reads `overlap_waivers` and a `mating:<ref>` keep-out, and each
+`fixed_poses[].accept_courtyard_overlap` pair (#1298): that pair's courtyard
+overlap is waived whatever the parts' lock and listed under `COURTYARD
+ACCEPTED BY A DECLARED POSE` (JSON `courtyard_fixed_pose_waived`), while a
+drawn-body containment, pads and holes keep their gates. `check_floorplan
+--emit-intent` writes those pairs, with a WARNING, for declared poses that
+overlap each other. Courtyards are graded
 at the project's own `courtyards_overlap` severity unless
 `--ignore-project-severity`.
 

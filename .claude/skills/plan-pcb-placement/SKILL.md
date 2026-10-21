@@ -118,6 +118,17 @@ Take the pose from the design brief or `mechanical.json` when the board has
 one, from the user when they state it, and from the input board only when it
 is a believable layout (not a pile). A pose the intent declares in
 `fixed_poses[]` needs no lock: `place_simple` seats it there and holds it.
+Leave declared mounting holes and fiducials unlocked too: a KiCad lock voids
+the marker waiver on their courtyard pairs, so two locked markers that
+overlap gate `check_assembly`. Declared poses that overlap each other by
+courtyard (a fiducial in a mounting hole's courtyard on the human board) are
+written by `--emit-intent` as `fixed_poses[].accept_courtyard_overlap`, with
+a WARNING naming each pair; `check_assembly` and the plan check waive exactly
+those pairs, courtyard only, whatever the lock. A pad or hole conflict
+between two declared poses is named in a WARNING of its own: no waiver
+covers it, so move one pose. Any other deliberate overlap is accepted by
+naming the pair in the intent's `overlap_waivers[]` (with a `reason`), which
+excuses its drawn bodies too.
 A connector whose EDGE is decided but not its place along it needs no lock
 either: leave it unlocked with its `edge` in the intent's
 `edge_connectors[]` entry (and an `along_edge_band` when only part of the
@@ -645,7 +656,9 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
   it is the intent's, the same in every seed, so it is listed once under
   `refused` (in `judge.json` and each seed's summary) and the seeds are still
   judged; fix the intent (the pose, or an `accept_courtyard_overlap` the
-  human board carries) rather than placing again. Exit 4 too when an edge
+  human board carries -- `--emit-intent` writes one for each pair of
+  declared poses whose courtyards overlap) rather than placing again. Exit 4
+  too when an edge
   cannot seat all the connectors the intent declares on it together (two
   connectors declared on the south edge where only one fits): listed once
   under `oversubscribed` (the edge, each part's length along it and where
