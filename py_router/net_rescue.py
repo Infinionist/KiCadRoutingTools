@@ -910,6 +910,34 @@ def _unconnected_pads_info(comp_pads):
     return out
 
 
+def _fold_into_result(state, prev, merged):
+    """Fold `merged`'s copper into `prev`, the net's AUTHORITATIVE result.
+
+    A separate entry in state.results is dropped by route.py's #87
+    superseded-result filter (only routed_results survive), so the copper
+    joins `prev`, and a later rip takes it with the rest of the net. But a
+    pre-existing net put back by a restore is authoritative through its
+    custody registration (`is_existing_route`), which is NOT on the
+    write-list: its copper is the input file's, written verbatim. Copper
+    folded into it alone was written by nobody, and the orphan pass then
+    deleted it from the board (vis_nir_spec: a GND tap retry ripped
+    Net-(J11-D--PadA7), the escalation reconnected the restored net, and the
+    file shipped it open). That copper also rides an entry of its own,
+    `extends` naming `prev`, which the filter keeps while `prev` is the
+    net's result.
+    """
+    segs = list(merged['new_segments'])
+    vias = list(merged['new_vias'])
+    prev['new_segments'] = list(prev.get('new_segments') or []) + segs
+    prev['new_vias'] = list(prev.get('new_vias') or []) + vias
+    if (segs or vias) and not any(r is prev for r in state.results):
+        state.results.append({'net_name': merged.get('net_name'),
+                              'net_id': merged['net_id'],
+                              'new_segments': segs, 'new_vias': vias,
+                              'iterations': merged.get('iterations', 0),
+                              'extends': prev})
+
+
 def _find_cap_relocation(pcb_data, fp, extra_avoid_vias, extra_avoid_segs,
                          clearance, max_disp=3.0, config=None):
     """#666/IO_9: nearest legal position for a 2-pad movable passive whose
@@ -1690,10 +1718,7 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
             # rescue_succeeded fully_connected=True while the file stayed
             # open; reproduced deterministically on the parity board).
             prev = routed_results[net_id]
-            prev['new_segments'] = (list(prev.get('new_segments') or [])
-                                    + list(merged['new_segments']))
-            prev['new_vias'] = (list(prev.get('new_vias') or [])
-                                + list(merged['new_vias']))
+            _fold_into_result(state, prev, merged)
             prev_failed = prev.get('failed_pads_info') or []
             still = ({} if fully else
                      {(p['component_ref'], p['pad_number'])
@@ -2127,10 +2152,7 @@ def terminal_geometry_escalation(state, single_ended_nets, net_clearances=None,
             # net's AUTHORITATIVE result (a separate entry is dropped by the
             # #87 superseded-result filter -- the rescue's partial-branch
             # lesson). Fully connected now, so the pad debt clears.
-            prev['new_segments'] = (list(prev.get('new_segments') or [])
-                                    + list(merged['new_segments']))
-            prev['new_vias'] = (list(prev.get('new_vias') or [])
-                                + list(merged['new_vias']))
+            _fold_into_result(state, prev, merged)
             prev_failed = prev.get('failed_pads_info') or []
             if prev_failed:
                 prev['failed_pads_info'] = []

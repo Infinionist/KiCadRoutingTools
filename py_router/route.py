@@ -3714,6 +3714,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                            'terminal_restores/reconciliation)')
             elif _r_pe.get('is_existing_route'):
                 _out_pe = 'original copper restored'
+                if any(r.get('extends') is _r_pe for r in results):
+                    _out_pe += ', joined by rescue/escalation copper'
             elif not _pe_connected(_rid):
                 # Live connectivity, deliberately NOT failed_pads_info: the
                 # end-of-run sweep has not attached that yet, and a phase-3
@@ -3758,10 +3760,18 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # same-net vias (#87). Dropping by identity is safe now that the Phase-3 commit
     # reconciles each net's result against its actual copper, so the authoritative
     # result is the complete one (a dropped tap is flagged and re-routed, not lost).
+    # An entry that `extends` the net's result carries copper folded into a
+    # restored pre-existing net's custody registration, which is not on the
+    # write-list itself (net_rescue._fold_into_result); it lives while that
+    # registration is still the net's result.
     _authoritative = {id(r) for r in routed_results.values()}
-    _stale = [r for r in results if id(r) not in _authoritative]
+
+    def _kept87(r):
+        return id(r) in _authoritative or (r.get('extends') is not None
+                                           and id(r['extends']) in _authoritative)
+    _stale = [r for r in results if not _kept87(r)]
     if _stale:
-        results[:] = [r for r in results if id(r) in _authoritative]
+        results[:] = [r for r in results if _kept87(r)]
         print(f"Dropped {len(_stale)} superseded rip-reroute result(s) from the write-list")
 
     # --force-reroute custody: a force-ripped net whose replan landed NO new
