@@ -45,6 +45,18 @@ says what stopped it (`_unseated_reason`): an overhang that never comes down
 to its band at any pose (a courtyard longer than its edge), pads longer than
 the edge, or the conjuncts every position tested failed, counted, with the
 parts in the way.
+
+Parts that each have a seat may still not fit on their edge TOGETHER
+(`_crowding`): CM5_MINIMA's J501 and J802, both declared on its south edge,
+16.90 and 17.10 mm long, can stand only at x 89.43-94.10 and 89.59-103.40
+between the fixed parts, so at most one of them is ever there. Seated anyway,
+every seed annealed three times and left both illegal. The seat's own lines
+are packed along the edge as `pack` packs a row (courtyards SEAT_GAP_MM apart,
+each in its free stretches, at any turn it seats at), exactly over every
+subset, one row per edge and face. When they do not all fit, the most that
+fit together are seated, the earlier declared on a tie (the intent's
+`edge_connectors[]` order), and the rest are placed as any other part. The
+record (`crowding_text`) is the intent's to fix, the same in every seed.
 """
 from __future__ import annotations
 
@@ -76,6 +88,9 @@ NEAR_MM = 3.0
 #: poses from reading as an overlap.
 SEAT_GAP_MM = 0.01
 EPS = 1e-6
+#: The most parts on one edge and face `_crowding` checks together: it tries
+#: every subset of them. A longer row is left to the anneal and `pack`.
+ROW_MAX = 12
 
 #: The part classes (`part_class.classify_part`) a declared edge seats: what
 #: plugs in, is pressed or is probed at the edge. The intent emitter claims an
@@ -417,13 +432,18 @@ def _overlaps(q, c, grow):
             and q[1] < c[3] + grow and c[1] < q[3] + grow)
 
 
-def seats(state, pcb, pcb_file, intent, movable
+def seats(state, pcb, pcb_file, intent, movable, crowded=None
           ) -> Tuple[Dict[str, EdgeSeat], List[str], Dict[str, str]]:
     """`({ref: EdgeSeat}, notes, {ref: why unseated})` for the movable parts
     the intent puts on an edge, each already moved onto its edge, in the
     middle of the longest stretch it has at its own turn (else at the turn
     with the most room). A declared edge part that finds no seat is placed as
-    any other part, and named in the third value: the caller warns."""
+    any other part, and named in the third value: the caller warns.
+
+    Parts seated on one edge and face that do not all fit there together
+    keep the most that do (`_crowding`), and the rest are placed as any
+    other part, back where they stood; `crowded`, a list, collects one
+    record per such edge (`crowding_text` words it)."""
     from .body import board_bodies
     from .floorplan import edge_span, outline_state
     out: Dict[str, EdgeSeat] = {}
@@ -457,6 +477,8 @@ def seats(state, pcb, pcb_file, intent, movable
     probe = _Probe(state, pcb, pcb_file, bodies, outline)
     bounds = pcb.board_info.board_bounds
     fixed = {o: (q.x, q.y, q.rot) for o, q in state.parts.items() if o not in movable}
+    was: Dict[str, Tuple[float, float, float]] = {}     # each seated part's pose before
+    said: Dict[str, str] = {}                           # and its note
     for c in entries:
         ref, edge = str(c['ref']), c['edge']
         part = state.parts[ref]
@@ -527,12 +549,145 @@ def seats(state, pcb, pcb_file, intent, movable
         rot = own if own in lines else max(lines, key=lambda r: _room(lines[r]))
         a0, a1 = max(lines[rot].free, key=lambda f: f[1] - f[0])
         x, y = ((a0 + a1) / 2.0, lines[rot].coord) if axis == 0 else (lines[rot].coord, (a0 + a1) / 2.0)
+        was[ref] = (part.x, part.y, part.rot)
         part.ensure_rotation(rot)
         part.x, part.y, part.rot = x, y, rot
-        notes.append(f"edge connector {ref} on the {edge} edge"
+        said[ref] = (f"edge connector {ref} on the {edge} edge"
                      + (f", facing it ({face})" if face else
                         f", no mating face: {len(lines)} turn(s) seat there"))
+        notes.append(said[ref])
+    # parts that each have a seat but do not all fit on their edge together:
+    # the rest go back where they stood and are placed as any other part
+    for rec in _crowding(state, out, [str(c['ref']) for c in entries]):
+        for ref in rec['unseated']:
+            del out[ref]
+            notes.remove(said[ref])
+            part = state.parts[ref]
+            part.x, part.y, part.rot = was[ref]
+            part.ensure_rotation(part.rot)
+        if crowded is not None:
+            crowded.append(rec)
     return out, notes, unseated
+
+
+def _crowding(state, out, order) -> List[dict]:
+    """One record per edge and face whose seated parts (`out`) do not all fit
+    there together, each naming the most that do (`seated`) and the rest
+    (`unseated`); `order` is the intent's declared order, which breaks a tie.
+
+    A row is the parts seated on one edge on one face (courtyards on two
+    faces never meet; through-hole copper across the faces only takes more
+    room, so splitting the faces can miss a short row but never invent
+    one), packed as `pack` packs it: courtyards SEAT_GAP_MM
+    apart along the edge, each part at any turn its seat has and only in
+    that turn's free stretches. Every subset is tried exactly -- the least
+    far end any order of a subset can reach, each part at its earliest spot
+    past the one before -- so a row reported short of room is short at
+    every arrangement. Not checked, and left to the anneal and `pack` as
+    before: a row longer than ROW_MAX, and a row where two parts at some
+    pair of turns do not overlap across the edge (they could then stand
+    abreast, which a row cannot say)."""
+    rows: Dict[Tuple[str, str], List[str]] = {}
+    for ref in order:
+        if ref in out:
+            rows.setdefault((out[ref].edge, state.parts[ref].side), []).append(ref)
+    found = []
+    for (edge, side), refs in sorted(rows.items()):
+        if not 2 <= len(refs) <= ROW_MAX:
+            continue
+        axis, perp = out[refs[0]].axis, 1 - out[refs[0]].axis
+        # each part, each turn: (rot, courtyard's low end from the origin,
+        # its length along the edge, the stretches of its origin, its extent
+        # across the edge)
+        items = []
+        for ref in refs:
+            turns = []
+            for rot, line in sorted(out[ref].lines.items()):
+                c = state.parts[ref].rect(0.0, 0.0, rot)
+                turns.append((rot, c[axis], c[axis + 2] - c[axis], line.free,
+                              (line.coord + c[perp], line.coord + c[perp + 2])))
+            items.append(turns)
+        if any(min(a[4][1], b[4][1]) - max(a[4][0], b[4][0]) <= EPS
+               for i, ti in enumerate(items) for tj in items[i + 1:]
+               for a in ti for b in tj):
+            continue
+        n = len(items)
+
+        def reach(turns, frontier):
+            """The far end of a part's courtyard, plus the gap, at its
+            earliest spot past `frontier` (inf when there is none)."""
+            best = float('inf')
+            for _rot, lo_c, w, free, _across in turns:
+                for f0, f1 in free:
+                    at = max(frontier, f0 + lo_c)
+                    if at <= f1 + lo_c + EPS:
+                        best = min(best, at + w + SEAT_GAP_MM)
+            return best
+        far = [float('inf')] * (1 << n)
+        far[0] = float('-inf')
+        for s in range(1, 1 << n):
+            far[s] = min((reach(items[i], far[s ^ (1 << i)]) for i in range(n)
+                          if s >> i & 1 and far[s ^ (1 << i)] < float('inf')),
+                         default=float('inf'))
+        if far[-1] < float('inf'):
+            continue
+        # the most that fit together; on a tie, the earlier declared
+        keep = min((s for s in range(1, 1 << n) if far[s] < float('inf')),
+                   key=lambda s: (-bin(s).count('1'),
+                                  [i for i in range(n) if s >> i & 1]))
+        parts, spans = [], []
+        for i, ref in enumerate(refs):
+            turns = []
+            for rot, lo_c, w, free, _across in items[i]:
+                span = [[round(f0 + lo_c, 2), round(f1 + lo_c + w, 2)] for f0, f1 in free]
+                spans += span
+                turns.append({'rot': rot, 'length_mm': round(w, 2),
+                              'at': [[round(f0, 2), round(f1, 2)] for f0, f1 in free],
+                              'span': span})
+            parts.append({'ref': ref, 'seated': bool(keep >> i & 1), 'turns': turns})
+        merged = []
+        for a, b in sorted(spans):
+            if merged and a <= merged[-1][1] + EPS:
+                merged[-1][1] = max(merged[-1][1], b)
+            else:
+                merged.append([a, b])
+        found.append({'edge': edge, 'side': side, 'axis': 'xy'[axis], 'parts': parts,
+                      'free': merged, 'fit': bin(keep).count('1'),
+                      'seated': [r for i, r in enumerate(refs) if keep >> i & 1],
+                      'unseated': [r for i, r in enumerate(refs) if not keep >> i & 1]})
+    return found
+
+
+def crowding_text(rec) -> str:
+    """One `_crowding` record in words: the edge, each part's length along it
+    and where it can stand, the free span, what was seated, and what to
+    change."""
+    ax = rec['axis']
+
+    def at(stretches):
+        return ', '.join(f"{a:.2f}-{b:.2f}" for a, b in stretches)
+    each = []
+    for p in rec['parts']:
+        turns = p['turns']
+        long_ = '/'.join('%.2f' % t['length_mm'] for t in turns)
+        by = '/'.join('%g' % t['rot'] for t in turns)
+        each.append(f"{p['ref']} {long_} mm long"
+                    + (f" (by turn {by})" if len(turns) > 1 else '')
+                    + f", its courtyard within {ax} "
+                    + '; '.join(at(t['span']) for t in turns)
+                    + f" (origin at {ax} " + '; '.join(at(t['at']) for t in turns) + ")")
+    room = sum(b - a for a, b in rec['free'])
+    need = sum(min(t['length_mm'] for t in p['turns']) for p in rec['parts'])
+    refs = [p['ref'] for p in rec['parts']]
+    return (f"the {rec['edge']} edge ({rec['side']} side) cannot seat "
+            f"{', '.join(refs[:-1])} and {refs[-1]} together: {'; '.join(each)}; "
+            f"{need:.2f} mm of parts, and the free span {ax} {at(rec['free'])} "
+            f"({room:.2f} mm) holds at most "
+            f"{rec['fit']} of the {len(refs)}. Seated: {', '.join(rec['seated'])} (the most "
+            f"that fit, the earlier declared first); placed without its edge claim: "
+            f"{', '.join(rec['unseated'])}. This is the intent's to fix, the same in every "
+            f"seed: move a connector to another edge, drop a declaration, or widen a band, "
+            f"then place again")
 
 
 def _room(line) -> float:

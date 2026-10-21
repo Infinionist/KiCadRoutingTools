@@ -34,7 +34,11 @@ the same way.
    (`edge_connectors[]` with an `edge`) is held to that edge
    (`placement/edge_seat.py`): its mating face out, flush with the low
    end of its overhang band, and the anneal only slides it along the edge
-   (and turns it, when it has no mating face). The intent's keep-outs and
+   (and turns it, when it has no mating face). Parts declared on one edge
+   that cannot all stand there together keep the most that fit, the
+   earlier declared on a tie; the rest are placed as any other part, and
+   the edge is reported once (`oversubscribed`): the intent's to fix, not a
+   seed's. The intent's keep-outs and
    zones bind every part through the anneal's overlap term.
 3. ANNEAL: one cost (`placement/simple.py`) -- signal and rail trees,
    crossings, claims and each claim's `max_mm` limit (a crystal at its
@@ -59,9 +63,10 @@ the same way.
 Exit codes: 0 placed, 2 unreadable input, a part in two groups, or a face the
 board cannot take (two declarations disagree, or a KiCad-locked part is
 declared on the other face or at another pose), 4 placed with parts left
-illegal, or with a declared pose that is not legal (`refused`, the same in
-every seed, so it is not counted against the seed and the judge still names
-seeds).
+illegal, or with a declared pose that is not legal (`refused`) or an edge
+that cannot seat all its declared parts together (`oversubscribed`) -- each
+the same in every seed, so it is not counted against the seed and the judge
+still names seeds.
 """
 #: #937 registry: which door(s) show this tool, and whether it changes
 #: the board. Read by krt_registry.py -- by AST, never imported.
@@ -252,12 +257,14 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
                   halo_coef=args.halo_coef, halo_weight=args.halo_weight,
                   claim_limits=limits, claim_limit_weight=args.claim_limit_weight,
                   templates=tmpls, template_weight=args.template_weight)
-    # the unlocked parts the intent declares on an edge, seated there
-    model.edge_seats, model.edge_unseated = {}, {}
+    # the unlocked parts the intent declares on an edge, seated there; an
+    # edge that cannot hold all its declared parts together seats the most
+    # that fit and records itself (`edge_oversubscribed`)
+    model.edge_seats, model.edge_unseated, model.edge_oversubscribed = {}, {}, []
     if intent is not None:
         from placement import edge_seat
         model.edge_seats, snotes, model.edge_unseated = edge_seat.seats(
-            state, pcb, board, intent, set(movable))
+            state, pcb, board, intent, set(movable), crowded=model.edge_oversubscribed)
         notes += snotes
     # the intent's decap limits, where it grades them at error: priced as the
     # grade measures them (the tether gate's terms), per mm past each limit
@@ -470,7 +477,9 @@ def _name_judged(a, seeds, summaries):
     """A run of several seeds' last step: the `--judge` legal seeds to judge
     (`judge_order`), printed and written to `judge.json` beside the seeds'
     boards (`judge` in judging order; `scattered`, `clustered`, `anchored` and
-    `illegal` list the seeds by start and verdict, `floorplan` each seed's
+    `illegal` list the seeds by start and verdict, `refused` and
+    `oversubscribed` the intent's own faults, the same in every seed and
+    each WARNED once, `floorplan` each seed's
     floorplan errors, `assembly` its check_assembly blocking count, and
     `baseline` the board the seeds were placed from, which judge_seeds hands
     quick_score so the fast route's score grades assembly the same way)."""
@@ -485,6 +494,10 @@ def _name_judged(a, seeds, summaries):
            # intent's to fix, not a seed's
            'refused': next((summaries[s]['refused'] for s in seeds
                             if summaries.get(s, {}).get('refused')), {}),
+           # and the edges that cannot seat all their declared parts
+           # together, likewise
+           'oversubscribed': next((summaries[s]['oversubscribed'] for s in seeds
+                                   if summaries.get(s, {}).get('oversubscribed')), []),
            # each placed seed's check_floorplan --intent errors (None: not
            # graded), keyed by seed as JSON keys must be
            'floorplan': {str(s): (summaries[s].get('floorplan') or {}).get('errors')
@@ -519,6 +532,9 @@ def _name_judged(a, seeds, summaries):
     for r, why in sorted(doc['refused'].items()):
         print(f"  WARNING: {r}'s declared pose is not legal, in every seed: "
               f"{'; '.join(why)}")
+    from placement.edge_seat import crowding_text
+    for rec in doc['oversubscribed']:
+        print(f"  WARNING: {crowding_text(rec)}")
 
 
 def main(argv=None):
@@ -751,6 +767,9 @@ def main(argv=None):
     for r, why in sorted(model.edge_unseated.items()):
         print(f"  WARNING: {r} is declared on an edge but has no seat there ({why}); "
               f"placed as any other part")
+    from placement.edge_seat import crowding_text
+    for rec in model.edge_oversubscribed:
+        print(f"  WARNING: {crowding_text(rec)}")
     print(f"place_simple: {len(movable)} movable part(s), fixed: "
           f"{', '.join(sorted(r for r in state.parts if r not in movable)) or 'none'}")
     for name, members in model.groups:
@@ -858,7 +877,8 @@ def main(argv=None):
                         else 'scattered'), 'runs': k + 1,
               'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
-              'illegal': illegal, 'refused': refused, 'floorplan': fp, 'assembly': asm,
+              'illegal': illegal, 'refused': refused,
+              'oversubscribed': model.edge_oversubscribed, 'floorplan': fp, 'assembly': asm,
               'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
@@ -866,8 +886,9 @@ def main(argv=None):
         json.dump(report, open(a.json, 'w', encoding='utf-8'), indent=1)
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
-                                           'refused', 'floorplan', 'assembly', 'seconds')}))
-    return 4 if illegal or refused else 0
+                                           'refused', 'oversubscribed', 'floorplan', 'assembly',
+                                           'seconds')}))
+    return 4 if illegal or refused or model.edge_oversubscribed else 0
 
 
 if __name__ == '__main__':

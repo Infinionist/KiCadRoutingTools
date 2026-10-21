@@ -327,9 +327,11 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
   breaks often made it the cheapest. They are printed, a WARNING naming each
   judged seed that carries an error, and written to `judge.json` beside the
   boards (`judge` in judging order, then the `scattered`, `clustered`,
-  `anchored` and `illegal` seeds, `floorplan`: each seed's error count, and
-  `refused`: the declared poses that are not legal, the same in every seed,
-  so they do not keep a seed from the judge).
+  `anchored` and `illegal` seeds, `floorplan`: each seed's error count,
+  `refused`: the declared poses that are not legal, and `oversubscribed`:
+  the edges that cannot seat all their declared parts together -- both the
+  same in every seed, so they do not keep a seed from the judge, and each
+  printed once as a WARNING).
   Judging all 12 default seeds instead of the 6 cheapest shipped worse.
 - **Output.** The placed board with its siblings, a `JSON_SUMMARY:` line
   (final cost, moves, seed, `start` -- `scattered`, `clustered` or `anchored` -- parts
@@ -342,12 +344,25 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
   an overhang reading that never comes down to the band, pads longer than the
   edge, or the conjuncts every tested position failed and the parts in the
   way -- and each also a WARNING line).
+- **An edge that cannot hold its declared parts together.** Parts that each
+  have a seat may not fit on their edge at once: the seat packs each edge's
+  parts, one row per edge and face, as the anneal's row packer would
+  (courtyards abutting, each in its own free stretches, at any turn it
+  seats at), trying every subset. When they do not all fit, the most that
+  fit together keep their seats, the earlier declared in
+  `edge_connectors[]` on a tie, and the rest are placed as any other part,
+  so the seeds stay legal and are judged. The edge, the parts, each one's
+  length along it and where it can stand, and the free span are reported as
+  `oversubscribed` (each seed's `JSON_SUMMARY` and report, and
+  `judge.json`) and printed once as a WARNING: the intent is the input to
+  fix -- another edge for a connector, one declaration fewer, or a wider
+  band -- before placing again.
 
 Exit 0 placed; 2 unreadable input, a part in two groups, or a face or pose
 the inputs contradict (two declarations disagree, or a KiCad-locked part is
 declared on the other face or at another pose), nothing written; 4 placed,
-with parts left illegal, a declared pose that is not legal among them (named
-on the console). The objective's terms and the anneal's moves are in
+with parts left illegal, a declared pose that is not legal, or an edge that
+cannot hold its declared parts (each named on the console). The objective's terms and the anneal's moves are in
 `py_placer/placement/README.md` ("The objective").
 
 ## Groups Checker (`check_groups.py`)

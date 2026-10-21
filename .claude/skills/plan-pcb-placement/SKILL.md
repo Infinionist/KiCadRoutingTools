@@ -645,8 +645,15 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
   it is the intent's, the same in every seed, so it is listed once under
   `refused` (in `judge.json` and each seed's summary) and the seeds are still
   judged; fix the intent (the pose, or an `accept_courtyard_overlap` the
-  human board carries) rather than placing again. Exit 2 if any failed
-  outright.
+  human board carries) rather than placing again. Exit 4 too when an edge
+  cannot seat all the connectors the intent declares on it together (two
+  connectors declared on the south edge where only one fits): listed once
+  under `oversubscribed` (the edge, each part's length along it and where
+  it can stand, the free span, and which it seated), the most that fit
+  seated (the earlier declared on a tie) and the rest placed freely, so the
+  seeds are still judged. That is the INPUT's to fix, not a seed's: change
+  the intent -- move a connector to another edge, drop a declaration, or
+  widen a band -- and place again. Exit 2 if any failed outright.
 - A run that leaves a part with no legal pose anneals again from a fresh
   start, up to two more times (`runs` in the `--json` report). Exit 4 names
   parts still left illegal; exit 2 a face or pose the inputs contradict.
@@ -670,8 +677,10 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
   - **`judge.json` names no seed** (`judge` empty; `judge_seeds.py` refuses
     it, exit 2): every seed left a part illegal (`illegal` in judge.json and
     each `s<S>.json`) or failed outright (exit 2, its `s<S>.log`). A
-    declared pose that is not legal no longer empties it: it is listed under
-    `refused`, and the seeds are still judged (fix the intent, as above).
+    declared pose that is not legal no longer empties it, nor does an edge
+    declared more connectors than it holds: they are listed under `refused`
+    and `oversubscribed`, and the seeds are still judged (fix the intent, as
+    above).
   - **Every judged seed is NOT BUILDABLE** (`check_assembly`'s `buildable`
     false): read the pairs it names.
   - **Every judged seed fails the floorplan** (place_simple WARNs that it
@@ -683,7 +692,10 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
      will fix it: the part has no room (a WARNING that it fits the usable
      area at neither quarter turn, or that an edge part has no seat there,
      which names what stopped it: a band its overhang never comes down to,
-     or the part in the way),
+     or the part in the way), an edge declared more connectors than fit on
+     it together (`oversubscribed`: the same parts and free span in every
+     seed; move a connector to another edge, drop a declaration, or widen a
+     band),
      a fixed part or a declared pose walls it in, a keep-out, zone,
      `along_edge_band` or group `side` leaves it nowhere, or a limit no
      placement can meet (a decap pin limit on a rail with one cap far from
