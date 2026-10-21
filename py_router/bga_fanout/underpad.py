@@ -1281,6 +1281,7 @@ def generate_underpad_escape(footprint: Footprint,
     # two escape legs cannot be moved anywhere (ulx3s C19: 1.4mm pad vs a
     # 1.6mm comb gap), so routes should graze them only when boxed in.
     from bga_fanout.geometry import MOVABLE_PASSIVE_PREFIXES
+    soft_pads = []   # the movable passives' copper pads, for a via's exact test
     for fp in pcb_data.footprints.values():
         if fp.reference == footprint.reference:
             continue
@@ -1296,6 +1297,7 @@ def generate_underpad_escape(footprint: Footprint,
             if not (bounds[0] - _pad_margin <= p.global_x <= bounds[2] + _pad_margin
                     and bounds[1] - _pad_margin <= p.global_y <= bounds[3] + _pad_margin):
                 continue
+            soft_pads.append(p)
             p_keep = max(p.size_x, p.size_y) / 2.0 + track_width / 2 + clearance
             if p.drill and p.drill > 0:
                 for li in range(len(layers)):
@@ -2475,6 +2477,18 @@ def generate_underpad_escape(footprint: Footprint,
                 six, siy = occ.cell(vx, vy)
                 if any(occ.soft_foreign(L, six, siy, p.net_id)
                        for L in range(occ.nl)):
+                    return False
+                # The soft stamps are a TRACK's keep (pad + track/2 +
+                # clearance), read above at the via's centre cell alone, so
+                # a via centred just past that disk still put its ring on the
+                # pad and passed as soft-free (butterstick U4: a lane-walked
+                # P_1V2_FPGA drop 0.502 mm from C39.2's centre, its 0.2 mm
+                # ring 0.06 mm into the GND pad; cap-opt found no pose for
+                # C39 and the short shipped). A through via meets the pad on
+                # whatever layer it is, so the whole ring must clear.
+                if not via_clears_pad_rects(
+                        vx, vy, via_size / 2.0, clearance,
+                        [q for q in soft_pads if q.net_id != p.net_id]):
                     return False
             if locked_smd_pads and not via_site_ok(vx, vy, via_size / 2.0):
                 return False
