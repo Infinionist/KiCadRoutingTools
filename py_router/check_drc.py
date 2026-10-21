@@ -3344,6 +3344,14 @@ def check_pad_board_edge(pad: Pad, rings, outer, cutouts,
     return False, 0.0, ""
 
 
+#: KiCad stores every size as an integer number of nanometres, so two sizes
+#: closer than this are the same size. A width written at its floor parses
+#: back a float rounding below it (tinytapeout_qfn: 31 `track-width` rows
+#: reading "0.0889mm < min 0.0889mm (short 0.0000mm)"), which is not a
+#: shortfall KiCad -- or a fab -- can see.
+SIZE_EPS_MM = 1e-6
+
+
 def check_track_width(seg: Segment, min_track_width: float,
                       size_margin: float = 0.0) -> Tuple[bool, float]:
     """Check if a segment is thinner than the minimum manufacturable track width.
@@ -3351,13 +3359,14 @@ def check_track_width(seg: Segment, min_track_width: float,
     Args:
         seg: Segment to check
         min_track_width: Minimum allowed track width in mm
-        size_margin: Absolute tolerance in mm; widths within this of the floor pass
+        size_margin: Absolute tolerance in mm; widths within this of the floor
+            pass (never less than SIZE_EPS_MM, KiCad's one-nanometre unit)
 
     Returns:
         (is_too_thin, shortfall_mm)
     """
     shortfall = min_track_width - seg.width
-    if shortfall > size_margin:
+    if shortfall > max(size_margin, SIZE_EPS_MM):
         return True, shortfall
     return False, 0.0
 
@@ -3371,8 +3380,8 @@ def check_via_size(via: Via, min_via_diameter: float, min_via_drill: float,
     """
     dia_short = min_via_diameter - via.size
     drill_short = min_via_drill - via.drill
-    dia_bad = dia_short > size_margin
-    drill_bad = drill_short > size_margin
+    dia_bad = dia_short > max(size_margin, SIZE_EPS_MM)
+    drill_bad = drill_short > max(size_margin, SIZE_EPS_MM)
     return dia_bad, drill_bad, dia_short, drill_short
 
 
