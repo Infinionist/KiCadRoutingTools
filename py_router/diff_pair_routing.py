@@ -3482,6 +3482,7 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
             # is cheap; score = length + heavy weight on uncoupled mm. A
             # plan with essentially no uncoupled copper is taken on the spot.
             best_plan = None  # (score, legs, vias, iters, split)
+            bypassed = 0
             for plan in leg_plans:
                 leg_state['s'] = {p_net_id: [], n_net_id: []}
                 leg_state['v'] = {p_net_id: [], n_net_id: []}
@@ -3508,6 +3509,14 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                     leg_state['path'][(net_id, _side)] = lpath or []
                 if not good:
                     continue
+                # #1303: each net's signal must run THROUGH its coupled
+                # middle (`_middle_bypassed`).
+                if any(_middle_bypassed(pcb_data, _nid, mid_vias_by_net[_nid],
+                                        leg_state['s'][_nid], leg_state['v'][_nid],
+                                        terminal_pads=terminal_pads)
+                       for _nid in (p_net_id, n_net_id)):
+                    bypassed += 1
+                    continue
                 _lp = leg_state['s'][p_net_id]
                 _ln = leg_state['s'][n_net_id]
                 _len = sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
@@ -3527,6 +3536,9 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                     print(f"      leg couple: best plan still ships "
                           f"{_split:.1f}mm uncoupled leg copper")
             if not ok:
+                if bypassed:
+                    return None, (f"{bypassed} leg plan(s) joined the terminals "
+                                  f"without the coupled middle")
                 return None, "terminal legs could not attach to the coupled middle"
             all_segs = mid_segs + leg_segs
             all_vias = p_vias + n_vias + leg_vias
@@ -3790,6 +3802,43 @@ def _hybrid_route_connects(pcb_data, p_net_id, n_net_id, new_segs, new_vias,
         if not r.get('connected') or r.get('disconnected_pads'):
             return False
     return True
+
+
+def _middle_bypassed(pcb_data, net_id, mid_vias, leg_segs, leg_vias,
+                     terminal_pads=None) -> bool:
+    """#1303: True when ``net_id``'s terminals are joined by its legs (plus
+    the board's copper) WITHOUT its coupled middle.
+
+    The net's own copper is no obstacle to its legs, so a leg that cannot
+    reach the middle's near end directly can reach the FAR end and run back
+    along the middle. On imx6ulz DQS0 the N leg from U2 ran In2.Cu -> B.Cu to
+    the via at the middle's far end (where the U1 leg also lands), rose to
+    F.Cu there and ran back beside the middle to its near end. Both pads then
+    met at that via, and the middle hung off the signal path as a loop: the
+    post-route cleanup broke the loop (cycle prune) and removed the dangling
+    middle (strict collapse), so DQS0 shipped 0 mm coupled with 12 mm of
+    skew. The cleanup was right -- copper the signal does not pass through
+    couples nothing -- so the plan is refused here instead, and the next
+    plan, polarity or layer pair is tried.
+
+    ``mid_vias`` (the middle's own layer changes) stay in: a leg reusing one
+    to reach the far side bypasses the middle as surely. Board copper that
+    joins the terminals by itself is not the legs' doing: False."""
+    from check_connected import check_net_connectivity
+    pads = (terminal_pads.get(net_id, []) if terminal_pads is not None
+            else (getattr(pcb_data, 'pads_by_net', None) or {}).get(net_id, []))
+    if len(pads) < 2:
+        return False
+    segs = [s for s in (getattr(pcb_data, 'segments', None) or []) if s.net_id == net_id]
+    vias = [v for v in (getattr(pcb_data, 'vias', None) or []) if v.net_id == net_id]
+
+    def _joined(extra_segs, extra_vias):
+        r = check_net_connectivity(net_id, segs + list(extra_segs),
+                                   vias + list(extra_vias), pads)
+        return bool(r.get('connected')) and not r.get('disconnected_pads')
+    if _joined([], []):
+        return False
+    return _joined(leg_segs, list(mid_vias) + list(leg_vias))
 
 
 def _seg_to_seglist_min_edge(x1, y1, x2, y2, width, layer, other_segs):

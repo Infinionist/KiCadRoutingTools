@@ -581,6 +581,16 @@ from the terminal escapes (`_route_direct_coupled_middle`):
    (boxed by the adjacent `USB_DET` stub, ~0.225 mm away) 1/1 with no hand-placed
    vias — issue #197.
 
+   **The middle must carry the signal (#1303).** A net's own copper is no
+   obstacle to its legs, so a leg that cannot reach the middle's near end
+   directly can reach its FAR end and run back along it. Both terminals then meet at that via
+   and the middle hangs off the signal path as a loop; the post-route cleanup
+   correctly breaks the loop and removes the dangling middle (imx6ulz DQS0 shipped
+   0 mm coupled with 12 mm of skew that way). A leg plan whose legs join a net's
+   terminals without its middle is refused (`_middle_bypassed`), and the next
+   plan, polarity or layer pair is tried (`hybrid F.Cu: rejected -- 4 leg plan(s)
+   joined the terminals without the coupled middle` under `--debug-lines`).
+
 4. **Seam re-ask (#444), never splitting the pair (#1303).** Each net's
    assembled copper (escape → middle → escape) is re-asked as ONE whole-connection
    A* against its partner's copper, and the pair of replacements is taken when
