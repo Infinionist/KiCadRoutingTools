@@ -577,6 +577,12 @@ contract.
      rule in the design brief, or per-net widths through `--power-nets` /
      `--power-nets-widths`. Loop inductance and copper area would be new
      router costs, graded on the routed board.
+- **Template members through the final legality pass.** On a crowded board
+  the last legality pass reseats whatever collides, template members
+  included, and moves them off their poses (mikoto_nrf52840: 1-2 members a
+  seed, up to 7.1 mm). It should move a member's non-template neighbour
+  first, or seat the member at the nearest legal pose within its template's
+  reach, and break the template only as a last resort, saying so.
 - **Shield cans.** A can is neither a solid body nor free space: parts sit
   under it, inside its fence, and a net reaches them only through the few
   openings the fence leaves (gaps in the wall, or a via to an inner layer).
