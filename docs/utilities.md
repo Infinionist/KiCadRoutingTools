@@ -174,6 +174,16 @@ python py_placer/place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3 
 python py_placer/place_pose.py BOARD OUT --intent intent.json replicate   # the intent's replicate[]
 ```
 
+`rotate REF DEG` sets an ABSOLUTE angle and `--relative` adds DEG; both turn
+about the footprint ORIGIN, which is pad 1 on a through-hole axial, so a half
+turn there swings the body by the pitch. To swap a two-pad part's pads in
+place, `set` it at the pose a half turn about the midpoint of its pads gives
+(origin `2*M - origin`, rotation + 180). An op that leaves its part where it
+was says why (`ops[].unmoved_why`: "already at 180 degrees: `rotate` sets an
+ABSOLUTE angle ..."), and the writer counts only changed poses ("Modified 0
+footprint positions (1 placement(s) already at that pose, unchanged)",
+#1322).
+
 Several verbs in one call describe ONE arrangement: every op is resolved
 against the INPUT board and written in a single pass, so no op sees another's
 effect, and the arrangement is graded at the exact points given -- so a snap

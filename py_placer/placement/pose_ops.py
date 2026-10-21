@@ -543,6 +543,15 @@ def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
 
         note['to'] = [round(x, 4), round(y, 4), rot]
         note['moved'] = note['to'] != note['from']
+        if not note['moved']:
+            # #1322: say WHY nothing moved. `rotate R2 180` on a part already
+            # at 180 reads as a turn to anyone who meant one.
+            note['unmoved_why'] = (
+                "already at %g degrees: `rotate` sets an ABSOLUTE angle; "
+                "`rotate %s %g --relative` turns it by %g about its origin"
+                % (rot, ref, float(op['rot']), float(op['rot']))
+                if kind == 'rotate' and not op.get('relative')
+                else 'already at this pose')
         notes.append(note)
         placements.append({'reference': ref, 'new_x': x, 'new_y': y,
                            'new_rotation': rot})

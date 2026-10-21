@@ -680,7 +680,9 @@ def _report(summary):
         summary['board_edge_clearance'],
         summary['knobs']['board_edge_clearance']['source']))
     for n in summary['ops']:
-        arrow = ('%s -> %s' % (n['from'], n['to'])) if n['moved'] else 'unmoved'
+        arrow = (('%s -> %s' % (n['from'], n['to'])) if n['moved']
+                 else 'unmoved' + (' -- %s' % n['unmoved_why']
+                                   if n.get('unmoved_why') else ''))
         extra = ''
         if n['kind'] == 'face':
             extra = (" [%s row aimed %s, landed %d/%d]"
