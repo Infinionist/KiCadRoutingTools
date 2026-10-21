@@ -29,7 +29,8 @@ the same way.
    part starts at a random place on the board, or, for a seed named in
    `--clustered-seeds`, with each group's members gathered round one random
    point. An unlocked edge part (a
-   connector, receptacle, switch or test pad) the intent declares on an edge
+   connector, receptacle, switch or test pad, by its declared `class`, else
+   its inferred one) the intent declares on an edge
    (`edge_connectors[]` with an `edge`) is held to that edge
    (`placement/edge_seat.py`): its mating face out, flush with the low
    end of its overhang band, and the anneal only slides it along the edge

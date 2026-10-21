@@ -1,5 +1,6 @@
 """Edge connectors placed from a pile: each unlocked edge part (a connector,
-receptacle, switch or test pad: SEATED_CLASSES) the intent declares on a
+receptacle, switch or test pad: SEATED_CLASSES, by the entry's declared
+`class`, else `part_class.classify_part`'s) the intent declares on a
 board edge (`edge_connectors[]` with an `edge`) is seated on that edge before
 the anneal, and the anneal then only slides it along the edge (and turns it,
 when it has no mating face).
@@ -429,17 +430,24 @@ def seats(state, pcb, pcb_file, intent, movable
     notes: List[str] = []
     unseated: Dict[str, str] = {}
     # every entry naming an edge whose part is an edge part by class (a
-    # `connector_affinity` entry an author gave an edge included)
+    # `connector_affinity` entry an author gave an edge included): the class
+    # the entry DECLARES, else `classify_part`'s, as the grade reads it
+    # (`floorplan.edge_facing_policy`, the receptacle seat). Read off the
+    # name alone, CM5's HDMI J501 (`EDAC 690-019-298-412`) has no class, and
+    # its declared `edge_receptacle` was ignored here while the grade failed
+    # it as one (#1331).
     from .part_class import classify_part
     entries = []
     for c in intent.edge_connectors:
         ref = c.get('ref')
         if ref not in movable or c.get('edge') not in ('north', 'south', 'east', 'west'):
             continue
-        cls = classify_part(pcb.footprints[ref], ref).name
+        cls = c.get('class') or classify_part(pcb.footprints[ref], ref).name
         if cls not in SEATED_CLASSES:
+            what = (f"declared class {cls}" if c.get('class')
+                    else cls or 'no part class')
             notes.append(f"{ref} is declared on the {c['edge']} edge but is not an edge part "
-                         f"({cls or 'no part class'}): placed as any other part")
+                         f"({what}): placed as any other part")
             continue
         entries.append(c)
     if not entries:
