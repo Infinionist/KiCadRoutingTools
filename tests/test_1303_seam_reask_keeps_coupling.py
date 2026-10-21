@@ -133,7 +133,8 @@ def main():
 
 def env_knobs_off():
     import env_knobs
-    return not env_knobs.SEAM_REASK
+    # grouped-placement removed the knob (66522c20): the re-ask is always on
+    return not getattr(env_knobs, 'SEAM_REASK', True)
 
 
 if __name__ == '__main__':
