@@ -4,10 +4,11 @@ The cost is `simple.Model`'s, exactly as it is priced -- each net's Manhattan
 spanning tree, crossings among those trees, claims, decaps, each group's gap
 tree, the halo, foreign-pad hits and congestion -- plus, while it runs, an
 OVERLAP penalty: the area where two parts' courtyards, each grown by half
-the clearance, intersect on a face they share, how far a courtyard is
-outside the board less its edge margin -- the real outline, cutouts and
-notches too -- and how far a part breaks the intent's keep-outs and zones
-and the board's rule-area keep-outs. Its weight rises from
+the clearance, intersect on a face they share (a drilled part presents only
+its lead boxes on its far face, as the seat gate pairs them), how far a
+courtyard is outside the board less its edge margin -- the real outline,
+cutouts and notches too -- and how far a part breaks the intent's keep-outs
+and zones and the board's rule-area keep-outs. Its weight rises from
 `LAM_START` to `LAM_END` as the run cools, so parts may pass through each
 other early and a group can cross a crowded board; only an overlap-free
 state can become the best one,
@@ -84,7 +85,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from placement import simple
-from placement.legality import BOARD_TOL
+from placement.legality import BOARD_TOL, far_boxes
 from placement.edge_seat import (SEAT_GAP_MM, legal_on_edge, pack, pad_span, project,
                                  reseat, rot_key)
 from placement.simple import ROTS, _turn, follow, legal, nearest_legal, target
@@ -172,6 +173,26 @@ class Annealer:
         self.faces = {r: sum(1 << bit.setdefault(f, len(bit)) for f in set(st.parts[r].sides))
                       for r in self.names}
         self.face_ids = np.asarray([self.faces[r] for r in self.names], dtype=np.int64)
+        # The pairs on opposite faces with a drilled part among them, which
+        # the seat gate prices by what each part presents on the face they
+        # share -- a drilled part's far face is its lead boxes alone
+        # (`legality.pair_overlap_area`) -- and the Rust sum by the whole
+        # courtyards: `_far_correction` reprices them as the gate does. A
+        # part can be in one only when the other face holds a part it can
+        # pair with there (a drilled part if it is not drilled itself).
+        P = st.parts
+        self.drilled = frozenset(r for r in self.names if P[r].tht_by_rot is not None)
+        drilled_on = {P[r].side for r in self.drilled}
+        on = {P[r].side for r in self.names}
+        self.far_parts = frozenset(
+            r for r in self.names
+            if (on if r in self.drilled else drilled_on) - {P[r].side})
+        # the drilled parts whose lead boxes reach past their courtyard (a
+        # connector's pins beyond the courtyard drawn round its body)
+        self.far_wide = frozenset(
+            r for r in self.drilled
+            if any(t[0] < c[0] or t[1] < c[1] or t[2] > c[2] or t[3] > c[3]
+                   for c, f in [P[r].rects()] for t in far_boxes(f)))
         self.lam = LAM_START
         self.shoving = False        # an escape may shove: only in `repair`
 
@@ -230,6 +251,96 @@ class Annealer:
                     ox, oy = ox - less, oy - less
                     if ox > 0 and oy > 0:
                         fix += ox * oy
+        return fix
+
+    def _cross(self, a, b):
+        """Whether `a` and `b` are on opposite faces with a drilled part
+        among them: the pairs `_far_area` prices."""
+        pa, pb = self.st.parts[a], self.st.parts[b]
+        return pa.side != pb.side and (pa.tht_by_rot is not None
+                                       or pb.tht_by_rot is not None)
+
+    def _face_boxes(self, r, face, pose=None):
+        """What `r` presents on `face`, each box grown by half the
+        clearance: its courtyard on its own face, its lead boxes on the far
+        one (`legality.rect_on`; none when it is not drilled). `pose`, else
+        where it is."""
+        p, h = self.st.parts[r], self.half
+        if face == p.side:
+            bs = (p.rect() if pose is None else p.rect(*pose),)
+        else:
+            bs = far_boxes(p.rects()[1] if pose is None else p.tht_rect(*pose))
+        return [(b[0] - h, b[1] - h, b[2] + h, b[3] + h) for b in bs]
+
+    def _far_area(self, a, b, pa=None, pb=None):
+        """A `_cross` pair's overlap as the seat gate prices it: on each
+        face the two share, the area where what each presents there
+        overlaps, summed box by box, and the larger face's
+        (`legality.pair_overlap_area`: two drilled parts show one
+        interference on both faces). `pa`, `pb`: their poses, else where
+        they are."""
+        P = self.st.parts
+        worst = 0.0
+        for f in sorted(P[a].sides & P[b].sides):
+            v = 0.0
+            for A in self._face_boxes(a, f, pa):
+                for B in self._face_boxes(b, f, pb):
+                    ox = min(A[2], B[2]) - max(A[0], B[0])
+                    if ox > 0:
+                        oy = min(A[3], B[3]) - max(A[1], B[1])
+                        if oy > 0:
+                            v += ox * oy
+            worst = max(worst, v)
+        return worst
+
+    def _reach(self, r):
+        """`r`'s grown courtyard, widened to its grown lead boxes where they
+        reach past it (`far_wide`): all a `_cross` pair can overlap in."""
+        A = self._grown(r)
+        if r not in self.far_wide:
+            return A
+        t, h = self.st.parts[r].rects()[1], self.half
+        return (min(A[0], t[0] - h), min(A[1], t[1] - h),
+                max(A[2], t[2] + h), max(A[3], t[3] + h))
+
+    def _far_correction(self, mine):
+        """What `_far_area` changes in a move's overlap, which the Rust sum
+        prices on the whole courtyards: each `_cross` pair with a moving
+        part, each pair once (two moving parts from the drilled one, the
+        first by name when both are). A cap under a through-hole chip's
+        body, clear of its leads, is legal to the gate; priced on the
+        courtyards it was pushed out from under the chip. A seated part's
+        pairs that `_seat_correction` reprices are left to it."""
+        movers = [a for a in mine if a in self.far_parts]
+        if not movers:
+            return 0.0
+        P, h = self.st.parts, self.half
+        mset = set(mine)
+        wide = self.far_wide - mset
+        fix = 0.0
+        for a in movers:
+            RA = self._reach(a)
+            # the index holds courtyards: a part whose leads reach past its
+            # own is looked at wherever it is
+            near = (self.model._ixp.query((RA[0] - h, RA[1] - h, RA[2] + h, RA[3] + h))
+                    - mset) | wide
+            if P[a].tht_by_rot is None:
+                cand = sorted(near & self.drilled)
+            else:
+                cand = sorted(near) + [b for b in movers if b != a and (
+                    P[b].tht_by_rot is None or b > a)]
+            A = self._grown(a)
+            for b in cand:
+                if not self._cross(a, b) or (self.seats and self._seat_pair(a, b) != 0.0):
+                    continue
+                RB = self._reach(b)
+                if not (min(RA[2], RB[2]) > max(RA[0], RB[0])
+                        and min(RA[3], RB[3]) > max(RA[1], RB[1])):
+                    continue
+                B = self._grown(b)
+                ox = min(A[2], B[2]) - max(A[0], B[0])
+                oy = min(A[3], B[3]) - max(A[1], B[1])
+                fix += self._far_area(a, b) - (ox * oy if ox > 0 and oy > 0 else 0.0)
         return fix
 
     def _outside(self, r):
@@ -301,6 +412,8 @@ class Annealer:
                 self.model._CR, self.face_ids)
             if self.seats:
                 total += self._seat_correction(mine)
+            if self.far_parts:
+                total += self._far_correction(mine)
             return total
         mset = set(mine)
         grown = {}
@@ -311,6 +424,10 @@ class Annealer:
                     continue
                 less = self._seat_pair(a, b) if self.seats else 0.0
                 if less is None:
+                    continue
+                if (not less and a in self.far_parts and b in self.far_parts
+                        and self._cross(a, b)):
+                    total += self._far_area(a, b)
                     continue
                 B = grown.get(b) or grown.setdefault(b, self._grown(b))
                 ox = min(A[2], B[2]) - max(A[0], B[0])
@@ -460,10 +577,12 @@ class Annealer:
         c, h = self.st.parts[r].rect(*pose), self.half
         return (c[0] - h, c[1] - h, c[2] + h, c[3] + h)
 
-    def _hits(self, r, G, poses):
+    def _hits(self, r, G, poses, at=None):
         """[(part, its grown courtyard)]: the parts whose grown courtyards
-        overlap `G` (r's, grown) on a face r has, each at its pose in
-        `poses`, else where it is."""
+        overlap `G` (r's, grown, at pose `at`, else where r is) on a face r
+        has, each at its pose in `poses`, else where it is -- a `_cross`
+        pair only when what the two present on a shared face overlaps
+        (`_far_area`)."""
         h = self.half
         out = []
         for b in sorted(self.model._ixp.query((G[0] - h, G[1] - h, G[2] + h, G[3] + h))
@@ -472,6 +591,9 @@ class Annealer:
                 continue
             B = self._grown_at(b, poses[b]) if b in poses else self._grown(b)
             if min(G[2], B[2]) - max(G[0], B[0]) > 0 and min(G[3], B[3]) - max(G[1], B[1]) > 0:
+                if (r in self.far_parts and b in self.far_parts and self._cross(r, b)
+                        and self._far_area(r, b, at, poses.get(b)) <= 0.0):
+                    continue
                 out.append((b, B))
         return out
 
@@ -499,7 +621,7 @@ class Annealer:
         while queue:
             a = queue.pop(0)
             A = self._grown_at(a, new[a])
-            for b, B in self._hits(a, A, new):
+            for b, B in self._hits(a, A, new, new[a]):
                 if b == r or b not in self.movset:
                     continue
                 x, y, rot = new.get(b) or self.pose(b)
@@ -512,7 +634,7 @@ class Annealer:
                             * max(0.0, min(A[3], G[3]) - max(A[1], G[1])))
                     fixed = sum((min(G[2], F[2]) - max(G[0], F[0]))
                                 * (min(G[3], F[3]) - max(G[1], F[1]))
-                                for f, F in self._hits(b, G, new)
+                                for f, F in self._hits(b, G, new, pose)
                                 if f == r or f not in self.movset)
                     key = (left > CLEAN, fixed > CLEAN, abs(sx) + abs(sy))
                     if best is None or key < best[0]:

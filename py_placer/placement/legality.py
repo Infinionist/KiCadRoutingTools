@@ -125,18 +125,37 @@ def pad_half_extents(pad):
     return hx * c + hy * s, hx * s + hy * c
 
 
+def pad_copper_box(pad):
+    """(cx, cy, hx, hy): the centre and half-extents of a pad's axis-aligned
+    copper box in BOARD coordinates.
+
+    A custom pad whose copper lies to one side of it carries that box
+    (`Pad.copper_box`, both parse paths): its `size_x`/`size_y` box is
+    centred on the pad and twice the copper's size there (bitaxe's
+    CSD17311Q5 drain pad, 10.0 x 9.1 mm for 5.0 x 4.6 mm). Every other pad
+    is its centre and `pad_half_extents`, so its box is unchanged.
+    """
+    cb = getattr(pad, 'copper_box', None)
+    if cb is not None:
+        x0, y0, x1, y1 = cb
+        return (pad.global_x + (x0 + x1) / 2.0, pad.global_y + (y0 + y1) / 2.0,
+                (x1 - x0) / 2.0, (y1 - y0) / 2.0)
+    hx, hy = pad_half_extents(pad)
+    return pad.global_x, pad.global_y, hx, hy
+
+
 def pad_rect(pad, margin: float = 0.0):
-    """A pad's axis-aligned copper rect in BOARD coordinates, plus `margin`.
+    """A pad's axis-aligned copper rect in BOARD coordinates, plus `margin`
+    (`pad_copper_box`).
 
     `global_x/global_y` is always the copper centre even when the drill is
     offset from it, so this is the right anchor for a clearance question and the
     wrong one for a drill question.
     """
-    hx, hy = pad_half_extents(pad)
+    cx, cy, hx, hy = pad_copper_box(pad)
     hx += margin
     hy += margin
-    return (pad.global_x - hx, pad.global_y - hy,
-            pad.global_x + hx, pad.global_y + hy)
+    return (cx - hx, cy - hy, cx + hx, cy + hy)
 
 
 def rect_overlap_area(a, b):
@@ -4139,12 +4158,12 @@ class PartPads:
             _f = any(not str(l).startswith(('B', '*')) for l in copper)
             pside = (None if (through or _star or (_b and _f))
                      else ('B' if _b else 'F'))
-            # THE one formula (see its docstring): PartPads was a fourth
-            # copy of it, and `part_copper_geometry` keys a pad's own rect
+            # THE one formula (`pad_copper_box`, see its docstring):
+            # PartPads was a fourth copy of it, and `part_copper_geometry` keys a pad's own rect
             # on the same call, so a lookup cannot disagree with the box it
             # is looking up.
-            phx, phy = pad_half_extents(p)
-            self.pads_local.append((p.global_x - fp.x, p.global_y - fp.y,
+            pcx, pcy, phx, phy = pad_copper_box(p)
+            self.pads_local.append((pcx - fp.x, pcy - fp.y,
                                     phx, phy, p.net_id, pside))
             _tilt = float(getattr(p, 'rect_rotation', 0.0) or 0.0)
             if abs(_tilt - 90.0 * round(_tilt / 90.0)) < 1e-6:
@@ -5410,7 +5429,7 @@ class _PosedPad:
     """
     __slots__ = ('pad_number', 'pad_type', 'layers', 'shape', 'size_x', 'size_y',
                  'roundrect_rratio', 'rect_rotation', 'rotation', 'global_x',
-                 'global_y', 'polygons', 'geometry_approximations')
+                 'global_y', 'polygons', 'geometry_approximations', 'copper_box')
 
 
 def _custom_box_at_pose(original, posed, delta):
@@ -5489,6 +5508,14 @@ def pads_at_pose(fp, pose) -> List[_PosedPad]:
         pad.geometry_approximations = getattr(original, 'geometry_approximations', ())
         base = getattr(original, 'rotation', 0.0) or 0.0
         pad.rotation = (base + delta) % 360
+        # the copper box's corners turned about the pad, then boxed: exact
+        # at a quarter turn, round the copper at any other
+        cb = getattr(original, 'copper_box', None)
+        if cb is not None:
+            us = [c*u + s*v for u in (cb[0], cb[2]) for v in (cb[1], cb[3])]
+            vs = [-s*u + c*v for u in (cb[0], cb[2]) for v in (cb[1], cb[3])]
+            cb = (min(us), min(vs), max(us), max(vs))
+        pad.copper_box = cb
         polygons = getattr(original, 'polygons', None)
         if polygons:
             pad.polygons = [[(x + c*(u-ox) + s*(v-oy), y - s*(u-ox) + c*(v-oy))
@@ -5523,7 +5550,7 @@ def footprint_at_pose(fp, pose):
     for original, posed in zip(fp.pads, pads_at_pose(fp, pose)):
         pad = _copy.copy(original)
         for name in ('global_x', 'global_y', 'rotation', 'size_x', 'size_y',
-                     'rect_rotation', 'polygons'):
+                     'rect_rotation', 'polygons', 'copper_box'):
             setattr(pad, name, getattr(posed, name))
         if getattr(original, 'hole_x', None) is not None:
             a, b = original.hole_x - fp.x, original.hole_y - fp.y

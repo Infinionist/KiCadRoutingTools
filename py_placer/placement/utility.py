@@ -33,6 +33,19 @@ def compute_footprint_bbox_local(footprint: Footprint) -> Tuple[float, float, fl
     # half-extents follow from that combined angle (exact for any placement angle;
     # reduces to size/2 for an axis-aligned pad in an unrotated footprint).
     for pad in pads:
+        cb = getattr(pad, 'copper_box', None)
+        if cb is not None:
+            # A custom pad's copper to one side of it (`Pad.copper_box`, board
+            # frame about the pad): its corners into the footprint's frame.
+            t = math.radians(footprint.rotation or 0.0)
+            c, s = math.cos(t), math.sin(t)
+            for u in (cb[0], cb[2]):
+                for v in (cb[1], cb[3]):
+                    lx = pad.local_x + u * c - v * s
+                    ly = pad.local_y + u * s + v * c
+                    min_x, max_x = min(min_x, lx), max(max_x, lx)
+                    min_y, max_y = min(min_y, ly), max(max_y, ly)
+            continue
         local_tilt = math.radians((getattr(pad, 'rect_rotation', 0.0) or 0.0)
                                   + (footprint.rotation or 0.0))
         c, s = abs(math.cos(local_tilt)), abs(math.sin(local_tilt))

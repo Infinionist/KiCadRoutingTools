@@ -462,6 +462,15 @@ class Pad:
     # Set by sense_branch.resolve_sense_branches on both parse paths; the
     # router may never attach new copper to it.
     sense: str = ""
+    # A CUSTOM pad's copper box `(x0, y0, x1, y1)` about (global_x, global_y),
+    # board frame, when the copper's centre is off the pad's
+    # (`copper_box_if_offset`): `size_x`/`size_y` box the copper
+    # symmetrically about the pad, so copper drawn to one side of its anchor
+    # reads twice its size (bitaxe's CSD17311Q5 drain pad, 10.0 x 9.1 mm for
+    # 5.0 x 4.6 mm of copper). None for every other pad. Set by BOTH parse
+    # paths; placement reads it (`legality.pad_copper_box`), routing reads
+    # `polygons`.
+    copper_box: Optional[Tuple[float, float, float, float]] = None
 
 
 _VIA_BIRTH_WATCH = None
@@ -1370,12 +1379,26 @@ def _custom_pad_board_extent(pad_text: str, abs_rotation_deg: float,
     corners, 23 um past the copper on awkb_36_split SW16 at 345 deg. Returns
     (0, 0) with no primitives.
     """
+    ext_x = ext_y = 0.0
+    for bx, by, hw in _custom_pad_board_points(pad_text, abs_rotation_deg,
+                                               anchor_x, anchor_y):
+        ext_x = max(ext_x, abs(bx) + hw)
+        ext_y = max(ext_y, abs(by) + hw)
+    return ext_x, ext_y
+
+
+def _custom_pad_board_points(pad_text: str, abs_rotation_deg: float,
+                             anchor_x: float, anchor_y: float):
+    """[(bx, by, hw)]: a custom pad's copper as board-frame points about its
+    anchor, each with the half-width its copper reaches round it -- the
+    primitives' points and strokes plus the anchor shape (a rect's corners, a
+    circle's centre and radius), turned by the pad's ABSOLUTE angle (KiCad
+    negate convention). [] with no primitives."""
     prims = _custom_pad_primitive_points(pad_text)
     if not prims:
-        return 0.0, 0.0
+        return []
     rad = math.radians(-abs_rotation_deg)
     cos_r, sin_r = math.cos(rad), math.sin(rad)
-    ext_x = ext_y = 0.0
     hx, hy = anchor_x / 2.0, anchor_y / 2.0
     if _custom_anchor_kind(pad_text) == 'rect':
         prims = prims + [([(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)], 0.0)]
@@ -1383,13 +1406,37 @@ def _custom_pad_board_extent(pad_text: str, abs_rotation_deg: float,
         # A centre point plus its radius: rotation-invariant, as the circle
         # primitives above. Same radius as the anchor polygon.
         prims = prims + [([(0.0, 0.0)], min(hx, hy))]
-    for pts, hw in prims:
-        for vx, vy in pts:
-            bx = vx * cos_r - vy * sin_r
-            by = vx * sin_r + vy * cos_r
-            ext_x = max(ext_x, abs(bx) + hw)
-            ext_y = max(ext_y, abs(by) + hw)
-    return ext_x, ext_y
+    return [(vx * cos_r - vy * sin_r, vx * sin_r + vy * cos_r, hw)
+            for pts, hw in prims for vx, vy in pts]
+
+
+#: mm the centre of a custom pad's copper must lie off its own centre before
+#: the pad carries `Pad.copper_box`: far above the two parse paths' few-um
+#: disagreement, so both decide alike, and a pad drawn about its anchor keeps
+#: the box it always had.
+COPPER_BOX_OFFSET_MM = 0.01
+
+
+def copper_box_if_offset(x0: float, y0: float, x1: float, y1: float):
+    """`(x0, y0, x1, y1)` -- a custom pad's copper box about its centre --
+    when its centre is more than COPPER_BOX_OFFSET_MM off the pad's, else
+    None (the pad's symmetric `size_x`/`size_y` box is then its copper's)."""
+    if max(abs(x0 + x1), abs(y0 + y1)) / 2.0 > COPPER_BOX_OFFSET_MM:
+        return (x0, y0, x1, y1)
+    return None
+
+
+def _custom_pad_board_box(pad_text: str, abs_rotation_deg: float,
+                          anchor_x: float, anchor_y: float):
+    """The board-frame box `(x0, y0, x1, y1)` of a custom pad's copper about
+    its anchor, side by side -- `_custom_pad_board_extent` takes the farther
+    side on each axis and centres a box twice that on the anchor -- or None
+    with no primitives."""
+    pts = _custom_pad_board_points(pad_text, abs_rotation_deg, anchor_x, anchor_y)
+    if not pts:
+        return None
+    return (min(bx - hw for bx, _by, hw in pts), min(by - hw for _bx, by, hw in pts),
+            max(bx + hw for bx, _by, hw in pts), max(by + hw for _bx, by, hw in pts))
 
 
 def _adaptive_circle_n(r: float, eps: float = 0.001, lo: int = 16,
@@ -4600,6 +4647,7 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             # A custom pad whose copper IS its anchor (`_custom_copper_is_anchor`)
             # is sized as the anchor rect, with its residual tilt, below.
             custom_resolved = False
+            copper_box = None
             if pad_shape == 'custom' and not _custom_copper_is_anchor(
                     pad_text, size_x, size_y):
                 # pad_rotation: the file's (at ...) angle is the pad's ABSOLUTE
@@ -4607,6 +4655,9 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
                 # _resolve_pad_rect).
                 ext_bx, ext_by = _custom_pad_board_extent(
                     pad_text, pad_rotation, size_x, size_y)
+                _box = _custom_pad_board_box(pad_text, pad_rotation, size_x, size_y)
+                if _box is not None:
+                    copper_box = copper_box_if_offset(*_box)
                 if ext_bx > 0 or ext_by > 0:
                     # Board-frame symmetric box about the anchor, matching the
                     # pcbnew builder's convention exactly (rect_rotation 0) --
@@ -4767,6 +4818,7 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
                 unconnected_layer_mode=unconnected_layer_mode_from_text(pad_text),
                 die_length=_pad_die[0],
                 die_delay=_pad_die[1],
+                copper_box=copper_box,
             )
 
             footprint.pads.append(pad)
@@ -8808,6 +8860,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             # frame - for a rotated pad the anchor's long side leaks into the wrong
             # board axis and over-widens the pad (e.g. U9 QFN: narrow 0.28 -> 0.71).
             pad_polygons = None
+            copper_box = None
             if shape == 'custom':
                 # A pad whose copper IS its anchor is the anchor rect with its
                 # residual tilt, as on the text path (`_custom_copper_is_anchor`);
@@ -8859,11 +8912,19 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                         size_y = 2 * max(abs(to_mm(_eb.GetTop()) - global_y),
                                          abs(to_mm(_eb.GetBottom()) - global_y))
                         rect_rotation = 0.0
+                        copper_box = copper_box_if_offset(
+                            to_mm(_eb.GetLeft()) - global_x, to_mm(_eb.GetTop()) - global_y,
+                            to_mm(_eb.GetRight()) - global_x, to_mm(_eb.GetBottom()) - global_y)
                     except Exception:
                         if pad_polygons:
                             size_x = 2 * max(abs(x - global_x) for _r in pad_polygons for x, _ in _r)
                             size_y = 2 * max(abs(y - global_y) for _r in pad_polygons for _, y in _r)
                             rect_rotation = 0.0
+                            copper_box = copper_box_if_offset(
+                                min(x for _r in pad_polygons for x, _ in _r) - global_x,
+                                min(y for _r in pad_polygons for _, y in _r) - global_y,
+                                max(x for _r in pad_polygons for x, _ in _r) - global_x,
+                                max(y for _r in pad_polygons for _, y in _r) - global_y)
             else:
                 # Resolve the pad rectangle into board space (keyed on the absolute
                 # total rotation, not pad_rotation alone — see the text-parser path).
@@ -8987,6 +9048,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                 unconnected_layer_mode=unconnected_layer_mode_from_pcbnew(pad),
                 die_length=_pad_die[0],
                 die_delay=_pad_die[1],
+                copper_box=copper_box,
             )
 
             footprint.pads.append(pad_obj)

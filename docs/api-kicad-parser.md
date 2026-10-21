@@ -206,7 +206,14 @@ tilt, like an ordinary pad; otherwise it is the board-axis box of the copper
 (anchor shape plus primitives) about the copper centre, `rect_rotation` 0. The
 box never includes the drill (an NPTH custom pad is its anchor, not its hole)
 and is centred on the copper, not the hole, when the pad has a copper offset.
-`anchor_size` is the anchor in the pad frame.
+`anchor_size` is the anchor in the pad frame. A box about the pad holds copper
+drawn to one side of it at twice its size, so when the copper's centre is more
+than `COPPER_BOX_OFFSET_MM` (0.01) off the pad's, `copper_box` carries the
+copper's own box `(x0, y0, x1, y1)` about `global_x`/`global_y`, board frame
+(bitaxe's CSD17311Q5 drain pad: `size_x` x `size_y` 10.0 x 9.1, `copper_box`
+5.0 x 4.6 to one side); None otherwise. Both parse paths set it, from the same
+points as the box (text) and from pcbnew's effective shape. Placement reads it
+through `legality.pad_copper_box`; routing reads `polygons`.
 
 ### `Segment`
 

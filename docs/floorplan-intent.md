@@ -1081,6 +1081,7 @@ question.
 | instrument | its question | near face | far face |
 |---|---|---|---|
 | `legality.rect_on` | may these two parts overlap? | courtyard | **drilled-pad rect** |
+| `simple_anneal` overlap, `simple.Model` halo | how far apart must the anneal push them? | courtyard | **drilled-pad rect** |
 | `options.grow_board`, undeclared | does the area fit on the busier face? | courtyard | **drilled-pad rect** |
 | `options.grow_board`, declared `F`/`B` | does every part fit on the one populated face? | courtyard | **nothing** — see below |
 | `floorplan.rule_assembly_side` | how many reflow passes? | body face only | **nothing** |

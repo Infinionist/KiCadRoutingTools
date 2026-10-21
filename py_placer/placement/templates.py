@@ -239,14 +239,19 @@ def _legs(pcb, sub, pads):
 
 
 def _pad_rects(part, fp, pose):
-    """k x 4 array: the part's connected pads' copper rects at `pose`, half
-    extents swapped by a quarter turn from the parsed pose."""
-    from .legality import pad_half_extents
+    """k x 4 array: the part's connected pads' copper rects at `pose`
+    (`legality.pad_copper_box`), the box's offset from its pad turned and its
+    half extents swapped by a quarter turn from the parsed pose."""
+    from .legality import pad_copper_box
+    from .simple import _turn
     pts = part.pad_globals(*pose)
     odd = abs((pose[2] - part.orig_rot) % 180.0 - 90.0) < 1e-6
     rows = []
     for (x, y, _n), p in zip(pts, _conn_pads(fp)):
-        a, b = pad_half_extents(p)
+        cx, cy, a, b = pad_copper_box(p)
+        if cx != p.global_x or cy != p.global_y:
+            ox, oy = _turn(cx - p.global_x, cy - p.global_y, pose[2] - part.orig_rot)
+            x, y = x + ox, y + oy
         if odd:
             a, b = b, a
         rows.append((x - a, y - b, x + a, y + b))
@@ -268,8 +273,8 @@ def fit(pcb, state, sketch, *, step: float = 0.1, fine: float = 0.01,
     clearance, the seat gate's courtyard rule; `FIT_MARGIN_MM` more) from what
     each part already seated presents on the faces they share (its courtyard
     on its own face, its drilled pads' boxes on the other, as the seat gate
-    pairs them, which matters for a locked neighbour's leads); every member is
-    on the chip's own face. It is seated trying
+    pairs them: a member on the far face of a through-hole chip sits clear of
+    its leads, under its body if need be). It is seated trying
     each quarter turn (or the sketch's `rot`) and, with `side`, only centres
     on that side of the anchor (`side_ok`). A coarse grid
     (`step`) within `reach` mm of its partners, then a fine one round the
@@ -318,14 +323,6 @@ def fit(pcb, state, sketch, *, step: float = 0.1, fine: float = 0.01,
         if r in poses:
             raise TemplateError(f"{where}: named twice")
         P = parts[r]
-        if getattr(P, 'side', None) != a_side:
-            # A through-hole chip's far face is its leads alone to the seat
-            # gate, but the anneal's overlap term prices its whole courtyard
-            # there (`simple_anneal`'s face masks), so the anneal pushes a
-            # member under its body away. Refused until the anneal prices the
-            # far face as the gate does (README TODO).
-            raise TemplateError(f"{where}: on the other face from {a}; a template holds "
-                                f"only parts on its chip's face")
         pads = m.get('pads') or {}
         if r not in pads:
             raise TemplateError(f"{where}: `pads` must name {r}'s own pads and its partners'")

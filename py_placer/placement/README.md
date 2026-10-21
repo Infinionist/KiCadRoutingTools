@@ -386,7 +386,15 @@ not show and which was named while grouping, from 4-15 mm to 1.0 mm. The
 routing was no worse on any of the five. On the first four no broken or
 unrouted net was gained or lost, and the vias differed by less than the
 seed-to-seed spread; on covg_patchclamp 3 of the 6 judged seeds routed with
-nothing blocking, against none of 6 without the template. The
+nothing blocking, against none of 6 without the template. A member may sit
+on the far face of a through-hole chip, under its body, so bread_dcmotor's
+two LMD18200 H-bridges (through-hole, their bootstrap and supply caps on the
+back) take templates too: every member ended at its pose on the six judged
+seeds, which routed with nothing blocking in both arms, at 55 vias on
+average against 60. On mikoto_nrf52840 the nRF52840's reference layout,
+whose RF match sits beside a chip antenna, routed with nothing blocking on 4
+of 6 judged seeds against 3 of 6, though on that crowded board the final
+legality pass moved 1-2 members a seed up to 7.1 mm off their poses. The
 `plan-pcb-placement` skill's §3.5 is how an agent goes from the datasheet to
 the sketch.
 
@@ -524,7 +532,13 @@ gate, `place_pose` and the graders:
 - **Faces.** A part occupies its own face with its full courtyard, and the
   other face only where its drilled pads are (one box per cluster of holes),
   so a back-side cap may sit under a front-side chip but not inside a
-  front-side connector's pin field.
+  front-side connector's pin field. The anneal's overlap and halo terms
+  pair two parts the same way, so it does not push such a cap out from
+  under the chip's body.
+- **Custom pads.** A custom pad whose copper lies to one side of it (a
+  power FET's drain, a printed antenna) is boxed round that copper
+  (`legality.pad_copper_box`, from `Pad.copper_box`), not by the parser's
+  `size_x`/`size_y`, which centre a box twice that size on the pad.
 - **Courtyards and the outline.** The seat gate keeps courtyards on one face
   at least the board's clearance apart, and inside the board's real Edge.Cuts
   outline (cutouts and notches included) by the edge clearance.
@@ -563,22 +577,6 @@ contract.
      rule in the design brief, or per-net widths through `--power-nets` /
      `--power-nets-widths`. Loop inductance and copper area would be new
      router costs, graded on the routed board.
-- **A through-hole part's far face in the anneal.** The seat gate prices a
-  through-hole part on its far face by its leads alone (`legality.FarSide`),
-  but `simple_anneal`'s overlap term pairs any two parts whose faces meet,
-  at their whole courtyards. So a part on the back under a through-hole
-  part's body (a bootstrap cap between a TO-220's pins, as bread_dcmotor's
-  author placed them) is legal, yet the anneal pushes it away, and a
-  template cannot hold it there. Pricing the far face by the lead boxes, as
-  the gate does, would let templates and decaps keep a part there.
-- **Custom pads in placement.** A custom pad whose anchor sits at a corner of
-  its copper is modelled as a box centred on the anchor
-  (`kicad_parser._custom_pad_board_extent`), twice the copper's size: bitaxe's
-  CSD17311Q5 drain pad is 10.0 x 9.1 mm against 5.0 x 4.6 mm of copper.
-  Routing reads the real outline, but placement prices pad clearance on that
-  box, and seats a part with no courtyard by it. A box round the copper's
-  own extent, on both parse paths, would let a template or a placement put
-  parts beside such a FET.
 - **Shield cans.** A can is neither a solid body nor free space: parts sit
   under it, inside its fence, and a net reaches them only through the few
   openings the fence leaves (gaps in the wall, or a via to an inner layer).

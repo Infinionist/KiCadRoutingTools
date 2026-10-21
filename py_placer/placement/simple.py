@@ -577,20 +577,29 @@ class Model:
 
     def _pad_rects(self, ref, num):
         """The copper rects of `ref`'s connected pads numbered `num` at its live
-        pose, as `legality.pad_rect` gives them: each centre (`_pad_xy`) and
-        its half-extents, which a quarter turn from the board's pose swaps."""
+        pose, as `legality.pad_rect` gives them: each centre (`_pad_xy`), its
+        copper box's offset from it (`legality.pad_copper_box`), which turns
+        with the part, and its half-extents, which a quarter turn from the
+        board's pose swaps."""
         key = (ref, str(num))
         hx = self._phx.get(key)
         if hx is None:
-            from .legality import pad_half_extents
+            from .legality import pad_copper_box
             conn = [p for p in self.pcb.footprints[ref].pads if p.net_id > 0]
-            hx = self._phx[key] = [pad_half_extents(p) for p in conn
-                                   if str(p.pad_number) == str(num)]
+            hx = self._phx[key] = [
+                (cx - p.global_x, cy - p.global_y, a, b)
+                for p in conn if str(p.pad_number) == str(num)
+                for cx, cy, a, b in [pad_copper_box(p)]]
         part = self.state.parts[ref]
         odd = abs((part.rot - part.orig_rot) % 180.0 - 90.0) < 1e-6
-        return [(x - (b if odd else a), y - (a if odd else b),
-                 x + (b if odd else a), y + (a if odd else b))
-                for (x, y), (a, b) in zip(self._pad_xy(ref, num), hx)]
+        out = []
+        for (x, y), (ox, oy, a, b) in zip(self._pad_xy(ref, num), hx):
+            if ox or oy:
+                ox, oy = _turn(ox, oy, part.rot - part.orig_rot)
+                x, y = x + ox, y + oy
+            out.append((x - (b if odd else a), y - (a if odd else b),
+                        x + (b if odd else a), y + (a if odd else b)))
+        return out
 
     def claim_over(self, c):
         """mm past claim `c`'s limit (0 without one), summed over its subject
@@ -988,12 +997,29 @@ class Model:
             return 0.0
         if a in st.container_refs or b in st.container_refs:
             return 0.0
-        if not set(pa.sides) & set(pb.sides):
+        shared = set(pa.sides) & set(pb.sides)
+        if not shared:
             return 0.0
-        ra, rb = pa.rect(), pb.rect()
         fa, fb = self.fronts(a), self.fronts(b)
         if drop_b:
             fb = tuple(None if i in drop_b else f for i, f in enumerate(fb))
+        if pa.side == pb.side:
+            return self._halo_rects(pa, pb, pa.rect(), pb.rect(), fa, fb)
+        # On opposite faces, a drilled part among them: on each face they
+        # share, a part on its far face presents its lead boxes alone
+        # (`legality.rect_on`), as the seat gate measures the pair.
+        from .legality import far_boxes
+        (ca, ta), (cb, tb) = pa.rects(), pb.rects()
+        worst = 0.0
+        for f in sorted(shared):
+            for ra in ((ca,) if f == pa.side else far_boxes(ta)):
+                for rb in ((cb,) if f == pb.side else far_boxes(tb)):
+                    worst = max(worst, self._halo_rects(pa, pb, ra, rb, fa, fb))
+        return worst
+
+    def _halo_rects(self, pa, pb, ra, rb, fa, fb):
+        """`_halo_raw` of two parts presenting `ra` and `rb`, with fronts
+        `fa` and `fb`."""
         short, any_need = float('inf'), False
         # x: the W/E fronts, spanning y from the part's y; y: N/S, spanning x
         for lo, hi, olo, ohi, ca, cb, k in ((0, 2, 1, 3, pa.y, pb.y, 0),
@@ -1052,8 +1078,19 @@ class Model:
         for i, p in enumerate(conn):
             if i >= len(g):
                 break
-            w, hh = (p.size_y, p.size_x) if turn else (p.size_x, p.size_y)
             layers = list(p.layers) if p.drill == 0 else ['*.Cu']
+            cb = getattr(p, 'copper_box', None)
+            if cb is not None:
+                # copper to one side of the pad (`Pad.copper_box`): its own
+                # box, the offset turned with the part
+                dx, dy = _turn((cb[0] + cb[2]) / 2.0, (cb[1] + cb[3]) / 2.0,
+                               part.rot - fp.rotation)
+                w, hh = cb[2] - cb[0], cb[3] - cb[1]
+                if turn:
+                    w, hh = hh, w
+                out.append((g[i][0] + dx, g[i][1] + dy, w, hh, layers))
+                continue
+            w, hh = (p.size_y, p.size_x) if turn else (p.size_x, p.size_y)
             out.append((g[i][0], g[i][1], w, hh, layers))
         return out
 
@@ -1352,7 +1389,7 @@ class Model:
                     self._lpin[i] = idx.index(T[i].data['pad_index'])
         # each pin term's caps: how far a pad of the cap on the pin's net can
         # reach from the cap's origin, at any turn (a pair's lower bound)
-        from .legality import pad_half_extents
+        from .legality import pad_copper_box
         self._lrad = {}
         for i in self._lterms:
             if T[i].kind == 'pin':
@@ -1360,8 +1397,9 @@ class Model:
                 for c in T[i].data['caps']:
                     f = fps[c]
                     self._lrad[(c, net)] = max(
-                        (math.hypot(q.global_x - f.x, q.global_y - f.y) + math.hypot(*pad_half_extents(q))
-                         for q in f.pads if q.net_id == net), default=None)
+                        (math.hypot(cx - f.x, cy - f.y) + math.hypot(hx, hy)
+                         for q in f.pads if q.net_id == net
+                         for cx, cy, hx, hy in [pad_copper_box(q)]), default=None)
         self._lfp_hull = {}
         for r in {m for i in self._lterms if T[i].kind == 'decap' for m in self._lmem[i]}:
             f = fps[r]

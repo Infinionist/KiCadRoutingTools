@@ -400,11 +400,12 @@ leaving that pose expensive.
      qualify (four caps on VIN), take the ones your groups file puts in the
      chip's group; the others serve something else. A chip with two VIN/PGND
      pin pairs takes a cap set at each pair, where the board has them.
-   - **Faces.** A template holds only parts on its chip's face. A part on
-     the other face (a bypass cap on the back between a through-hole chip's
-     pins): leave it out and write a `proximity[]` row for it (§2), keeping
-     the author's face, unless the whole group belongs on one face (`side`,
-     §3.3).
+   - **Faces.** A member keeps the face the author gave it; a template
+     never moves a part between faces. A member on the other face from a
+     through-hole chip (a bypass cap on the back between its pins) is
+     fitted clear of the chip's leads, under its body where there is room,
+     as the seat gate allows. If the whole group belongs on one face
+     (`side`, §3.3), fit the template after the faces are settled.
    - **What is not a member.** The chip's other decaps and its crystal: the
      decap and crystal rules hold them. A heatsink or thermal pad under the
      chip: it stays with the group. Bulk capacitance the text places by
@@ -561,9 +562,8 @@ leaving that pose expensive.
    - **A part with no courtyard** is fitted, and placed, as the box round
      its pads; the run names it, and the render labels it. Check that box
      against the part's real body. A custom pad (a power FET's drain, a
-     printed antenna) can be modelled larger than its copper, and the placer
-     uses the same box. Note any such part in REPORT.md rather than working
-     round it.
+     printed antenna) is boxed round its own copper, even when that copper
+     lies to one side of the pad.
 
    **Give up on the template**, keep the §2 rows and say why in REPORT.md,
    when after adjusting a member's legs still run several mm past what the

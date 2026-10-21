@@ -47,7 +47,7 @@ from placement.utility import compute_footprint_bbox_local, snap_to_grid
 from placement.legality import (BoardOutlineGate, PadClearanceModel, PadFloor,
                                 footprint_side, side_of_layer,
                                 _pad_carries_copper, format_required_clause,
-                                pad_half_extents, point_to_seg_dist,
+                                pad_copper_box, pad_rect, point_to_seg_dist,
                                 rect_gap, ring_is_rect,
                                 rotate_local_bounds)
 
@@ -746,10 +746,8 @@ class _Cap:
         for p in fp.pads:
             if not any(str(l).endswith('.Cu') for l in p.layers):
                 continue  # paste/mask-only aperture, not copper
-            off_x = p.global_x - fp.x
-            off_y = p.global_y - fp.y
-            half_x, half_y = pad_half_extents(p)
-            self.pads.append((off_x, off_y, half_x, half_y, p.net_id))
+            cx, cy, half_x, half_y = pad_copper_box(p)
+            self.pads.append((cx - fp.x, cy - fp.y, half_x, half_y, p.net_id))
             # The GEOMETRY filter above stays loose on purpose (see the
             # comment), but a FLOOR must not: PadClearanceModel.pad_floor
             # reads local_clearance unconditionally, and an np_thru_hole
@@ -1348,11 +1346,7 @@ class _Repair:
                 through = (p.drill or 0) > 0
                 pside = None if through else (
                     'B' if any(str(l).startswith('B') for l in copper) else 'F')
-                half_x, half_y = pad_half_extents(p)
-                self.foreign_pads.append(
-                    (p.global_x - half_x, p.global_y - half_y,
-                     p.global_x + half_x, p.global_y + half_y,
-                     p.net_id, pside))
+                self.foreign_pads.append((*pad_rect(p), p.net_id, pside))
                 _fl = None if self._floors is None else self._floors.pad_floor(p)
                 self.foreign_pad_floors.append(_fl)
                 self.foreign_pad_mf.append(
@@ -3557,9 +3551,7 @@ def _repair_one_arm(pcb_data: PCBData, pcb_file: str,
             # by (sqrt(2)-1)*half along the board axes -- 0.14mm on glasgow's
             # 45-degree R9. Converting the clearance term and leaving the shape
             # would be exactly the half-conversion this change is about.
-            ex, ey = pad_half_extents(p)
-            rect = (p.global_x - ex, p.global_y - ey,
-                    p.global_x + ex, p.global_y + ey)
+            rect = pad_rect(p)
             # Graded at the pair's REAL requirement, like everything else.
             # `keepout` is the prune over-reach, so re-form the pair's keep-out
             # from the via's radius. A locked fiducial's keep-clear override is

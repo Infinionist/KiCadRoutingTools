@@ -2510,9 +2510,7 @@ def _plug_seat_rect(ref, fp, crt, gate):
     for p in pads:
         if not p.net_id:
             continue
-        hx, hy = legality.pad_half_extents(p)
-        pr = (p.global_x - hx, p.global_y - hy,
-              p.global_x + hx, p.global_y + hy)
+        pr = legality.pad_rect(p)
         if gate.edge_clearance(pr) <= MATING_FINGER_EDGE_MM:
             near += 1
     if near < 2:

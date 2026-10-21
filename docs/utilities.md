@@ -952,8 +952,8 @@ python3 -X utf8 py_tools/fit_template.py board.kicad_pcb --sketch u2.sketch.json
 drift (`--template-weight`); `check_floorplan` grades it (`template`, a
 WARN). Exit 0 fitted. Exit 2 means one of:
 - an unreadable input;
-- a sketch the board cannot fit: a partner listed after its member, a
-  member on the other face, or no pose within reach.
+- a sketch the board cannot fit: a partner listed after its member, or no
+  pose within reach.
 
 ## Run Ledger (`converge.py`)
 
