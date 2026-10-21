@@ -10,7 +10,9 @@ on the GLB kicad-cli writes (every F.Cu part node is `Ry(rot)`, every B.Cu one
 
 **Parts are ALWAYS drawn** as a body box over their pads plus the pads, from
 the board itself, so the 3D board needs nothing but the parsed boards and the
-determinism test can run anywhere Chromium can. Each part's geometry is kept in
+determinism test can run anywhere Chromium can. A part nothing is placed on
+(`_not_assembled`: board-only copper, no pick-and-place, or DNP) is its pads
+alone. Each part's geometry is kept in
 its OWN frame (`local`), recovered from the parsed pad positions by inverting
 `kicad_parser.local_to_global`, so a glide that turns a part (#1086) turns it
 in 3D exactly as in 2D.
@@ -132,11 +134,44 @@ def _not_assembled(pcb) -> set:
     tongue read as a part that is not there (run 36). A part with no model
     that IS assembled keeps its box, as the user chose. Read off the
     parser's `Footprint.attrs` / `has_model` (#1098), the same facts the
-    placement tools use to keep that tongue clear."""
+    placement tools use to keep that tongue clear.
+
+    A DNP part is not assembled either, model or not (#1350): `export_glb`
+    exports with `--no-dnp`, so it never gets its model, and the box it got
+    instead drew a part the board will not carry (imx6ulz_4l: 23 DNP 0402s
+    drawn as boxes and reported as model fallbacks)."""
     return {ref for ref, fp in (getattr(pcb, 'footprints', None) or {}).items()
-            if not getattr(fp, 'has_model', False)
-            and set(getattr(fp, 'attrs', ()) or ())
-            & {'board_only', 'exclude_from_pos_files'}}
+            if (not getattr(fp, 'has_model', False)
+                and set(getattr(fp, 'attrs', ()) or ())
+                & {'board_only', 'exclude_from_pos_files'})
+            } | dnp_refs(pcb)
+
+
+def dnp_refs(pcb) -> set:
+    """The parts marked Do Not Populate (`(attr ... dnp)`), which the GLB
+    export leaves out by design (`--no-dnp`) and the scene draws as bare
+    pads (#1350)."""
+    return {ref for ref, fp in (getattr(pcb, 'footprints', None) or {}).items()
+            if not ref.startswith('#') and getattr(fp, 'dnp', False)}
+
+
+def glb_summary(pcb, refs, nfix=0, nnamed=0) -> str:
+    """The GLB line: how many of the parts that WILL be on the board got a
+    model (#1350). A DNP part is not one of them -- it is exported without
+    its model on purpose -- so it is counted apart and named, never as a part
+    whose model did not resolve."""
+    dnp = dnp_refs(pcb)
+    n = sum(1 for ref in pcb.footprints
+            if not ref.startswith('#') and ref not in dnp)
+    got = sum(1 for ref in refs if ref not in dnp)
+    shown = sorted(dnp)
+    return ('GLB: %d of %d parts have a model%s%s%s'
+            % (got, n, (' (%d .wrl -> .step)' % nfix) if nfix else '',
+               (' (%d found by file name in the library)' % nnamed)
+               if nnamed else '',
+               ('; %d DNP part(s) not populated, so not drawn: %s%s'
+                % (len(dnp), ', '.join(shown[:8]),
+                   '...' if len(shown) > 8 else '')) if dnp else ''))
 
 
 def _clip_pours(pours, outline, cutouts) -> list:
@@ -367,15 +402,10 @@ def export_glb(board_path, pcb, out_dir, cli=None,
         poses = {ref: [fp.x, fp.y, fp.rotation or 0.0,
                        'B' if (fp.layer or '').startswith('B') else 'F']
                  for ref, fp in pcb.footprints.items() if ref in refs}
-        n = sum(1 for ref in pcb.footprints if not ref.startswith('#'))
         return ({'path': out,
                  'matched': sorted({r.split('~')[0] for r in refs}),
                  'poses': poses},
-                'GLB: %d of %d parts have a model%s%s'
-                % (len(refs), n, (' (%d .wrl -> .step)' % nfix)
-                   if nfix else '',
-                   (' (%d found by file name in the library)' % nnamed)
-                   if nnamed else ''))
+                glb_summary(pcb, refs, nfix, nnamed))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
