@@ -604,6 +604,15 @@ def regrade_record(summaries: List[Dict], grades: Dict[str, Dict],
         # that the shipped board has connected.
         'unowned_broken': sorted(broken & set(disturbed_only) - set(last)),
         'recovered': sorted(was_failing & set(grades) - broken),
+        # Each broken net's #409 pad-pair tally on the shipped board, which
+        # _apply_regrade puts in pad_pairs_open: the summaries' entries are
+        # snapshots taken before the final reconciliation, so a net broken
+        # after them had none (#1309).
+        'pad_pairs': {n: {'total': int(g['pad_pairs'][0]),
+                          'connected': int(g['pad_pairs'][1]),
+                          'copper': bool(g.get('copper'))}
+                      for n, g in grades.items()
+                      if g.get('broken') and g.get('pad_pairs')},
     }
 
 
@@ -627,16 +636,31 @@ def _apply_regrade(merged: Dict, regrade: Dict, summaries: List[Dict]) -> None:
             if v == 'full' or n in broken}
     # Per-net attribution, newest entry per net across every summary, kept for
     # the nets that are still failing (the old path kept pass 1's only).
+    # pad_pairs_open takes the re-grade's own tally of the shipped board where
+    # it has one (#1309: a net broken after the last summary had no entry).
+    _pairs = regrade.get('pad_pairs') or {}
     for k, key in (('blockers', 'net'), ('boxed_in', 'net'),
                    ('pad_pairs_open', 'net')):
-        if not any(k in s for s in summaries):
+        if not any(k in s for s in summaries) and not (
+                k == 'pad_pairs_open' and _pairs):
             continue
         by_net: Dict[str, Dict] = {}
         for s in summaries:
             for e in s.get(k) or []:
                 if isinstance(e, dict) and e.get(key):
                     by_net[e[key]] = e
+        if k == 'pad_pairs_open':
+            for n, pp in _pairs.items():
+                if pp['connected'] >= pp['total']:
+                    continue
+                old = by_net.get(n) or {}
+                by_net[n] = {'net': n, 'pairs_connected': pp['connected'],
+                             'pairs_total': pp['total'], 'outcome': 'open',
+                             'open_subtype': old.get('open_subtype') or (
+                                 'partial' if pp['copper'] else 'unrouted')}
         merged[k] = [e for n, e in by_net.items() if n in broken]
+        if k == 'pad_pairs_open':
+            merged[k].sort(key=lambda e: e['net'])
     if 'pad_pairs_total' in merged and 'pad_pairs_open' in merged:
         _deficit = sum(e.get('pairs_total', 0) - e.get('pairs_connected', 0)
                        for e in merged['pad_pairs_open'])

@@ -89,7 +89,7 @@ def net_connectivity_map(pcb_data, tolerance: float = 0.02,
     for net_id, pads in (pcb_data.pads_by_net or {}).items():
         if not net_id or len(pads or []) < 2:
             continue          # net 0 pseudo-net / trivially connected
-        broken, dis_pads = _grade_net(
+        broken, dis_pads, _pairs = _grade_net(
             pcb_data, net_id, pads, segs_by_net.get(net_id, []),
             vias_by_net.get(net_id, []), zones_by_net.get(net_id, []),
             tolerance)
@@ -148,14 +148,18 @@ def _copper_by_net(pcb_data, segs_by_net, vias_by_net, zones_by_net):
 
 
 def _grade_net(pcb_data, net_id, pads, segs, vias, zones, tolerance):
-    """(broken, disconnected_pad_locations) for one net: the zone/fill-aware
-    union-find route.py's own sweeps grade with, multi-board aware."""
-    from check_connected import check_net_connectivity, net_break_within_outlines
+    """(broken, disconnected_pad_locations, (pairs_total, pairs_connected))
+    for one net: the zone/fill-aware union-find route.py's own sweeps grade
+    with, multi-board aware, and its #409 pad-pair tally."""
+    from check_connected import (check_net_connectivity,
+                                 net_break_within_outlines,
+                                 net_pad_pairs_within_outlines)
     r = check_net_connectivity(net_id, segs, vias, pads, zones,
                                tolerance=tolerance, pcb_data=pcb_data)
     # #479 multi-board: only a break WITHIN one outline is a real break.
     broken, dis_pads = net_break_within_outlines(pcb_data, r)
-    return bool(broken), (list(dis_pads or []) if broken else [])
+    return (bool(broken), (list(dis_pads or []) if broken else []),
+            net_pad_pairs_within_outlines(pcb_data, r, pads))
 
 
 def grade_nets(pcb_data, net_ids, tolerance: float = 0.02,
@@ -164,7 +168,8 @@ def grade_nets(pcb_data, net_ids, tolerance: float = 0.02,
                zones_by_net: Optional[Dict[int, list]] = None
                ) -> Dict[int, Dict]:
     """Per-net detail for `net_ids` ONLY, on `net_connectivity_map`'s grade:
-    {net_id: {'pads', 'broken', 'copper', 'failed_pads'}}, `failed_pads`
+    {net_id: {'pads', 'broken', 'copper', 'pad_pairs', 'failed_pads'}},
+    `pad_pairs` the (pairs_total, pairs_connected) tally, `failed_pads`
     shaped like route.py's failed_multipoint entries. Nets with fewer than two
     pads are skipped (trivially connected). route.py's final re-grade (#1069)
     uses it because it must grade the nets the run OWNS, never the whole
@@ -178,12 +183,13 @@ def grade_nets(pcb_data, net_ids, tolerance: float = 0.02,
             continue
         segs = segs_by_net.get(net_id, [])
         vias = vias_by_net.get(net_id, [])
-        broken, dis = _grade_net(pcb_data, net_id, pads, segs, vias,
-                                 zones_by_net.get(net_id, []), tolerance)
+        broken, dis, pairs = _grade_net(pcb_data, net_id, pads, segs, vias,
+                                        zones_by_net.get(net_id, []), tolerance)
         out[net_id] = {
             'pads': len(pads),
             'broken': broken,
             'copper': bool(segs or vias),
+            'pad_pairs': list(pairs),
             'failed_pads': [
                 {'x': round(float(p[0]), 4), 'y': round(float(p[1]), 4),
                  'component_ref': p[3] if len(p) > 3 else '?',
