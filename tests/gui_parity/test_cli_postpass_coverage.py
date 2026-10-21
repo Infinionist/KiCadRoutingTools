@@ -201,6 +201,11 @@ DISCOVERY_EXEMPT = {'add_drc_fix_args', 'drc_fix_kwargs', 'find_kicad_cli',
                     # step's descent lowered (the writeback's class_clearance_relaxed
                     # record). No board mutation; the GUI writes no project record.
                     'warn_if_class_clearance_relaxed',
+                    # The fanout mains' pre-engine snapshot of the input board's
+                    # copper, which fanout_drc_grazes subtracts to scope its
+                    # audit to the step's own copper. A pure READER, no board
+                    # mutation.
+                    'copper_keys',
                     # #441: pure RESOLVER (max(cli, project edge rule, fab floor) ->
                     # float) feeding the engine's board_edge_clearance; same VALUE-level
                     # parity story as read_project_edge_clearance above -- the GUI
@@ -214,8 +219,9 @@ DISCOVERY_EXEMPT = {'add_drc_fix_args', 'drc_fix_kwargs', 'find_kicad_cli',
 # spot) without demanding a GUI counterpart. A board-MUTATING pass must go in
 # REGISTRY (with a real GUI counterpart), never here.
 KNOWN_CLI_ONLY = {
-    'run_drc': 'bga/qfn fanout post-engine DRC graze audit -> JSON_SUMMARY '
-               'drc_grazes (report-only, no board mutation)',
+    'fanout_drc_grazes': 'bga/qfn fanout post-engine DRC graze audit -> '
+                         'JSON_SUMMARY drc_grazes, scoped to the copper the '
+                         'step laid (report-only, no board mutation)',
     # #910. OPT-IN (--write-fill) and CLI-only ON PURPOSE: it writes
     # `filled_polygon` blocks into the DELIVERED FILE, and the GUI has no
     # delivered file -- it applies copper to the user's open board, where

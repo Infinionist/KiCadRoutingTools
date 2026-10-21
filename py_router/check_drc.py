@@ -3786,6 +3786,97 @@ def render_violation_panels(pcb_file: str, violations: List[dict],
     return paths
 
 
+def _nm(v):
+    return int(round(v * 1e6))
+
+
+def _seg_geom(x1, y1, x2, y2):
+    a, b = (_nm(x1), _nm(y1)), (_nm(x2), _nm(y2))
+    return (a, b) if a <= b else (b, a)
+
+
+def copper_keys(pcb_data):
+    """The board's tracks and vias as exact keys, for telling the copper one
+    step laid from the copper it was given: ({(layer, endpoints)},
+    {via centre}), in integer nanometres (KiCad's own unit, so a file read
+    back keys the same). Take it BEFORE the step runs; the engines append
+    their own copper to the PCBData they are handed."""
+    segs = {(s.layer,) + _seg_geom(s.start_x, s.start_y, s.end_x, s.end_y)
+            for s in pcb_data.segments}
+    vias = {(_nm(v.x), _nm(v.y)) for v in pcb_data.vias}
+    return segs, vias
+
+
+def _row_on_copper(row, segs, seg_geoms, vias):
+    """Does a run_drc row name an item in the given copper? A row cites
+    its items by location: `seg_loc` (and a 4-long `loc1`/`loc2`) is a
+    track, on the row's `layer` when it carries one; `via_loc` (and a
+    2-long `loc1`/`loc2`) is a via. A pad or a hole is never copper a
+    step laid."""
+    lay = row.get('layer')
+
+    def _seg(loc):
+        g = _seg_geom(*loc)
+        return ((lay,) + g) in segs if lay else g in seg_geoms
+
+    for k in ('seg_loc', 'loc1', 'loc2', 'via_loc'):
+        loc = row.get(k)
+        if not loc:
+            continue
+        if len(loc) == 4 and k != 'via_loc':
+            if _seg(loc):
+                return True
+        elif len(loc) == 2 and k != 'seg_loc':
+            if (_nm(loc[0]), _nm(loc[1])) in vias:
+                return True
+    return False
+
+
+def fanout_drc_grazes(out_path, clearance, input_copper):
+    """A fanout step's `drc_grazes` (JSON_SUMMARY): the clearance rows of its
+    WRITTEN board that copper THIS step laid takes part in, graded at
+    `clearance`. `input_copper` is `copper_keys` of the board the step was
+    given, so whatever the output has beyond it -- escapes, vias, plane drops,
+    any post-pass's rewrite -- is the step's own.
+
+    The fanouts used to count every violation on the output board, so each
+    step re-reported every earlier step's grazes: on eis the U4 QFN fanout at
+    0.2 reported 616, every one of them the three BGA fanouts' and none its
+    own. The routing skill re-runs THIS fanout with a thinner track or a
+    smaller via while a class is > 0, which can never clear another part's
+    copper. The keys are unchanged, `scope` says what they count."""
+    import io
+    import contextlib
+    pcb = parse_kicad_pcb(out_path)
+    segs, vias = copper_keys(pcb)
+    new_segs = segs - input_copper[0]
+    new_vias = vias - input_copper[1]
+    new_geoms = {k[1:] for k in new_segs}
+    with contextlib.redirect_stdout(io.StringIO()):   # keep JSON_SUMMARY clean
+        # check_sizes=False: graded at --clearance (#130); the #176 fab-width
+        # floor is a separate concern and would change `total`'s meaning.
+        rows = run_drc(out_path, clearance=clearance, quiet=True, max_print=0,
+                       check_sizes=False, pcb_data=pcb)
+    # #962: via-in-paste rows (and their accepted protected/inherited twins)
+    # are a fab-protection finding, not a clearance graze; a fanout's own
+    # stamped via-in-pad would otherwise inflate `total`. #995: an accepted
+    # footprint-own-copper contact is not a graze either.
+    rows = [r for r in rows
+            if r.get('type') not in ('via-in-paste', 'footprint-own-copper')
+            and _row_on_copper(r, new_segs, new_geoms, new_vias)]
+    by = {}
+    for r in rows:
+        by[r['type']] = by.get(r['type'], 0) + 1
+    return {
+        'scope': 'copper this step laid',
+        'pad_via': by.get('pad-via', 0),
+        'via_segment': by.get('via-segment', 0),
+        'pad_segment': by.get('pad-segment', 0),
+        'segment_segment': by.get('segment-segment', 0),
+        'total': len(rows),
+    }
+
+
 def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[str]] = None,
             debug_output: bool = False, quiet: bool = False,
             hole_to_hole_clearance: float = defaults.HOLE_TO_HOLE_CLEARANCE, board_edge_clearance: float = 0.0,

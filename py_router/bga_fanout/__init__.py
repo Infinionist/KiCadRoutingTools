@@ -5152,6 +5152,10 @@ def main():
 
     print(f"Parsing {args.pcb}...")
     pcb_data = parse_kicad_pcb(args.pcb)
+    # the copper this board ARRIVED with: the graze audit below counts only
+    # what this step laid (the engine appends its own copper to pcb_data)
+    from check_drc import copper_keys
+    input_copper = copper_keys(pcb_data)
 
     # Auto-detect BGA component if not specified
     if args.component is None:
@@ -5288,36 +5292,15 @@ def main():
     # detect sub-clearance grazes the escape left behind even when every ball
     # escaped (failed==0): via-over-track / via-over-pad (#130). The planner uses
     # this to retry the fanout with a smaller via / thinner track toward the fab
-    # floor. Subprocess + best-effort: a DRC hiccup must never fail the fanout.
+    # floor, so only the rows THIS step's copper takes part in count
+    # (check_drc.fanout_drc_grazes). Best-effort: a DRC hiccup must never fail
+    # the fanout.
     drc_grazes = {}
     out_path = getattr(args, 'output', None)
     if out_path:
         try:
-            import io as _io, contextlib as _cl
-            from check_drc import run_drc as _run_drc
-            with _cl.redirect_stdout(_io.StringIO()):  # keep JSON_SUMMARY output clean
-                # check_sizes=False: drc_grazes grades clearance grazes at
-                # --clearance (#130); the issue #176 fab-width floor is a separate
-                # concern and would change this 'total's meaning.
-                _viols = _run_drc(out_path, clearance=args.clearance,
-                                  quiet=True, max_print=0, check_sizes=False)
-            # #962: via-in-paste rows (and their accepted protected/inherited
-            # twins) are a fab-protection finding, not a clearance graze; a
-            # fanout's own stamped via-in-pad would otherwise inflate `total`.
-            # #995: an accepted footprint-own-copper contact is not a graze
-            # either -- published by check_drc, counted by nobody.
-            _viols = [_v for _v in _viols
-                      if _v.get('type') not in ('via-in-paste', 'footprint-own-copper')]
-            _by = {}
-            for _v in _viols:
-                _by[_v['type']] = _by.get(_v['type'], 0) + 1
-            drc_grazes = {
-                'pad_via': _by.get('pad-via', 0),
-                'via_segment': _by.get('via-segment', 0),
-                'pad_segment': _by.get('pad-segment', 0),
-                'segment_segment': _by.get('segment-segment', 0),
-                'total': len(_viols),
-            }
+            from check_drc import fanout_drc_grazes
+            drc_grazes = fanout_drc_grazes(out_path, args.clearance, input_copper)
         except Exception as _e:
             drc_grazes = {'error': str(_e)}
 
@@ -5380,8 +5363,9 @@ def main():
         'clearance': args.clearance,
         'track_width': args.track_width,
         'layers': list(args.layers) if args.layers else None,
-        # grazes graded at --clearance; 'total' counts ALL DRC violations on the
-        # output, the via_*/pad_* keys are the fanout-relevant #130 classes.
+        # grazes graded at --clearance, scoped to the copper this step laid
+        # ('scope'): 'total' is every such row, the via_*/pad_* keys are the
+        # fanout-relevant #130 classes.
         'drc_grazes': drc_grazes,
         # Smallest copper clearance any step actually routed at; downstream steps
         # and check_drc grade the board at this floor.

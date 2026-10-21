@@ -654,8 +654,11 @@ Use the printed flags as-is:
   escape via too close to a foreign track or pad), `segment_segment` is the #179
   class (two escape **stubs** grazing — typically the 45° fans of two adjacent pads
   of a tight-pitch diff pair, e.g. 0.4 mm-pitch QFN, clipping at the wrist),
-  `total` is all DRC violations. A *successful* fanout (every ball/pad escaped) can
-  still leave many of these — they're not caught by `failed`. **If any
+  `total` is all of them. Every class counts only violations that copper THIS
+  fanout laid takes part in (`scope`): an earlier step's grazes are not this
+  step's to fix, and a re-run of this fanout cannot clear them. A *successful*
+  fanout (every ball/pad escaped) can still leave many of these — they're not
+  caught by `failed`. **If any
   `drc_grazes` class > 0 and there is headroom above the fab floor, re-run the
   fanout stepping toward — never below — the floor:**
   - `via_segment` / `pad_via` (#130): smaller **`--via-size` / `--via-drill`**
