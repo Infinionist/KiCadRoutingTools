@@ -2227,6 +2227,17 @@ A board this size (the C64 is 390x180 mm) peaks around 5 GB per `route.py`
 run at the default grid, so run comparison arms one after another on a small
 machine.
 
+**A 2-layer through-hole board WITHOUT the buses** (a light interface or
+analog board) is not this class, and the table above does not cover it.
+One board is on record: GND poured on B.Cu, nearly every pad through-hole,
+the defaults (`--layer-costs 1.0 3.0`, via cost 75) routed every net with 16
+vias and 539 mm of copper, and `--layer-costs 1.0 1.0 --via-cost 600`
+routed every net with 0 vias and 535 mm. The likely reason: every link
+starts and ends on a pad present on both layers, so with B.Cu not priced 3x
+it can run wholly on either layer, and a high via cost keeps it there. One
+board is not a default, so route both as arms and keep
+the better (blocking first, then vias, then copper).
+
 ### Multi-Layer Boards (4+ layers)
 
 **Precedence: the Step 5a-tuned DENSITY GATE outranks this section.** The
@@ -2595,7 +2606,18 @@ and `--turn-cost` (default: 1000) were measured on the corpus and no other
 value held up; `--proximity-heuristic-factor` (default: 0.02) beat 0, 0.01
 and 0.04 on a five-board probe and has had no corpus A/B since. Exception:
 2-layer through-hole bus boards, where Step 8 raises the first two together
-with `--layer-costs` and `--via-cost`.
+with `--layer-costs` and `--via-cost` (Step 8 also has a one-board arm for
+through-hole boards without the buses).
+
+**Via-in-pad is allowed by default (#1025).** `route.py` may put a via in a
+same-net SMD pad (an escape via, a via-in-pad rescue, a plane tap) and then
+prints `FAB NOTE: N via(s) placed in pad(s)`; such a via must be filled and
+capped (IPC-4761 Type VII), which the fab charges for. To keep every via off
+same-net pads and their paste openings, pass `--same-net-pad-clearance <mm>`
+(> 0) to `route.py`, not only to `route_planes.py` (`route_diff.py` takes it
+too). The value is recorded in the `.kicad_pro`, so later steps inherit it;
+`-1` allows via-in-pad again. It is not free: on one board, 0.1 mm took 15
+vias out of pads for one more via and +42 mm of copper (+7.5 %).
 
 Manufacturing constraints (set to match your fab's requirements):
 
