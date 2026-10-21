@@ -616,7 +616,10 @@ from the terminal escapes (`_route_direct_coupled_middle`):
    (esp32s3_m2_som 1 → 6: SPICLK's F.Cu middle swung across the corridor its
    GPIOs need, where the re-ask ran straight on B.Cu at a 0.3 mm gap), and
    fewer pairs ended within 0.1 mm of skew (112 → 96). The chain re-ask of a
-   multipoint leg (`seam_reask_chain_leg`) carries the same gate.
+   multipoint leg (`seam_reask_chain_leg`) carries the same gate. It runs on a
+   leg already on the board, so its connectivity check leaves out the copper
+   the candidate would replace: counting it let an EMPTY candidate "replace"
+   daisy_pedal_board /USBCONN-D's leg, and the pair shipped disconnected.
 
 The result is a fully-connected, DRC-clean pair: coupled where it matters (the
 parallel run) and single-ended only on the last millimetre at each terminal,

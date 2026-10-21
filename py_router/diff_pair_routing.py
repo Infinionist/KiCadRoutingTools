@@ -3776,7 +3776,7 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
 
 
 def _hybrid_route_connects(pcb_data, p_net_id, n_net_id, new_segs, new_vias,
-                           terminal_pads=None) -> bool:
+                           terminal_pads=None, replaces=None) -> bool:
     """True only if BOTH halves of the pair connect terminal-to-terminal with the
     new hybrid copper added to the pair's existing (fanout-stub) copper. Used to
     reject a hybrid route that left a terminal orphaned (#215).
@@ -3788,10 +3788,20 @@ def _hybrid_route_connects(pcb_data, p_net_id, n_net_id, new_segs, new_vias,
     check would wrongly fail because those aren't connected yet (HDMI TMDS on
     fpga_sdram: the U1<->J3 leg coupled fine but the deferred J3->U7 ESD tap left
     U7 'unconnected', rejecting the good coupled leg). When None (the 2-terminal
-    hybrid) the whole net IS the leg, so all pads are checked as before."""
+    hybrid) the whole net IS the leg, so all pads are checked as before.
+
+    ``replaces`` (id()s of board segments and vias): copper already on the board
+    that ``new_segs``/``new_vias`` would REPLACE, left out of the check. The
+    chain seam re-ask (`seam_reask_chain_leg`) runs on a committed leg, so
+    without this the leg's own old copper joined the pads for any candidate --
+    an EMPTY one included: daisy_pedal_board /USBCONN-D's leg 1 was "replaced"
+    by no copper (score 18.2 -> 9.0) and the pair shipped disconnected."""
     from check_connected import check_net_connectivity
-    board_segs = getattr(pcb_data, 'segments', None) or []
-    board_vias = getattr(pcb_data, 'vias', None) or []
+    _gone = replaces or ()
+    board_segs = [s for s in (getattr(pcb_data, 'segments', None) or [])
+                  if id(s) not in _gone]
+    board_vias = [v for v in (getattr(pcb_data, 'vias', None) or [])
+                  if id(v) not in _gone]
     pads_by_net = getattr(pcb_data, 'pads_by_net', None) or {}
     for nid in (p_net_id, n_net_id):
         pads = (terminal_pads.get(nid, []) if terminal_pads is not None
@@ -4509,7 +4519,8 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
         if _connector_grazes_foreign_copper(cur_s, pcb_data, p_id, n_id, config):
             continue
         if not _hybrid_route_connects(pcb_data, p_id, n_id, cur_s, cur_v,
-                                      terminal_pads=_leg_pads):
+                                      terminal_pads=_leg_pads,
+                                      replaces=_leg_seg_ids | _leg_via_ids):
             continue
         # #1303: never split the pair (seam_splits_pair).
         sp = seam_splits_pair(old_segs, cur_s, p_id, n_id, config)
