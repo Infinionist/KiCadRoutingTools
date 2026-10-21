@@ -681,7 +681,9 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
   Then:
   1. **The same part or finding in every seed is the input's**, and no seed
      will fix it: the part has no room (a WARNING that it fits the usable
-     area at neither quarter turn, or that an edge part has no seat there),
+     area at neither quarter turn, or that an edge part has no seat there,
+     which names what stopped it: a band its overhang never comes down to,
+     or the part in the way),
      a fixed part or a declared pose walls it in, a keep-out, zone,
      `along_edge_band` or group `side` leaves it nowhere, or a limit no
      placement can meet (a decap pin limit on a rail with one cap far from

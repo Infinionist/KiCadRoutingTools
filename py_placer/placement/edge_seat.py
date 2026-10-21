@@ -16,8 +16,10 @@ The seat is read with the grade's own measurements (`rule_edge_connector`):
 * the distance from the edge puts the part past the outline by the low end
   of the entry's `overhang_mm` band as the grade reads it
   (`connector_geometry.band_amount`: the drawn body, else the courtyard at
-  the board margin) -- flush, without one -- and no nearer the edge than
-  keeps every pad's copper the board's edge clearance inside it;
+  the board margin) -- flush, without one, and a hair inside a positive
+  minimum -- and no nearer the edge than keeps every pad's copper (the
+  pads on a copper layer, not a silk-drawn pin) the board's edge clearance
+  inside the outline where the part stands, not its bounding box (#1325);
 * ALONG the edge it may go wherever every conjunct the grade puts on it
   holds -- the band (a corner adds the side it crosses), the pad copper's
   edge clearance against the true outline (a rounded corner), the edge the
@@ -36,6 +38,12 @@ Its legality is a declared pose's (`seeder._fixed_pose_check`): its courtyard
 may cross the outline when every pad and hole stays on the board, and
 courtyards may abut -- two seated parts keep SEAT_GAP_MM, and `pack` pushes
 the parts on one edge apart along it after the anneal.
+
+A declared edge part with no seat is placed as any other part, and the reason
+says what stopped it (`_unseated_reason`): an overhang that never comes down
+to its band at any pose (a courtyard longer than its edge), pads longer than
+the edge, or the conjuncts every position tested failed, counted, with the
+parts in the way.
 """
 from __future__ import annotations
 
@@ -56,6 +64,10 @@ SLIDE_REACH_MM = 12.0
 #: to the board's 0.1 um never reads as copper exactly AT the clearance (the
 #: copper grader fails 0.3000 against 0.3).
 COPPER_SLACK_MM = 0.005
+#: A positive band minimum is aimed this much inside (at most half the band),
+#: for the same reason: seated exactly at it, daplink's J3 wrote back as
+#: 7.0000 under its declared 7.0 (#1325).
+BAND_SLACK_MM = 0.005
 #: Parts farther than this from a seat line cannot take part in its checks.
 NEAR_MM = 3.0
 #: The gap two seated parts keep along an edge: their courtyards may abut (a
@@ -114,15 +126,27 @@ def pad_span(state, seat) -> float:
     return span
 
 
-def _pad_box(pcb, ref, pose):
-    """The box of `ref`'s pad copper at `pose`, posed as the grade poses it."""
-    from .legality import footprint_at_pose
-    pads = [p for p in footprint_at_pose(pcb.footprints[ref], pose).pads
-            if getattr(p, 'pad_type', '') != 'np_thru_hole']
-    if not pads:
-        return None
-    return (min(p.global_x - p.size_x / 2.0 for p in pads), min(p.global_y - p.size_y / 2.0 for p in pads),
-            max(p.global_x + p.size_x / 2.0 for p in pads), max(p.global_y + p.size_y / 2.0 for p in pads))
+def _pad_box(geometry, ref, pose):
+    """The box of `ref`'s pad COPPER at `pose`: the pads `copper_clear`
+    grades (`connector_geometry.pad_boxes`), each its rotated rectangle's box,
+    or None when it has none. A pad on no copper layer is not copper:
+    daplink's Harwin M20 headers draw each pin as a `pad "" smd` on F.SilkS,
+    6 mm long, and counted here it held the seat 0.55 mm inside its edge
+    (#1325)."""
+    import math
+    from .connector_geometry import pad_boxes
+    x, y, rot = pose
+    c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+    box = None
+    for _i, lx, ly, hx, hy, tilt in pad_boxes(geometry, ref):
+        a = math.radians(tilt + rot)
+        ca, sa = abs(math.cos(a)), abs(math.sin(a))
+        ex, ey = hx * ca + hy * sa, hx * sa + hy * ca
+        px, py = x + c * lx + s * ly, y - s * lx + c * ly
+        q = (px - ex, py - ey, px + ex, py + ey)
+        box = q if box is None else (min(box[0], q[0]), min(box[1], q[1]),
+                                     max(box[2], q[2]), max(box[3], q[3]))
+    return box
 
 
 class _Probe:
@@ -140,35 +164,33 @@ class _Probe:
         self.faces: Dict[str, str] = {}
 
     def band(self, ref, edge, pose) -> float:
+        return self.band_read(ref, edge, pose)[0]
+
+    def band_read(self, ref, edge, pose) -> Tuple[float, str]:
+        """`(amount, basis)`: the overhang the grade reads at `pose`, and
+        the currency it reads it in (`connector_geometry.band_amount`)."""
         from .connector_geometry import band_amount
         st = self.state
         legacy = st.edge_gate.rect_outside_amount(st.parts[ref].rect(*pose))
-        return band_amount(self.geo, ref, edge, legacy, st.edge_gate.margin, pose=pose)[0]
+        return band_amount(self.geo, ref, edge, legacy, st.edge_gate.margin, pose=pose)[:2]
 
     def copper_clear(self, ref, pose) -> bool:
         """Every pad's copper the board's edge clearance inside the outline
         (`connector_geometry.pad_copper_outside`), asked pad by pad only when
         the box round all of them is not clear."""
-        import math
-        from .connector_geometry import pad_boxes, pad_copper_outside
-        x, y, rot = pose
-        c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
-        box = None
-        for _i, lx, ly, hx, hy, tilt in pad_boxes(self.geo, ref):
-            a = math.radians(tilt + rot)
-            ca, sa = abs(math.cos(a)), abs(math.sin(a))
-            ex, ey = hx * ca + hy * sa, hx * sa + hy * ca
-            px, py = x + c * lx + s * ly, y - s * lx + c * ly
-            q = (px - ex, py - ey, px + ex, py + ey)
-            box = q if box is None else (min(box[0], q[0]), min(box[1], q[1]),
-                                         max(box[2], q[2]), max(box[3], q[3]))
+        from .connector_geometry import pad_copper_outside
+        box = _pad_box(self.geo, ref, pose)
         if box is None or self.copper.rect_outside_amount(box) <= 1e-9:
             return True
         return pad_copper_outside(self.geo, self.copper, ref, pose) <= 1e-9
 
-    def ok(self, entry, edge, pose, obstacles) -> bool:
-        """Every conjunct `rule_edge_connector` and check_drc put on the part
-        at `pose`, and a declared pose's check against `obstacles`."""
+    def why(self, entry, edge, pose, obstacles) -> Tuple[str, object]:
+        """`('', None)` when every conjunct `rule_edge_connector` and check_drc
+        put on the part at `pose` holds, and a declared pose's check against
+        `obstacles` passes; else the first that fails and what it read:
+        `('band_min', amount)`, `('band_max', amount)`, `('copper', None)`,
+        `('edge', the edge it reads nearest)` or `('fixed', [the parts in
+        the way, else the declared-pose check's reasons])`."""
         from .floorplan import _nearest_edge, drawn_body_rect, edge_seat_rect
         from .mating import facing_edge
         from .seeder import _fixed_pose_check
@@ -177,20 +199,24 @@ class _Probe:
         band = self.band(ref, edge, pose)
         lim = entry.get('overhang_mm') or {}
         if band < float(lim.get('min', 0.0)) - EPS:
-            return False
+            return 'band_min', band
         if lim.get('max') is not None and band > float(lim['max']) + EPS:
-            return False
+            return 'band_max', band
         if not self.copper_clear(ref, pose):
-            return False
+            return 'copper', None
         proxy = SimpleNamespace(x=x, y=y, rotation=rot)
         seat_rect, _basis = edge_seat_rect(
             entry, st.parts[ref].rect(x, y, rot),
             lambda: drawn_body_rect(self.bodies.get(ref), proxy))
         face = self.faces.get(ref)
-        if _nearest_edge(seat_rect, self.bounds, st.edge_gate.margin,
-                         facing=facing_edge(face, rot) if face else None) != edge:
-            return False
-        return _fixed_pose_check(st, ref, pose, obstacles)[0] is not None
+        near = _nearest_edge(seat_rect, self.bounds, st.edge_gate.margin,
+                             facing=facing_edge(face, rot) if face else None)
+        if near != edge:
+            return 'edge', near
+        how, reasons, conflicts = _fixed_pose_check(st, ref, pose, obstacles)
+        if how is None:
+            return 'fixed', sorted(conflicts) or list(reasons)[:1]
+        return '', None
 
 
 def _near(state, ref, pose, pool):
@@ -207,9 +233,13 @@ def _near(state, ref, pose, pool):
 
 
 def _seat_coord(probe, ref, edge, rot, axis, along, target):
-    """The origin's coordinate across `edge` that puts `ref` `target` past
-    the outline as the grade reads it, held back so every pad's copper is the
-    board's edge clearance inside it."""
+    """`(coord, floor)`: the origin's coordinate across `edge` that puts
+    `ref` `target` past the outline as the grade reads it, held back so
+    every pad's copper is the board's edge clearance inside the outline AT
+    THE SEAT; `floor` is the least overhang the part reads on the line (its
+    reading centred across the board). `coord` is None when even `floor` is
+    past `target`: sonde_xilinx's DB25 J1, 54.1 mm along a 43.18 mm edge,
+    reads 11.43 mm wherever it stands (#1325)."""
     state, pcb = probe.state, probe.pcb
     part = state.parts[ref]
     bounds = pcb.board_info.board_bounds
@@ -221,30 +251,42 @@ def _seat_coord(probe, ref, edge, rot, axis, along, target):
     # from the part centred across the board (its band lowest) to well past the edge
     cr = part.rect(0.0, 0.0, rot)
     perp = 1 - axis
-    inner = (bounds[perp] + bounds[perp + 2]) / 2.0 - (cr[perp] + cr[perp + 2]) / 2.0
-    outer = edge_at + out * 40.0
+    centre = (bounds[perp] + bounds[perp + 2]) / 2.0 - (cr[perp] + cr[perp + 2]) / 2.0
+    floor = probe.band(ref, edge, pose(centre))
+    if floor > target + EPS:
+        return None, floor
+    inner, outer = centre, edge_at + out * 40.0
     for _ in range(50):
         mid = (inner + outer) / 2.0
         if probe.band(ref, edge, pose(mid)) <= target + EPS:
             inner = mid
         else:
             outer = mid
-    pb = _pad_box(pcb, ref, (0.0, 0.0, rot))
-    if pb is None:
-        return inner
-    e = state.board_edge_clearance + COPPER_SLACK_MM
-    # the origin past which a pad comes nearer the edge than its clearance
-    limit = (edge_at - out * e) - (pb[perp + 2] if out > 0 else pb[perp])
-    return min(inner, limit) if out > 0 else max(inner, limit)
+    # The copper limit, read on the OUTLINE where the part stands, by the
+    # very check `_Probe.why` makes: the bounding box is not the edge on a
+    # board with ears. CM5_MINIMA's east bounds are its corner ears at
+    # 136.25 while the straight edge it seats on is at 132.90, so a limit
+    # taken off the bounds never bound and every pose failed (#1325).
+    if probe.copper_clear(ref, pose(inner)) or not probe.copper_clear(ref, pose(centre)):
+        return inner, floor     # clear; or clear nowhere, which `_free_stretches` names
+    good, bad = centre, inner
+    for _ in range(50):
+        mid = (good + bad) / 2.0
+        if probe.copper_clear(ref, pose(mid)):
+            good = mid
+        else:
+            bad = mid
+    return good, floor
 
 
-def _free_stretches(probe, entry, edge, axis, coord, rot, lo, hi, fixed):
+def _free_stretches(probe, entry, edge, axis, coord, rot, lo, hi, fixed, tally=None):
     """The stretches of [lo, hi] where `entry`'s part seats at `rot` with
-    every conjunct holding (`_Probe.ok`): tested every SCAN_STEP_MM and at
+    every conjunct holding (`_Probe.why`): tested every SCAN_STEP_MM and at
     each position where its courtyard or pad copper just meets a fixed
     part's courtyard or pad copper, or a board margin -- where a stretch
     narrower than a step can lie -- and each change between two tested
-    positions bisected to REFINE_MM."""
+    positions bisected to REFINE_MM. `tally`, a dict, collects why each
+    tested position failed (`_Probe.why`), `{kind: [count, readings]}`."""
     if hi < lo - EPS:
         return []
     state, ref = probe.state, entry['ref']
@@ -273,10 +315,15 @@ def _free_stretches(probe, entry, edge, axis, coord, rot, lo, hi, fixed):
             else (lo_p, lo + cr[1], hi_p, hi + cr[3]))
     pool = {o: op for o, op in fixed.items() if _overlaps(state.parts[o].rect(*op), span, NEAR_MM)}
 
-    def ok(a):
+    def ok(a, record=False):
         pose = (a, coord, rot) if axis == 0 else (coord, a, rot)
-        return probe.ok(entry, edge, pose, _near(state, ref, pose, pool))
-    tested = [(a, ok(a)) for a in cand]
+        kind, read = probe.why(entry, edge, pose, _near(state, ref, pose, pool))
+        if kind and record and tally is not None:
+            row = tally.setdefault(kind, [0, []])
+            row[0] += 1
+            row[1].append(read)
+        return not kind
+    tested = [(a, ok(a, record=True)) for a in cand]
     pts = tested[:1]
     for (a0, k0), (a1, k1) in zip(tested, tested[1:]):
         if k0 != k1:        # the last good position before the change
@@ -300,6 +347,68 @@ def _free_stretches(probe, entry, edge, axis, coord, rot, lo, hi, fixed):
     if start is not None:
         free.append((start, last))
     return free
+
+
+def _unseated_reason(probe, entry, edge, axis, target, e, floors, spans, tally,
+                     squeezed=()) -> str:
+    """Why `entry`'s part has no seat on `edge`, naming what failed (#1325):
+    the band never coming down to `target` (`floors`, per turn), pads longer
+    than the edge (`spans`), a declared along-edge window too narrow for
+    them (`squeezed`), and the conjuncts the tested positions failed
+    (`tally`, from `_free_stretches`). One string, "no room along the <edge>
+    edge" used to stand for all of them."""
+    ref = entry['ref']
+    part = probe.state.parts[ref]
+    bounds = probe.pcb.board_info.board_bounds
+    edge_len = bounds[axis + 2] - bounds[axis]
+    lim = entry.get('overhang_mm') or {}
+    out = []
+    if floors:
+        rot = min(floors, key=floors.get)
+        part.ensure_rotation(rot)
+        cr = part.rect(0.0, 0.0, rot)
+        basis = probe.band_read(ref, edge, (part.x, part.y, rot))[1]
+        part.ensure_rotation(part.rot)
+        why = (f"its overhang reads at least {floors[rot]:.2f}mm wherever it stands ({basis}), "
+               f"never the {target:.2f}mm at the low end of its band that the seat puts it at")
+        if cr[axis + 2] - cr[axis] > edge_len + EPS:
+            why += (f": its courtyard is {cr[axis + 2] - cr[axis]:.2f}mm along a "
+                    f"{edge_len:.2f}mm edge")
+        out.append(why + "; declare overhang_mm.min at the reading where its mating face "
+                         "meets the edge")
+    if spans:
+        out.append(f"its pad copper spans {min(spans.values()):.2f}mm along a {edge_len:.2f}mm "
+                   f"edge, so no position keeps both ends {e - COPPER_SLACK_MM:.2f}mm inside it")
+    if squeezed:
+        key = 'along_edge_band' if entry.get('along_edge_band') is not None else 'center_on_edge'
+        out.append(f"no position inside its declared {key} keeps its pads "
+                   f"{e - COPPER_SLACK_MM:.2f}mm inside the edge's ends")
+    if tally:
+        said = []
+        for kind, (n, reads) in sorted(tally.items(), key=lambda kv: (-kv[1][0], kv[0])):
+            if kind == 'copper':
+                said.append(f"{n} with pad copper inside the board's "
+                            f"{e - COPPER_SLACK_MM:.2f}mm edge clearance")
+            elif kind == 'band_min':
+                said.append(f"{n} reading an overhang of at most {max(reads):.2f}mm, under "
+                            f"the declared minimum {float(lim.get('min', 0.0)):.2f}mm")
+            elif kind == 'band_max':
+                said.append(f"{n} reading an overhang of at least {min(reads):.2f}mm, past "
+                            f"the declared maximum {float(lim['max']):.2f}mm")
+            elif kind == 'edge':
+                said.append(f"{n} reading nearest the {'/'.join(sorted(set(reads)))} edge")
+            else:
+                seen = []
+                for r in reads:
+                    seen += [str(x) for x in r if str(x) not in seen]
+                refs = [x for x in seen if ' ' not in x]
+                said.append(f"{n} refused by the declared-pose check"
+                            + (f" against {', '.join(refs[:4])}"
+                               + (f" and {len(refs) - 4} more" if len(refs) > 4 else '')
+                               if refs else f" ({seen[0]})" if seen else ''))
+        out.append(f"of the {sum(v[0] for v in tally.values())} positions tested, "
+                   + ', '.join(said))
+    return f"no room along the {edge} edge: " + ('; '.join(out) or 'nothing was tested')
 
 
 def _overlaps(q, c, grow):
@@ -349,20 +458,36 @@ def seats(state, pcb, pcb_file, intent, movable
             unseated[ref] = (f"its mating face ({face}) points at the {edge} edge at no "
                              f"quarter turn")
             continue
-        target = float((c.get('overhang_mm') or {}).get('min', 0.0))
+        lim = c.get('overhang_mm') or {}
+        target = float(lim.get('min', 0.0))
+        aim = target
+        if target > EPS:
+            room = (float(lim['max']) - target) / 2.0 if lim.get('max') is not None else BAND_SLACK_MM
+            aim += max(0.0, min(BAND_SLACK_MM, room))
         axis = 0 if edge in ('north', 'south') else 1
         e = state.board_edge_clearance + COPPER_SLACK_MM
         lines = {}
+        # why each turn has no seat, for the reason a caller prints
+        floors: Dict[float, float] = {}       # the band never comes down to `target`
+        spans: Dict[float, float] = {}        # the pads do not fit along the edge
+        squeezed = set()                      # nor inside a declared along-edge window
+        tally: Dict[str, list] = {}           # every position tested failed a conjunct
         for rot in rots:
             part.ensure_rotation(rot)
             # along: its pads the edge clearance inside the board's span (a
             # long header runs corner to corner, its courtyard past both
             # ends), narrowed to a declared band
             cr = part.rect(0.0, 0.0, rot)
-            pb = _pad_box(pcb, ref, (0.0, 0.0, rot)) or cr
+            pb = _pad_box(probe.geo, ref, (0.0, 0.0, rot)) or cr
             lo = bounds[axis] + e - pb[axis]
             hi = bounds[axis + 2] - e - pb[axis + 2]
-            coord = _seat_coord(probe, ref, edge, rot, axis, (lo + hi) / 2.0, target)
+            if hi < lo - EPS:
+                spans[rot] = pb[axis + 2] - pb[axis]
+                continue
+            coord, floor = _seat_coord(probe, ref, edge, rot, axis, (lo + hi) / 2.0, aim)
+            if coord is None:
+                floors[rot] = floor
+                continue
             along = c.get('along_edge_band')
             if along is None and c.get('center_on_edge'):
                 along = {'mm': float(c['center_on_edge']['tolerance_mm'])}
@@ -377,12 +502,16 @@ def seats(state, pcb, pcb_file, intent, movable
                         f0 = s0 + float(along['from']) * (s1 - s0)
                         f1 = s0 + float(along['to']) * (s1 - s0)
                     lo, hi = max(lo, f0 - mid_off), min(hi, f1 - mid_off)
-            free = _free_stretches(probe, c, edge, axis, coord, rot, lo, hi, fixed)
+                    if hi < lo - EPS:
+                        squeezed.add(rot)
+                        continue
+            free = _free_stretches(probe, c, edge, axis, coord, rot, lo, hi, fixed, tally)
             if free:
                 lines[rot] = Line(coord, tuple(free))
         if not lines:
             part.ensure_rotation(part.rot)
-            unseated[ref] = f"no room along the {edge} edge"
+            unseated[ref] = _unseated_reason(probe, c, edge, axis, target, e,
+                                             floors, spans, tally, squeezed)
             continue
         seat = EdgeSeat(ref, edge, axis, face, lines)
         out[ref] = seat

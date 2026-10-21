@@ -338,7 +338,10 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
   `runs`, the anneals it took; `declared`, the parts set at a declared pose or
   face; `repaired`; `stats`, each move kind's tried and kept counts; the
   groups, the notes, and `unseated`: declared edge parts that found no seat on
-  their edge and were placed as any other part, each also a WARNING line).
+  their edge and were placed as any other part, each with what stopped it --
+  an overhang reading that never comes down to the band, pads longer than the
+  edge, or the conjuncts every tested position failed and the parts in the
+  way -- and each also a WARNING line).
 
 Exit 0 placed; 2 unreadable input, a part in two groups, or a face or pose
 the inputs contradict (two declarations disagree, or a KiCad-locked part is
