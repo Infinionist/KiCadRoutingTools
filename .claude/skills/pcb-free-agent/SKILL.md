@@ -305,6 +305,9 @@ Read `--help` before assuming a flag does not exist. Two runs declared
     face, or `check_reachability --pad` says CAGED: placement. Re-place,
     strip, re-route. A finer grid alone never widens a gap: grid
     0.05 → 0.0125 cost 40 min and left the same three nets unrouted.
+    Its verdict grades the PLACEMENT, with the routed copper set aside
+    (#1347); when its `routed` line says ROUTED COPPER cages the pad, that
+    is congestion: rip up and reroute, do not re-place.
 - **`route.py`'s cleanup removes what `check_weird` calls removable** (#1063).
   Both grade by one predicate, so a plain `route.py` output carries no
   `removable-segment` or `redundant-cycle` finding on the nets that run
@@ -374,7 +377,8 @@ Read `--help` before assuming a flag does not exist. Two runs declared
    - **Hard cap:** 10 hours of wall clock, unless the user sets another.
 4. **An "impossible" claim needs its measurement.** "I tried A–F" is not a
    measurement: 9 of 14 such claims were later refuted. Quote
-   `check_reachability` (PASSABLE is a router problem, CAGED is geometry) or
+   `check_reachability` (PASSABLE is a router problem, CAGED is geometry;
+   routed copper is set aside for the verdict and reported on its own) or
    the log block, not only its first refusal line.
 5. **One verifier, at most 3 calls.** When you believe you have your best
    board, spawn ONE fresh subagent (not a fork) with
