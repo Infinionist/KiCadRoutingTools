@@ -47,7 +47,12 @@ Unsupported pad geometry is explicitly unmeasured. Chamfered variants and
 per-layer padstacks are also unmeasured: their simplified parser shape is not
 the native copper. All source edge segments must cover a closed rectangle,
 including when the parsed rings omitted an open internal edge. A live-board
-caller must supply its current saved board for this source check.
+caller must supply its current saved board for this source check. Since #1326
+an outline whose every segment runs within 0.1 mm of a side of its bbox (a
+corner drawn 16 um off) is measured as the bbox shrunk by its largest stray
+(`pad_edge.outline_inset_mm`), which the board contains, so it is certified
+without claiming more room than the outline gives. A castellated pad that
+straddles the outline is exempt here, as the off-board channel exempts it.
 
 Custom `edge_clearance` declarations are recorded in `pad_edge.rules_unmeasured`
 with the rule name, source and declared values. This scalar edge check does not
