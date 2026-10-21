@@ -245,8 +245,8 @@ ROWS = [
     # The pad-angle rotation when a footprint turns: an exponent pad angle
     # was skipped, so the pads kept their old angle.
     ('the-pad-angle-rotation-reads-no-exponent-again', 'w',
-     "        r'\\(at\\s+(' + AT_NUM + r')\\s+(' + AT_NUM + r')(?:\\s+(' + AT_NUM + r'))?\\)',",
-     "        r'\\(at\\s+([\\d.-]+)\\s+([\\d.-]+)(?:\\s+([\\d.-]+))?\\)',",
+     "    r'\\(at\\s+(' + AT_NUM + r')\\s+(' + AT_NUM + r')(?:\\s+(' + AT_NUM + r'))?\\)')",
+     "    r'\\(at\\s+([\\d.-]+)\\s+([\\d.-]+)(?:\\s+([\\d.-]+))?\\)')",
      (T_AT,), 'KILLED'),
 
     ('the-label-editor-reads-no-exponent-again', 'w',
