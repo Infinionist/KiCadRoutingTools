@@ -647,6 +647,13 @@ class Zone:
     island_area_min: float = 0.0  # mm^2 floor for mode 2 (KiCad file units are mm^2)
     clearance: float = None  # zone fill clearance (connect_pads (clearance X)); None = unknown
     min_thickness: float = None  # minimum fill width; None = unknown
+    # #1329: how the pour joins its net's pads, and its spoke geometry -- read
+    # so that a pass REPLACING the zone (route_planes) can say what it changed.
+    # 'thermal' (KiCad's default, `(connect_pads (clearance X))`), 'solid'
+    # (`connect_pads yes`), 'none' (`no`) or 'thru_hole_only'; None = unknown.
+    pad_connection: str = None
+    thermal_gap: float = None  # (fill (thermal_gap X)); None = unknown
+    thermal_bridge_width: float = None  # (fill (thermal_bridge_width X)); spoke width
     in_footprint: bool = False  # #478: zone is owned by a footprint (nested in its
     # (footprint ...) block). Points are still BOARD coordinates. Consumers treat it
     # as normal copper/keep-out; plane creation must not replace or abort on it.
@@ -7104,6 +7111,12 @@ def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]
         zone_clearance_val = float(zcl_match.group(1)) if zcl_match else None
         mth_match = re.search(r'\(min_thickness\s+([\d.]+)\)', zone_header)
         zone_min_th = float(mth_match.group(1)) if mth_match else None
+        # #1329: the pad connection is the bare word after connect_pads (none
+        # = KiCad's default, thermal relief); the spoke settings sit inside
+        # (fill ...). The build_pcb_data_from_board twin reads the same three
+        # off pcbnew.
+        zone_pad_conn, zone_th_gap, zone_th_bridge = zone_connection_settings(
+            zone_header)
         # #1164: a teardrop area is (attr (teardrop (type padvia|track_end)))
         # in the header. A pad's own `(teardrops ...)` settings never reach a
         # zone block.
@@ -7166,12 +7179,30 @@ def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]
                 island_area_min=island_area_min,
                 clearance=zone_clearance_val,
                 min_thickness=zone_min_th,
+                pad_connection=zone_pad_conn,
+                thermal_gap=zone_th_gap,
+                thermal_bridge_width=zone_th_bridge,
                 in_footprint=in_footprint,
                 teardrop=is_teardrop,
                 holes=holes,
             ))
 
     return zones
+
+
+def zone_connection_settings(zone_header: str):
+    """(pad_connection, thermal_gap, thermal_bridge_width) of one zone block's
+    header text (#1329) -- see `Zone.pad_connection`. A zone with no
+    `(connect_pads ...)` clause connects by thermal relief, KiCad's default;
+    an absent spoke token reads None (unknown), never a guessed default."""
+    m = re.search(r'\(connect_pads(?:\s+([a-z_]+))?', zone_header)
+    word = (m.group(1) if m else None) or ''
+    pad_connection = {'': 'thermal', 'yes': 'solid', 'no': 'none',
+                      'thru_hole_only': 'thru_hole_only'}.get(word, word)
+    g = re.search(r'\(thermal_gap\s+([\d.]+)\)', zone_header)
+    b = re.search(r'\(thermal_bridge_width\s+([\d.]+)\)', zone_header)
+    return (pad_connection, float(g.group(1)) if g else None,
+            float(b.group(1)) if b else None)
 
 
 def extract_keepouts(content: str) -> List[dict]:
@@ -9979,6 +10010,16 @@ def _extract_zones_from_pcbnew(board, to_mm, get_layer_name):
                 _mth = to_mm(zone.GetMinThickness())
             except Exception:
                 _mth = None
+            # #1329: the text parser's zone_connection_settings, off pcbnew.
+            _pconn = _pcbnew_zone_pad_connection(zone)
+            try:
+                _tgap = to_mm(zone.GetThermalReliefGap())
+            except Exception:
+                _tgap = None
+            try:
+                _tbridge = to_mm(zone.GetThermalReliefSpokeWidth())
+            except Exception:
+                _tbridge = None
             # #1164: the text parser's (attr (teardrop ...)); pcbnew 8+.
             try:
                 _td = bool(zone.IsTeardropArea())
@@ -10004,6 +10045,9 @@ def _extract_zones_from_pcbnew(board, to_mm, get_layer_name):
                     island_area_min=island_area_min,
                     clearance=_zcl,
                     min_thickness=_mth,
+                    pad_connection=_pconn,
+                    thermal_gap=_tgap,
+                    thermal_bridge_width=_tbridge,
                     in_footprint=_in_fp,
                     teardrop=_td,
                     holes=holes,
@@ -10012,6 +10056,24 @@ def _extract_zones_from_pcbnew(board, to_mm, get_layer_name):
         pass
 
     return zones
+
+
+def _pcbnew_zone_pad_connection(zone):
+    """`Zone.pad_connection` of a live pcbnew ZONE (#1329), spelled as
+    `zone_connection_settings` spells the file token; None when the binding
+    cannot say."""
+    try:
+        import pcbnew as _pcbnew
+        mode = zone.GetPadConnection()
+    except Exception:
+        return None
+    for const, name in (('ZONE_CONNECTION_THERMAL', 'thermal'),
+                        ('ZONE_CONNECTION_FULL', 'solid'),
+                        ('ZONE_CONNECTION_NONE', 'none'),
+                        ('ZONE_CONNECTION_THT_THERMAL', 'thru_hole_only')):
+        if getattr(_pcbnew, const, object()) == mode:
+            return name
+    return None
 
 
 def _polygon_union_excess(polys_a, polys_b):

@@ -52,7 +52,9 @@ from connectivity import compute_mst_segments
 from plane_io import (
     ZoneInfo,
     extract_zones,
+    zone_infos,
     check_existing_zones,
+    replaced_pours,
     shared_layer_zone_priority,
     resolve_net_id,
     write_plane_output
@@ -3082,6 +3084,55 @@ def consume_sense_branches() -> list:
     return out
 
 
+#: JSON_SUMMARY.zone_replacements of the last create_plane() in this process
+#: (#1329): one entry per existing pour the run replaced -- its net, the
+#: layers it is replaced on, and every setting that changes with why. Taken
+#: by main() like the pad tally.
+_LAST_ZONE_REPLACEMENTS: list = []
+
+
+def consume_zone_replacements() -> list:
+    """Take (and clear) the last pour's zone-replacement entries."""
+    global _LAST_ZONE_REPLACEMENTS
+    out, _LAST_ZONE_REPLACEMENTS = list(_LAST_ZONE_REPLACEMENTS), []
+    return out
+
+
+def _note_zone_replacements(replaced_pours_by_target, zone_data, layer_nets,
+                            board_edge_clearance) -> None:
+    """Print, and record for JSON_SUMMARY, what replacing each existing pour
+    changes (#1329). Replacing used to report only "with new parameters", so a
+    designer's thermal-relief pour came back solid, at another clearance,
+    width and outline, with no word about which. One entry per replaced pour:
+    a multi-layer pour replaced on several layers is listed once, with them."""
+    from plane_io import zone_replacement_changes, format_zone_replacement
+    _LAST_ZONE_REPLACEMENTS.clear()
+    entries: Dict[object, Dict] = {}
+    for (net_name, layer), olds in replaced_pours_by_target.items():
+        new = [zd for zd in zone_data if not zd.get('keepout')
+               and zd.get('net_name') == net_name and zd.get('layer') == layer]
+        if not new:
+            continue        # no new pour was built (a cancelled run)
+        shared = layer_nets and len(layer_nets.get(layer, [])) > 1
+        why = (f"this layer's share of its split between "
+               f"{', '.join(layer_nets.get(layer, []))}" if shared else
+               f"the board's bounding box inset {board_edge_clearance:g} mm "
+               f"(--board-edge-clearance)")
+        for old in olds:
+            rows = zone_replacement_changes(old.zone, new, outline_why=why)
+            key = (net_name, old.uuid or id(old.zone),
+                   tuple(tuple(sorted(r.items())) for r in rows))
+            entry = entries.setdefault(key, {'net': net_name, 'layers': [],
+                                             'replaced_uuid': old.uuid or None,
+                                             'changes': rows})
+            entry['layers'].append(layer)
+    for entry in entries.values():
+        for line in format_zone_replacement(entry['net'], entry['layers'],
+                                            entry['changes']):
+            print(line)
+        _LAST_ZONE_REPLACEMENTS.append(entry)
+
+
 def _sense_branches_poured_over(pcb_data, zone_data) -> Dict[str, List[str]]:
     """{branch name: [layer, ...]} for every protected sense branch (#1279)
     that a pour of this run (`zone_data`, create_plane's zone dicts) covers,
@@ -3257,6 +3308,7 @@ def create_plane(
     # #1279: the board's `sense:<REF>.<PAD>` groups -- protected, or why not
     # (engine-side, so the Planes tab's log shows it too).
     _LAST_SENSE_BRANCHES.clear()
+    _LAST_ZONE_REPLACEMENTS.clear()   # #1329: filled once the new pours exist
     from sense_branch import report as _sense_report
     _sense_report(pcb_data)
 
@@ -3326,22 +3378,11 @@ def create_plane(
     from kicad_parser import pour_zones
     if _live_pcb_data:
         # POURS only (#1164), as plane_io.extract_zones reads the file -- and
-        # with each pour's layer SPAN recovered from its uuid the same way, so
-        # check_existing_zones can tell a multi-layer pour (kept, never
-        # replaced) from one that covers only the target layer. Without it a
-        # live `(layers "F.Cu" "B.Cu")` pour read as single-layer.
-        _live = list(pour_zones(getattr(pcb_data, 'zones', None)))
-        _span_by_uuid: Dict[str, List[str]] = {}
-        for z in _live:
-            if getattr(z, 'uuid', ''):
-                _span_by_uuid.setdefault(z.uuid, []).append(z.layer)
-        for z in _live:
-            _zu = getattr(z, 'uuid', '') or ''
-            existing_zones.append(ZoneInfo(net_id=z.net_id, net_name=z.net_name, layer=z.layer,
-                                           in_footprint=getattr(z, 'in_footprint', False),
-                                           priority=int(getattr(z, 'priority', 0) or 0),
-                                           uuid=_zu,
-                                           span=tuple(_span_by_uuid.get(_zu, [z.layer]))))
+        # through the same reader (zone_infos), which recovers each pour's
+        # layer SPAN from its uuid, so check_existing_zones can tell a
+        # multi-layer pour from one that covers only the target layer.
+        # Without it a live `(layers "F.Cu" "B.Cu")` pour read as single-layer.
+        existing_zones = zone_infos(pour_zones(getattr(pcb_data, 'zones', None)))
     else:
         try:
             existing_zones = list(extract_zones(input_file))
@@ -3354,7 +3395,8 @@ def create_plane(
                 continue
             existing_zones.append(ZoneInfo(net_id=z.net_id, net_name=z.net_name, layer=z.layer,
                                           in_footprint=getattr(z, 'in_footprint', False),
-                                          priority=int(getattr(z, 'priority', 0) or 0)))
+                                          priority=int(getattr(z, 'priority', 0) or 0),
+                                          zone=z))
             seen_keys.add(key)
 
     should_create_zones = []  # Per-net flag for whether to create zone
@@ -3362,6 +3404,9 @@ def create_plane(
     # The same decision keyed by the REQUESTED (net name, layer), which is how
     # the returned zone dicts name their pour (see `replace_existing` below).
     replaced_targets: Set[Tuple[str, str]] = set()
+    # #1329: the existing pours each replaced target removes, so the run can
+    # say what the replacement changes once the new pour is built.
+    replaced_pours_by_target: Dict[Tuple[str, str], List[ZoneInfo]] = {}
     # Fill priority per net for a plane that has to SHARE its layer with another
     # net's existing pour: ABOVE the incumbent, so the newly requested plane wins
     # the overlap deterministically (see plane_io.shared_layer_zone_priority --
@@ -3398,9 +3443,13 @@ def create_plane(
         # CLI path. A foreign-net pour on the layer no longer aborts the run: the
         # plane is created alongside it, at a higher fill priority so the overlap
         # resolves deterministically (see check_existing_zones /
-        # shared_layer_zone_priority).
+        # shared_layer_zone_priority). A same-net pour is replaced when this
+        # call pours the net on every layer it covers (#1299), so the check is
+        # given all of this net's layers, not just this one.
+        _call_layers = [l for n, l in zip(net_names, plane_layers) if n == net_name]
         should_create, should_continue, zone_to_replace, foreign_zones = check_existing_zones(
-            existing_zones, plane_layer, net_name, net_id, verbose
+            existing_zones, plane_layer, net_name, net_id, verbose,
+            call_layers=_call_layers
         )
         if not should_continue:
             print(f"Error: Zone conflict for net '{net_name}' on layer {plane_layer}")
@@ -3411,6 +3460,8 @@ def create_plane(
         if zone_to_replace:
             zones_to_replace.append((zone_to_replace.net_id, zone_to_replace.layer))
             replaced_targets.add((net_name, plane_layer))
+            replaced_pours_by_target[(net_name, plane_layer)] = replaced_pours(
+                existing_zones, plane_layer, net_name, net_id, _call_layers)
             # #487: a REPLACED user pour keeps (at least) its own fill priority.
             # Writing only the shared-layer computed value silently reset e.g.
             # a priority-2 pour to 0, flipping which overlapping zone pulls back.
@@ -3954,6 +4005,12 @@ def create_plane(
                 all_zone_sexprs.extend(zone_sexprs)
                 all_debug_lines.extend(debug_line_sexprs)
                 all_zone_data.extend(zone_data)
+
+    # #1329: say what each replaced pour's replacement changes, setting by
+    # setting, now that every new pour exists. In the engine, so the Planes
+    # tab's log carries it too; main() folds the records into JSON_SUMMARY.
+    _note_zone_replacements(replaced_pours_by_target, all_zone_data, layer_nets,
+                            board_edge_clearance)
 
     # Area via stitching + edge fence (#485): AFTER every pour's geometry and
     # this run's tap copper exist, BEFORE the finalize/write split so the CLI
@@ -4886,6 +4943,13 @@ Examples:
     _sense = consume_sense_branches()
     if _sense:
         _summary['sense_branches'] = _sense
+
+    # #1329: every existing pour the run replaced, and what that changed
+    # (setting, old, new, why), so a chain can see a designer's thermal
+    # relief turned solid without reading the log.
+    _zr = consume_zone_replacements()
+    if _zr:
+        _summary['zone_replacements'] = _zr
 
     # The run either finished or raised; there is no partial shape to report
     # (the CLI has no cancel source). `complete`/`status` are kept because

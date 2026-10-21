@@ -63,6 +63,12 @@ python3 -X utf8 py_router/list_nets.py path/to/file.kicad_pcb --power
   vias and escape congestion. TH-heavy nets gain nothing from layer choice
   (barrels connect everywhere), so don't let TH counts sway it.
 - Mention existing zones that already cover a recommendation instead of repeating them.
+  Pouring the same net on that layer REPLACES the existing zone with the run's
+  own settings (solid pad connection unless `--thermal-relief`, the run's
+  clearance and width, a board-sized outline). Say whether to keep it
+  (`--skip-existing-zones`, Planes tab: Skip existing zones) or replace it.
+  A multi-layer existing zone is replaced only when every one of its layers is
+  in the assignment.
 
 ## Step 3b: Routability Budget (do this BEFORE finalizing layers)
 

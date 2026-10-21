@@ -327,8 +327,9 @@ are `check_drc.footprint_own_pad_census` (#1306), keyed by the index into
 | `priority` | int | `(priority N)`; higher-priority zones win where outlines overlap (0 when absent) |
 | `island_removal_mode` | int | 0 = always remove isolated islands (KiCad default), 1 = never, 2 = below `island_area_min` |
 | `island_area_min` | float | mm² floor for mode 2 (0.0 when absent) |
-| `clearance` | Optional[float] | The pour's own fill clearance, `(connect_pads ... (clearance X))`; `None` = not stated |
-| `min_thickness` | Optional[float] | The pour's minimum fill width; `None` = not stated |
+| `clearance`, `min_thickness` | float | The pour's own fill clearance (`(connect_pads ... (clearance X))`) and minimum width; `None` when the file has no token |
+| `pad_connection` | str | How the pour joins its net's pads: `thermal` (KiCad's default, `(connect_pads (clearance X))`), `solid` (`connect_pads yes`), `none` (`no`) or `thru_hole_only`. Read by both parse paths (`zone_connection_settings` / pcbnew `GetPadConnection()`); route_planes uses it to say what replacing the pour changes (#1329) |
+| `thermal_gap`, `thermal_bridge_width` | float | The `(fill ...)` block's thermal-relief gap and spoke width; `None` when the file has no token (the live board reports pcbnew's default instead) |
 | `in_footprint` | bool | Zone is owned by a footprint (nested in its `(footprint ...)` block); points are still board coordinates. Plane creation neither replaces nor aborts on these |
 | `teardrop` | bool | KiCad's `(attr (teardrop ...))` (pcbnew `IsTeardropArea()`): a generated teardrop area where a track meets a pad or via. Routing output, so `assess_placement`'s `has_copper` counts it (#1164) |
 | `holes` | List[List[Tuple[float, float]]] | The outline's cut-outs: KiCad's file holds ONE outline per zone and every later `(polygon ...)` block of it is a hole in that outline (pcbnew loads it so, `Outline().HoleCount(0)`). The fill never enters one. Read the same way as `polygon`, by both parse paths; `[]` without cut-outs (#1279) |

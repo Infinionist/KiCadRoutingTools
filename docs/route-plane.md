@@ -25,7 +25,7 @@ The `route_planes.py` script creates copper pour zones (plus via features: therm
 
 When creating a ground or power plane on an inner or bottom layer, SMD pads on other layers need via connections to reach the plane. This tool automates:
 
-1. **Zone creation** - Creates a copper pour zone covering the board. Replaces an existing zone for the same net/layer with new parameters; coexists with other nets' pours on that layer (warning + explicit fill priority)
+1. **Zone creation** - Creates a copper pour zone covering the board. Replaces an existing zone for the same net/layer with this run's settings, and lists each setting that changes (see [Replacing a same-net pour](#replacing-a-same-net-pour)); coexists with other nets' pours on that layer (warning + explicit fill priority)
 2. **Pad classification** - Identifies which pads need vias vs direct zone connection (the ones needing vias are handed to the route step; see the note above)
 3. **Thermal via arrays** (#487) - Exposed/thermal pads get a lattice of vias into the plane
 4. **Area via stitching / edge fence / GND return vias** - Optional via features (`--stitch-vias`, `--stitch-edge-fence`, `--add-gnd-vias`)
@@ -92,7 +92,7 @@ When specifying multiple nets, each net is paired with its corresponding plane l
 | `--board-edge-clearance` | board `min_copper_edge_clearance`, else 0.5 | Zone inset from the board edge in mm |
 | `--thermal-vias` / `--no-thermal-vias` | on | Via array over exposed/thermal pads (#487): an SMD plane-net pad at least 2.0 mm on both axes that is the exposed pad or tab of an active part (U/Q/D/T/VR/IC/PS/LED), not a large passive or connector pad |
 | `--thermal-relief` | off | Connect pads to the pour with thermal-relief spokes instead of solid copper |
-| `--skip-existing-zones` | off | Keep an existing same-net zone on the target layer instead of replacing it (place stitching vias only). When off (the CLI default), an existing same-net zone on the target layer is replaced. **Other nets' pours on the layer are tolerated either way** — see below |
+| `--skip-existing-zones` | off | Keep an existing same-net zone on the target layer instead of replacing it (place stitching vias only). When off (the CLI default), an existing same-net zone on the target layer is replaced, and the run lists every setting the replacement changes (pad connection, clearance, width, outline, ...). Use it to keep a designer's pour as drawn. **Other nets' pours on the layer are tolerated either way** — see below |
 
 ### Algorithm Options
 
@@ -278,25 +278,61 @@ contend nor get replaced (#478).
 #### Replacing a same-net pour
 
 An existing pour for the **same** net on the target layer is replaced by default
-(`--skip-existing-zones` keeps it instead). Two cases used to go wrong silently:
+(`--skip-existing-zones` keeps it instead). Three cases used to go wrong silently:
 
 - **KiCad 10 boards.** Zones carry `(net "NAME")`, and the replacement filter was
   only given numeric `(net <id>)` pairs, so it never matched: the old pour shipped
   next to its replacement while the log said "Replacing existing zone", and every
   re-run stacked another duplicate. The name pairs are passed now.
-- **Multi-layer pours.** `(layers "F.Cu" "B.Cu")` is **one** zone. It is *not*
-  deleted to replace one of its layers -- that would destroy the copper on the
-  others. The run warns, keeps the pour, and pours the new plane over it at a
-  higher fill priority (same net, so no short); replace it outright by running
-  those layers together or by deleting it in KiCad.
+- **Multi-layer pours.** `(layers "F.Cu" "B.Cu")` is **one** zone. A run that
+  pours the net on every layer the zone covers replaces it, with one new zone
+  per layer: `--nets GND GND --plane-layers F.Cu B.Cu` replaces a
+  `(layers "F.Cu" "B.Cu")` GND pour. A run that pours only some of those layers
+  does *not* delete it, because that would destroy the copper on the others. It
+  warns, names the layers it does not pour, keeps the pour, and pours the new
+  plane over it at a higher fill priority (same net, so no short). To replace it,
+  add those layers to the run or delete the pour in KiCad. Until #1299 the
+  decision was made one layer at a time, so even a run over every layer kept
+  the pour and stacked a new zone on each layer. On CM5_MINIMA_3 that left 5
+  extra GND zones, and `check_impedance` read the overlap as 64 reference-plane
+  splits.
+- **KiCad 5 / 6 spellings.** A bare `(layer B.Cu)` and the layer sets
+  `(layers F&B.Cu)` / `(layers *.Cu)` are read as pcbnew loads them, so the
+  writer removes exactly the pours the run decided to replace.
 
 A pour is therefore removed only when every layer it covers is being replaced.
 A teardrop area on the net is not a pour (#1164) and is never removed with it.
 
+**What a replacement changes (#1329).** The new pour takes this run's
+settings, not the old pour's. The run prints every setting that changes, with
+the old value, the new one and where the new one comes from, once the new pour
+is built. It records the same in `JSON_SUMMARY.zone_replacements` (one entry
+per replaced pour: `net`, `layers`, `replaced_uuid`, and `changes` as
+`{setting, old, new, why}`):
+
+```
+Replaced 'GND' pour on B.Cu (--skip-existing-zones keeps it): 5 setting(s) changed
+    pad connection: thermal relief -> solid  [route_planes connects pads solid unless --thermal-relief (Planes tab: Thermal relief pad connections)]
+    clearance: 0.508 mm -> 0.254 mm  [this run's zone clearance: --zone-clearance, else the routed clearance]
+    minimum width: 0.254 mm -> 0.1 mm  [--min-thickness]
+    thermal gap / spoke width: 0.508 mm / 0.508 mm -> 0.2 mm / 0.2 mm  [route_planes' fixed spoke geometry; unused while pads connect solid]
+    outline: 4-vertex outline (105.41, 67.31)..(182.88, 110.49) -> 4-vertex outline (103.50, 67.51)..(183.50, 110.29)  [the board's bounding box inset 0.2 mm (--board-edge-clearance)]
+```
+
+The settings compared are the pad connection, clearance, minimum width,
+thermal gap and spoke width, outline (and its cut-outs), isolated-island
+removal and fill priority. The pad connection matters most on a hand-soldered
+through-hole board: route_planes connects pads solid unless `--thermal-relief`
+is given, so a designer's thermal-relief pour comes back solid. To keep a
+designer's pour as drawn, pass `--skip-existing-zones`. To keep replacing it
+but keep its thermal relief, pass `--thermal-relief`. Before #1329 the run
+said only "Replacing existing zone ... with new parameters".
+
 The GUI planes tab does the same. Its **Skip existing zones** checkbox is
-`--skip-existing-zones`, unticked by default as on the CLI: the tab then deletes
-the replaced pour from the live board and adds the new one, and a plan step
-that omits the flag runs unticked again.
+`--skip-existing-zones`, unticked by default as on the CLI. The tab then deletes
+the replaced pour from the live board and adds the new one. A multi-layer pour
+is deleted only when the run replaced every one of its layers, as the CLI writer
+does. A plan step that omits the flag runs unticked again.
 
 #### Choosing `--gnd-via-distance`
 
@@ -569,7 +605,7 @@ The plane generation code is organized into several modules:
 
 **plane_io.py:**
 - `extract_zones()` - Reads existing zones from PCB file
-- `check_existing_zones()` - Reports what already occupies the target layer: the same-net pour to replace, plus other nets' pours to coexist with (it no longer aborts the run over a foreign pour)
+- `check_existing_zones()` - Reports what already occupies the target layer: the same-net pour to replace, plus other nets' pours to coexist with (it no longer aborts the run over a foreign pour). `call_layers` is every layer the call pours the net on; a same-net pour is replaced only when every layer it covers is in that set (#1299)
 - `shared_layer_zone_priority()` - Fill priority for a plane sharing a layer with another net's pour: one above the highest incumbent, so the overlap resolves deterministically
 - `write_plane_output()` - Writes vias, traces, and zones to output file
 
