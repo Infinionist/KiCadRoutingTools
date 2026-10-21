@@ -659,7 +659,50 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
   Check the render against `references/placement-lessons.md`: the power
   stage between its entry and its loads, a regulator's caps tight around it,
   parts on the side of the chip where their pins are, connectors' partners
-  right behind them.
+  right behind them. A judged seed that is NOT BUILDABLE, or that carries a
+  floorplan error, cannot be DONE as placed: fast-route only the ones that
+  are clean (name them to `judge_seeds.py`, e.g. `--seeds 3,4`, §3.7), and
+  go on to the next block when none is.
+- **When no seed can be judged.** Three cases; in each, what to do depends
+  on whether the cause is the same in every seed (below):
+  - **`judge.json` names no seed** (`judge` empty; `judge_seeds.py` refuses
+    it, exit 2): every seed left a part illegal (`illegal` in judge.json and
+    each `s<S>.json`) or failed outright (exit 2, its `s<S>.log`). A
+    declared pose that is not legal no longer empties it: it is listed under
+    `refused`, and the seeds are still judged (fix the intent, as above).
+  - **Every judged seed is NOT BUILDABLE** (`check_assembly`'s `buildable`
+    false): read the pairs it names.
+  - **Every judged seed fails the floorplan** (place_simple WARNs that it
+    judged a seed with floorplan errors; `check_floorplan --intent` names
+    each finding, its measured distance and its limit).
+
+  Then:
+  1. **The same part or finding in every seed is the input's**, and no seed
+     will fix it: the part has no room (a WARNING that it fits the usable
+     area at neither quarter turn, or that an edge part has no seat there),
+     a fixed part or a declared pose walls it in, a keep-out, zone,
+     `along_edge_band` or group `side` leaves it nowhere, or a limit no
+     placement can meet (a decap pin limit on a rail with one cap far from
+     the pin). Change that input -- move or unlock the fixed part
+     (`place_pose`), correct the declared pose or the intent row -- and
+     place again (§3.6, the default seeds).
+  2. **A different part or pair in each seed** is the anneal's miss on a
+     crowded board. Take the seed with the fewest illegal parts (in the
+     other two cases, the first seed `judge.json` names: fewest floorplan
+     errors, then cheapest) and repair it by hand: `place_pose.py <seed> <seed> set REF
+     --near X Y` (it snaps to the nearest legal pose; `rotate`, `face` for
+     the rest), until `check_assembly` says buildable and `check_floorplan
+     --intent` reports 0 errors. Then judge it on its own:
+     `judge_seeds.py wk/<run>/judge.json --seeds S --chain ...`.
+  - **Whether it is a new pass.** Placing again after changing an input is a
+    new pass of §3.6, with every default seed: record the unusable pass in
+    the ledger as a `--kind placement --rejected` row (its least-bad seed as
+    `--board`) whose `--lever` names the input you changed, and count it as
+    one approach toward the stop rule's three (§5, rule 3). A hand repair of a seed is not a new pass: record
+    the repaired board as a `--kind placement` row whose `--lever` lists the
+    moves, and list them in REPORT.md. A hand-moved part stays where you put
+    it only on that board: placing again moves every part the board does not
+    lock and the intent does not seat (§2).
 
 ### 3.7 Fast-route the judged seeds and keep the best
 
