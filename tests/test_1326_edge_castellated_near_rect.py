@@ -11,7 +11,7 @@ was false on every pose.
 
 Checks, on boards built here:
   1. A castellated pad straddling the top edge is no finding; a plain pad
-     beside it is one. The posed reading (`pose_copper`) agrees.
+     beside it is one. The reading at a trial pose (`pad_copper`) agrees.
   2. A 20 x 10 mm outline with one corner 16 um low is measured as a
      rectangle shrunk by that stray: `complete`, `outline_inset_mm` 0.016,
      and a pad's gap read against the shrunk side.
@@ -70,10 +70,9 @@ def test_castellated_pad_on_the_edge_is_exempt():
     assert [f['pad_ref'] for f in g['findings']] == ['M1.2'], g['findings']
     assert g['complete'], g['unmeasured']
     fp = pcb.footprints['M1']
-    posed = ctx.pose_copper(fp, (fp.x, fp.y, fp.rotation))
-    assert [r.index for r in posed.pads if r.amount_mm > L.EPS] == [1], (
-        posed.pads)
-    assert posed.worst_index == 1 and posed.certified
+    posed = ctx.pad_copper(fp, (fp.x, fp.y, fp.rotation))
+    assert [r.index for r in posed if r.amount_mm > L.EPS] == [1], posed
+    assert [r.basis for r in posed] == ['castellated', 'analytic'], posed
     print("  PASS: the castellated half-hole is exempt, the plain pad is not")
 
 
