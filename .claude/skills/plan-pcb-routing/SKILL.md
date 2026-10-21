@@ -634,7 +634,9 @@ Use the printed flags as-is:
   track at 0.2 mm clearance) — the same board escapes **all** balls at the 0.1 mm
   floor. So don't gate on pitch: gate on whether balls actually dropped.
   `bga_fanout.py` and `qfn_fanout.py` both end with a `JSON_SUMMARY: {...}` line
-  giving `requested`/`escaped`/`failed`/`unescaped_nets`. **After every fanout, parse it;
+  giving `requested`/`escaped`/`failed`/`unescaped_nets` (a net with one pad on the
+  whole board -- an NC pin -- is skipped by both and counted in `skipped_nc`, never
+  in `requested`; #122, #1342). **After every fanout, parse it;
   if `failed > 0` (escaped < requested), re-run the fanout with `--clearance` at
   the manufacturing floor** (never below it — the floor is the rule the human
   board passes DRC against, so tightening board-wide is manufacturable and needs
@@ -2375,10 +2377,19 @@ Use `qfn_fanout.py` instead of `bga_fanout.py`:
 ```bash
 python3 py_router/qfn_fanout.py board.kicad_pcb \
     --component U1 \
+    --nets "*" "!GND" "!VCC" \
     --output board_qfn.kicad_pcb
 ```
 
-Creates two-segment stubs (straight + 45° fan) for each pad. On a crowded
+Exclude the plane nets exactly as Step 1b does for a BGA (`"*" "!GND" "!VCC"`,
+naming the board's own plane nets): a stub on a poured net is copper the pour
+connects anyway, and it ships as a dangling tail once the pour welds the pad
+(#1332).
+
+Creates two-segment stubs (straight + 45° fan) for each pad. A stub that
+reaches a same-net pad on its way out (a pin's own decoupling cap beside it)
+ends on that pad rather than running past it (#1332); the run prints
+`Same-net pads: N stub(s) end on a same-net pad they reach`. On a crowded
 fine-pitch edge where the surface fan has no room, add `--escape-method underpad`
 (drop a through-via past each pad) and, if a boxed-in leg still drops,
 `--allow-via-in-pad` so the via can sit on its own pad and stagger inward — see

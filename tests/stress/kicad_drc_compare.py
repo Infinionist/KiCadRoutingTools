@@ -105,6 +105,10 @@ CD_SIZE_TYPES = {"track-width", "via-size", "via-drill-size"}
 # where every one would read checkdrc_only. They get a labelled channel of
 # their own, `via_in_paste`, and never count as edge accepts.
 CD_VIA_PASTE_TYPES = {"via-in-paste"}
+# #1313: a .kicad_dru length window. KiCad's twin (`length_out_of_range`) is
+# not a copper type above, so check_drc's is out of the copper match too --
+# in it, every one would read checkdrc_only.
+CD_LENGTH_TYPES = {"length-out-of-range"}
 
 # Min-copper-web class (#406): graded SEPARATELY from the copper-clearance
 # classes -- check_drc has no counterpart (the artifact lives in KiCad's own
@@ -313,7 +317,7 @@ def run_check_drc(board: str, clearance: float = None, netclasses: bool = False,
     violations = run_drc(board, quiet=True, print_summary=False, **kw)
     out = []
     for v in violations or []:
-        if v.get("type") in CD_SIZE_TYPES:
+        if v.get("type") in CD_SIZE_TYPES or v.get("type") in CD_LENGTH_TYPES:
             continue        # out of the copper-clearance scope on BOTH sides
         # Net 0 in KiCad's spelling: check_drc names it `net_0` (a KiCad 10
         # board has no nets[0]), KiCad says `<no net>`. Without this a short

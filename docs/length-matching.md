@@ -117,6 +117,7 @@ Route lengths include the vertical distance through vias so that results match K
 
 - `PCBData.get_via_barrel_length(layer1, layer2)` sums the board stackup's layer thicknesses between the two copper layers.
 - **Stub via barrels**: when a BGA fanout stub switches layers, the barrel length from the *stub layer to the pad layer* is included (`calculate_stub_via_barrel_length()` in `connectivity.py`), not the via's full span.
+- **The graders** (`net_copper_length` / `net_match_length` in `board_score --length-groups` and check_drc's `.kicad_dru` length windows) charge each via over the layers it actually joins, as KiCad's length DRC does (`net_queries.kicad_via_length`, #1313). The router's own route lengths still charge a through via's full span, so on a board with partial-span vias the router's matched length and the graded one can differ by those barrels.
 
 Without stackup information in the board file, via barrels count as zero length.
 
@@ -190,6 +191,7 @@ To size the meanders, the required extra delay is converted to extra length usin
 
 ## Limitations
 
+- **A `.kicad_dru` length window is graded, not routed to** (#1313). `(constraint length (min ..) (max ..))` rules are read by `check_drc.py` (check 16 in [utilities](utilities.md#checks-performed)), which reports each net outside its window as `length-out-of-range`, as KiCad reports `length_out_of_range`; `board_score` counts them in its `drc` component. No routing step lengthens or shortens a net to meet one: `--length-match-group` with `--length-match-tolerance` matches nets to each other, not to an absolute window, so check_drc's grade is what confirms the window.
 - Meanders spill across multiple straight runs when one run cannot absorb the required extra length; if the runs together still cannot absorb it within clearance limits, the route may end outside tolerance (a warning is printed).
 - Very tight surroundings can force the amplitude to its 0.2mm minimum, limiting how much length a run can add.
 - Meanders are not placed across layer changes.

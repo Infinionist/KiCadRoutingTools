@@ -2878,6 +2878,92 @@ VIA_IN_PASTE_ACCEPTED = ('protected-via-in-paste', 'inherited-via-in-paste',
                          'undeclarable-via-in-paste')
 
 
+def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
+    """Grade every `.kicad_dru` length window (#1313).
+
+    `(constraint length (min ..) (max ..))` bounds each matching net's routed
+    length, and KiCad's DRC reports `length_out_of_range` outside it. Nothing
+    here read it: on imx6ulz (gp14 H21) KiCad reported 8 DRAM_LDQ nets out of
+    their 11.5-14.5 mm window while check_drc and board_score read clean.
+
+    Rules come from `kicad_dru.read_board_length_rules`; the rule binding a
+    net is KiCad's (last matching rule in file order). A net is measured as
+    KiCad's length DRC measures it, `net_queries.net_match_length(mode
+    'total')`: its track and via-barrel copper plus every pad's pad-to-die
+    length. A net out of its window is a `length-out-of-range` violation. Two
+    populations are reported and NOT graded: a net whose pads are not joined
+    by track copper (not routed yet; the connectivity check already counts
+    it), and a net whose binding rule's scope is not modelled -- named with
+    its reason, never silently dropped. Nets with fewer than two pads are
+    skipped. Returns the summary, or None when the board has no length rule.
+    """
+    path = pcb_file or getattr(pcb_data, 'source_path', '') or ''
+    from kicad_dru import read_board_length_rules, binding_length_rule
+    rules, notes = read_board_length_rules(path)
+    if not rules:
+        if notes and not quiet:
+            for n in notes:
+                print(f"  .kicad_dru: {n}")
+        return None
+    from list_nets import net_class_memberships
+    from net_queries import net_match_length
+    names = {nid: n.name for nid, n in pcb_data.nets.items() if nid and n.name}
+    member = net_class_memberships(path, names)
+    graded, unmeasured, undecided = 0, [], {}
+    for nid, name in sorted(names.items(), key=lambda kv: kv[1]):
+        if matching_net_ids is not None and nid not in matching_net_ids:
+            continue
+        if len(pcb_data.pads_by_net.get(nid) or ()) < 2:
+            continue
+        rule, blocker = binding_length_rule(rules, name, member.get(nid))
+        if blocker is not None:
+            undecided.setdefault(blocker.name, (blocker.unsupported, []))[1].append(name)
+            continue
+        if rule is None or (rule.min_mm is None and rule.max_mm is None):
+            continue
+        length = net_match_length(pcb_data, nid, 'total')
+        if length is None:
+            unmeasured.append(name)
+            continue
+        graded += 1
+        bound = limit = None
+        if rule.min_mm is not None and length < rule.min_mm - 1e-6:
+            bound, limit = 'min', rule.min_mm
+        elif rule.max_mm is not None and length > rule.max_mm + 1e-6:
+            bound, limit = 'max', rule.max_mm
+        if bound:
+            violations.append({
+                'type': 'length-out-of-range',
+                'net1': name,
+                'rule': rule.name,
+                'severity': rule.severity,
+                'length_mm': round(length, 4),
+                'bound': bound,
+                'limit_mm': limit,
+                'min_mm': rule.min_mm,
+                'max_mm': rule.max_mm,
+                'excess_mm': round(abs(length - limit), 4),
+            })
+    summary = {'rules': len(rules), 'graded': graded,
+               'out_of_range': sum(1 for v in violations
+                                   if v['type'] == 'length-out-of-range'),
+               'unmeasured': unmeasured,
+               'not_graded': {k: {'reason': r, 'nets': n}
+                              for k, (r, n) in undecided.items()}}
+    if not quiet:
+        print(f"Length rules (.kicad_dru, #1313): {len(rules)} rule(s); "
+              f"{graded} net(s) graded, {summary['out_of_range']} out of range"
+              + (f"; {len(unmeasured)} not measured (pads not joined by "
+                 f"track copper): {', '.join(unmeasured[:6])}"
+                 + (' ...' if len(unmeasured) > 6 else '') if unmeasured else ''))
+        for rname, (why, nets) in undecided.items():
+            print(f"  NOT GRADED: rule '{rname}' ({why}) -- {len(nets)} net(s) "
+                  f"it may bind are not graded here; KiCad still grades them")
+        for n in notes:
+            print(f"  .kicad_dru: {n}")
+    return summary
+
+
 def _via_in_paste_pass(pcb_data, matching_via_nets, baseline_pd, violations,
                        accepted, quiet):
     """#962 D6: a via whose BARREL overlaps a solder-paste opening that
@@ -5394,6 +5480,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
 
     _via_in_paste_pass(pcb_data, matching_via_nets, _baseline_pd, violations,
                        _accepted_edge, quiet)
+    _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet)
 
     # #1306: ONE footprint's own pads, graded as KiCad grades them. A contact
     # between two of its pads on different nets is a `pad-pad` violation
@@ -5685,6 +5772,15 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                               + ("" if v.get('format_can_declare', True) else
                                  "  [this file format cannot declare it per via: "
                                  "state Type VII on the fab drawing, or move the via]"))
+                    elif vtype == 'length-out-of-range':
+                        print(f"  {v['net1']}: length {v['length_mm']:.4f}mm "
+                              f"{'<' if v['bound'] == 'min' else '>'} {v['bound']} "
+                              f"{v['limit_mm']:.4f}mm ({v['excess_mm']:.4f}mm "
+                              f"{'short' if v['bound'] == 'min' else 'over'})")
+                        _lo, _hi = (('-' if b is None else f"{b:.4f}")
+                                    for b in (v['min_mm'], v['max_mm']))
+                        print(f"    .kicad_dru rule '{v['rule']}': window "
+                              f"{_lo}..{_hi} mm (KiCad: length_out_of_range)")
                     elif vtype == 'via-board-edge':
                         where = _edge_phrase(v['edge'])
                         print(f"  Via:{v['net1']} {where}")

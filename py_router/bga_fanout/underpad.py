@@ -605,6 +605,30 @@ def _segments_from_cells(occ, cells):
     return out
 
 
+def segment_reaches_window(seg, bounds, reach):
+    """True when existing segment `seg` can matter to an escape laid inside
+    the occupancy window `bounds` (x0, y0, x1, y1): its extent, grown by
+    `reach` (its own half-width plus the largest new copper's half-size plus
+    clearance), overlaps the window. (#1315)
+
+    The test used to be "the segment's START point lies inside the window",
+    so a foreign track running INTO the ball field from outside was stamped
+    or ignored depending on which end KiCad wrote first: on imx6ulz U2 a
+    DRAM_DQ5 F.Cu track entering from x=79.9 (window max ~75.0) was never an
+    obstacle, VMEM escapes and a DQS0_N via were laid on it, and the fanout
+    reported failed 0 -- while the same track written end-first was an
+    obstacle and the fanout honestly failed VMEM. A bbox overlap admits a
+    segment that may still miss the window diagonally; that is harmless, as
+    the capsule stamp clips to the grid and the exact checks measure true
+    distance."""
+    lo_x = min(seg.start_x, seg.end_x) - reach
+    hi_x = max(seg.start_x, seg.end_x) + reach
+    lo_y = min(seg.start_y, seg.end_y) - reach
+    hi_y = max(seg.start_y, seg.end_y) + reach
+    return not (hi_x < bounds[0] or lo_x > bounds[2]
+                or hi_y < bounds[1] or lo_y > bounds[3])
+
+
 def _pt_seg_dist(px, py, x1, y1, x2, y2):
     """the distance from (px, py) to the segment (x1, y1)-(x2, y2)"""
     dx, dy = x2 - x1, y2 - y1
@@ -1142,7 +1166,9 @@ def generate_underpad_escape(footprint: Footprint,
         routed = s.layer in layer_set
         if not routed and not (s.layer or '').endswith('.Cu'):
             continue
-        if not (bounds[0] <= s.start_x <= bounds[2] and bounds[1] <= s.start_y <= bounds[3]):
+        if not segment_reaches_window(
+                s, bounds, (s.width or 0.0) / 2.0 + max(track_width / 2.0, via_r)
+                + clearance + margin):
             continue
         if s.net_id in route_net_ids and only_pad_keys is None:
             # our own future nets - don't preblock (fanned nets are NOT in this

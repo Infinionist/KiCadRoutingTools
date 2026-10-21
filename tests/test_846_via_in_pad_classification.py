@@ -100,10 +100,25 @@ def escaping_pad(fp, via):
                                                p.global_y - via['y']))
 
 
+# #1342: these fixtures' nets exist only on U1, and the fanouts skip a
+# single-pad (NC) net; run() fans a copy where each has a partner pad.
+SYNTHETIC = {'qfn_underpad_coupling', 'qfn_diffpair_escape'}
+_TMP = None
+
+
 def run(board, ref, nets, layer, tw, clr):
+    global _TMP
     path = os.path.join(ROOT, 'kicad_files', board + '.kicad_pcb')
     if not os.path.exists(path):
         return None
+    if board in SYNTHETIC:
+        import tempfile
+        from synth import with_partner_pads
+        if _TMP is None:
+            _TMP = tempfile.TemporaryDirectory()
+        copy = os.path.join(_TMP.name, board + '.kicad_pcb')
+        with_partner_pads(path, copy, (2.0, 2.0))
+        path = copy
     pcb = parse_kicad_pcb(path)
     fp = pcb.footprints.get(ref)
     if fp is None:

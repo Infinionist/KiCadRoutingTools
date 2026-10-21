@@ -229,10 +229,56 @@ def net_copper_length(pcb_data: PCBData, net_id: int,
     NOTE this is TOTAL net copper, not a pin-to-pin path: on a multipoint or
     fly-by net (or one with stubs) it exceeds every actual signal path. Use
     `pin_pair_path_length` when the number has to mean electrical delay.
+
+    A via is charged as KiCad's length DRC charges it (#1313): the barrel
+    between the outermost and innermost of its layers that the net's copper
+    actually joins there (`kicad_via_length`), not the whole stack. The
+    router's own `calculate_route_length` is unchanged.
     """
     segments = [s for s in pcb_data.segments if s.net_id == net_id]
-    vias = [v for v in pcb_data.vias if v.net_id == net_id] if include_vias else None
-    return calculate_route_length(segments, vias, pcb_data)
+    total = math.fsum(segment_length(s) for s in segments)
+    if include_vias:
+        pads = (getattr(pcb_data, 'pads_by_net', None) or {}).get(net_id) or []
+        total += math.fsum(kicad_via_length(v, segments, pads, pcb_data)
+                           for v in pcb_data.vias if v.net_id == net_id)
+    return total
+
+
+def kicad_via_length(via: Via, segments, pads, pcb_data, tolerance: float = 1e-4) -> float:
+    """The length KiCad's length DRC charges one via, in mm (#1313).
+
+    KiCad optimises each via to the layers it actually joins
+    (LENGTH_DELAY_CALCULATION, via-layer optimisation): the barrel from the
+    outermost to the innermost of its copper layers where a same-net track
+    has an ENDPOINT at the via's position, or a same-net pad is centred there
+    (a via-in-pad joins the pad's layers). Both are EXACT position matches in
+    KiCad (`tolerance` absorbs float noise only): a track ending 37 um off the
+    via centre adds nothing to its span -- routed_output DATA_13 measured
+    0.215 mm long against KiCad until this matched. One joined layer, or
+    none, charges nothing. Charging the whole stack instead over-read a
+    via-in-pad whose track leaves on In1.Cu by the barrel below In1.Cu --
+    1.42 mm per via on a 1.59 mm, 10-layer board, which put a length window's
+    verdict on the wrong side of KiCad's. `segments` and `pads` are the
+    via's net's."""
+    if not hasattr(pcb_data, 'get_via_barrel_length') or len(via.layers or ()) < 2:
+        return 0.0
+    from geometry_utils import via_copper_layers
+    copper = list(getattr(pcb_data.board_info, 'copper_layers', None) or [])
+    spanned = via_copper_layers(via, copper) if copper else list(via.layers)
+    joined = set()
+    for s in segments:
+        if s.layer in joined or s.layer not in spanned:
+            continue
+        if (math.hypot(s.start_x - via.x, s.start_y - via.y) <= tolerance
+                or math.hypot(s.end_x - via.x, s.end_y - via.y) <= tolerance):
+            joined.add(s.layer)
+    for p in pads:
+        if math.hypot(p.global_x - via.x, p.global_y - via.y) <= tolerance:
+            joined.update(expand_pad_layers(p.layers, spanned))
+    hit = [l for l in spanned if l in joined]
+    if len(hit) < 2:
+        return 0.0
+    return pcb_data.get_via_barrel_length(hit[0], hit[-1])
 
 
 def net_copper_lengths(pcb_data: PCBData, net_ids=None,
@@ -254,9 +300,13 @@ def net_copper_lengths(pcb_data: PCBData, net_ids=None,
             if wanted is None or v.net_id in wanted:
                 vias_by.setdefault(v.net_id, []).append(v)
     out = {}
+    pads_by = getattr(pcb_data, 'pads_by_net', None) or {}
     for nid in (wanted if wanted is not None else set(segs_by) | set(vias_by)):
-        out[nid] = calculate_route_length(segs_by.get(nid, []),
-                                         vias_by.get(nid), pcb_data)
+        segs = segs_by.get(nid, [])
+        out[nid] = (math.fsum(segment_length(s) for s in segs)
+                    + math.fsum(kicad_via_length(v, segs, pads_by.get(nid) or [],
+                                                 pcb_data)
+                                for v in vias_by.get(nid, ())))
     return out
 
 
@@ -568,8 +618,29 @@ def _net_track_graph(pcb_data: PCBData, net_id: int, pads,
         _node_xy.append((x, y, layer))
         return nid
 
+    # A via-in-pad (#1314): a via whose centre lies in one of `pads` -- the
+    # same landing test a track end gets -- joins that pad on every layer
+    # both carry. Without it the pad's hubs met only TRACK nodes, so a via
+    # centred in an SMD pad whose tracks leave on an inner layer never reached
+    # its pad: board_score read imx6ulz's DQ3/DQ7 as "not joined by track
+    # copper" and left the whole length group ungraded, though KiCad measured
+    # both nets.
+    via_pad_contacts = []          # (via, pad, [layers both carry])
+    via_contact_layers: Dict[int, set] = {}
+    for (vx, vy, _vr, vlayers, _vh, vkind, via) in discs:
+        if vkind != 'via':
+            continue
+        for (_px, _py, _pr, players, _ph, pkind, pad) in discs:
+            if pkind != 'pad' or not _pad_holds_point(pad, vx, vy, tolerance):
+                continue
+            common = [l for l in vlayers if l in players]
+            if common:
+                via_pad_contacts.append((via, pad, common))
+                via_contact_layers.setdefault(id(via), set()).update(common)
+
     track_nodes = list(adjacency.keys())
     pad_nodes: Dict[int, List[int]] = {}
+    hubs_by_obj: Dict[int, Dict[str, int]] = {}
     for (cx, cy, radius, dlayers, hit, kind, obj) in discs:
         layer_nodes: Dict[str, int] = {}
         for layer in dlayers:
@@ -582,7 +653,8 @@ def _net_track_graph(pcb_data: PCBData, net_id: int, pads,
                 if hit(nx, ny):
                     add_edge(hub, node, 0.0)
                     joined = True
-            if joined or kind == 'pad':
+            if joined or kind == 'pad' \
+                    or layer in via_contact_layers.get(id(obj), ()):
                 layer_nodes[layer] = hub
 
         if kind == 'via':
@@ -605,6 +677,13 @@ def _net_track_graph(pcb_data: PCBData, net_id: int, pads,
                 for other in hubs[1:]:
                     add_edge(hubs[0], other, 0.0)
             pad_nodes[id(obj)] = hubs
+        hubs_by_obj[id(obj)] = layer_nodes
+
+    for via, pad, common in via_pad_contacts:
+        vh, ph = hubs_by_obj.get(id(via), {}), hubs_by_obj.get(id(pad), {})
+        for layer in common:
+            if layer in vh and layer in ph:
+                add_edge(vh[layer], ph[layer], 0.0)
 
     return adjacency, pad_nodes
 

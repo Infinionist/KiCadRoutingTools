@@ -405,6 +405,160 @@ def read_board_track_clearances(board_path: str) -> Tuple[List[TrackRule], List[
     return parse_dru_track_clearances(text)
 
 
+# ---------------------------------------------------------------------------
+# THE THIRD CHANNEL: length windows (#1313)
+# ---------------------------------------------------------------------------
+# `(constraint length (min ..) (opt ..) (max ..))` bounds each matching net's
+# routed length; KiCad's DRC reports `length_out_of_range` outside it. No
+# router step routes to it (design_rules lists the kind as unconsumed), so this
+# channel is for the GRADER: check_drc reads it and measures each net the way
+# KiCad's length DRC does (net_queries.net_match_length, mode 'total'). Before
+# it, check_drc and board_score read a board clean that KiCad failed 8 times.
+#
+# Honoured conditions: none (every net), or `||`-joined terms each of which is
+# `A.NetClass == 'X'`, `A.NetName == 'X'` or `A.hasNetclass('X')`. KiCad's
+# string `==` matches `*` / `?` wildcards case-insensitively (libeval
+# VALUE::EqualTo -> WildCompareString), so these do too. NetClass is read as
+# membership, as the track channel reads it. Anything else -- another
+# predicate, `&&`, a (layer ..) clause -- is kept as an UNSUPPORTED rule with
+# its reason, never dropped: a grader must say what it did not grade.
+_LEN_TERM = re.compile(
+    r"^A\s*\.\s*(?:(NetClass|NetName)\s*==\s*['\"]([^'\"]*)['\"]"
+    r"|(hasNetclass)\s*\(\s*['\"]([^'\"]*)['\"]\s*\))$")
+
+
+class LengthRule(NamedTuple):
+    """One `length` constraint. `terms` is a tuple of ('netclass'|'netname',
+    pattern) alternatives -- () for an unconditioned rule (every net) -- or
+    None when the scope is outside the honoured subset, with the reason in
+    `unsupported`. Bounds are mm; a missing bound is None."""
+    name: str
+    min_mm: Optional[float]
+    opt_mm: Optional[float]
+    max_mm: Optional[float]
+    terms: Optional[Tuple[Tuple[str, str], ...]]
+    unsupported: str = ''
+    severity: str = 'error'
+
+
+def _parse_length_condition(expr: Optional[str]):
+    """(terms, reason): terms as LengthRule.terms, reason '' when honoured."""
+    if expr is None or not expr.strip():
+        return (), ''
+    if '&&' in expr or '!' in expr:
+        return None, f"condition {expr!r} is not an ||-list of net terms"
+    terms = []
+    for raw in expr.split('||'):
+        t = raw.strip()
+        while t.startswith('(') and t.endswith(')'):
+            t = t[1:-1].strip()
+        m = _LEN_TERM.match(t)
+        if not m:
+            return None, f"condition term {raw.strip()!r} is not modelled"
+        if m.group(1) == 'NetName':
+            terms.append(('netname', m.group(2)))
+        else:
+            terms.append(('netclass', m.group(2) if m.group(1) else m.group(4)))
+    return tuple(terms), ''
+
+
+def parse_dru_length_rules(text: str) -> Tuple[List[LengthRule], List[str]]:
+    """Every `length` constraint in .kicad_dru text, in FILE order, and notes.
+    A `(severity ignore)` rule is dropped with a note (KiCad grades nothing
+    there); every other rule is returned, honoured or not."""
+    rules: List[LengthRule] = []
+    notes: List[str] = []
+    for node in _parse_nodes(_tokenize(text)):
+        if not isinstance(node, list) or not node or node[0] != "rule":
+            continue
+        name = node[1] if len(node) > 1 and not isinstance(node[1], list) else "?"
+        bounds = None
+        condition = None
+        layer_clause = None
+        severity = 'error'
+        for item in node:
+            if not isinstance(item, list) or not item:
+                continue
+            if item[0] == "severity" and len(item) >= 2:
+                severity = str(item[1])
+            elif item[0] == "condition" and len(item) >= 2:
+                condition = item[1]
+            elif item[0] == "layer":
+                layer_clause = item[1] if len(item) >= 2 else ''
+            elif item[0] == "constraint" and len(item) >= 2 and item[1] == "length":
+                bounds = {}
+                for sub in item[2:]:
+                    if isinstance(sub, list) and len(sub) >= 2 \
+                            and sub[0] in ('min', 'opt', 'max'):
+                        bounds[sub[0]] = _to_mm(sub[1])
+        if bounds is None:
+            continue
+        if severity == 'ignore':
+            notes.append(f"rule '{name}': length window, severity ignore -- skipped")
+            continue
+        terms, why = _parse_length_condition(condition)
+        if layer_clause is not None and terms is not None:
+            terms, why = None, f"a (layer {layer_clause}) clause is not modelled"
+        rules.append(LengthRule(str(name), bounds.get('min'), bounds.get('opt'),
+                                bounds.get('max'), terms, why, severity))
+    return rules, notes
+
+
+def read_board_length_rules(board_path: str) -> Tuple[List[LengthRule], List[str]]:
+    """Auto-read the sibling ``<board>.kicad_dru`` length windows (#1313).
+    ([], []) when there is no dru file."""
+    dru = os.path.splitext(board_path)[0] + ".kicad_dru" if board_path else ""
+    if not dru or not os.path.isfile(dru):
+        return [], []
+    try:
+        text = open(dru, encoding="utf-8").read()
+    except OSError as e:
+        return [], [f"could not read {dru}: {e}"]
+    return parse_dru_length_rules(text)
+
+
+def length_rule_matches(rule: LengthRule, net_name: str, classes) -> Optional[bool]:
+    """Does `rule` bind the net? None when its scope is not modelled (the
+    caller cannot know). `classes` is the net's class memberships; a net with
+    none is in Default."""
+    if rule.terms is None:
+        return None
+    if not rule.terms:
+        return True
+    cls = list(classes or ('Default',))
+    for kind, pat in rule.terms:
+        if kind == 'netname':
+            if _kicad_wild_eq(pat, net_name or ''):
+                return True
+        elif any(_kicad_wild_eq(pat, c) for c in cls):
+            return True
+    return False
+
+
+def _kicad_wild_eq(pattern: str, text: str) -> bool:
+    """KiCad's string `==`: case-insensitive, `*` and `?` wildcards and
+    nothing else special (WildCompareString) -- unlike fnmatch, a `[` in a
+    net name is literal."""
+    rx = ''.join('.*' if ch == '*' else '.' if ch == '?' else re.escape(ch)
+                 for ch in pattern)
+    return re.fullmatch(rx, text, re.IGNORECASE | re.DOTALL) is not None
+
+
+def binding_length_rule(rules: List[LengthRule], net_name: str, classes):
+    """The rule KiCad applies to the net: rules are evaluated LAST-to-first and
+    the first match wins (as the layer channel reads them). Returns (rule,
+    None), (None, None) when no rule binds, or (None, rule) when the walk
+    reaches an unsupported rule first -- whether IT binds is unknown, so the
+    net cannot be graded."""
+    for r in reversed(rules):
+        m = length_rule_matches(r, net_name, classes)
+        if m is None:
+            return None, r
+        if m:
+            return r, None
+    return None, None
+
+
 def track_pair_clearance(track_rules: List[TrackRule], a_cls, b_cls,
                          resolved: float, *, coupled: bool = False,
                          layer: Optional[str] = None
