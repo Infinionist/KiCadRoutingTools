@@ -850,221 +850,259 @@ def resolve_collisions(routes: List[FanoutRoute], tracks: List[Dict],
 
             if is_single_ended and grid is not None and channels is not None:
                 net_id = int(identifier[4:])
-                # Find the route for this net
-                route = None
-                for r in routes:
-                    if r.net_id == net_id and r.pair_id is None:
-                        route = r
-                        break
-
-                alt_channels = []
-                if route and route.channel is not None:
-                    # Get THE alternate channel (only one - on the opposite side)
-                    alt_channels = get_alternate_channels_for_pad(
-                        route.pad_pos[0], route.pad_pos[1],
-                        route.channel, route.escape_dir, channels
-                    )
-
-                    # Try the alternate channel (there's only one)
-                    for alt_channel in alt_channels:
-                        result = try_reroute_single_ended(
-                            route, alt_channel, grid, exit_margin,
-                            tracks, existing_tracks, available_layers,
-                            track_width, clearance, no_inner_top_layer,
-                            None, None, None, None
+                # The net's COLLIDING routes, each in turn. A multi-ball net
+                # (a power rail) has a route per ball, and taking the net's
+                # FIRST route moved a ball that collided with nothing while
+                # the colliding ones shipped untouched: daisho U1's single
+                # pass left V1P2 K19, V2P5 J21 and VCCD_PLL J20 stacked in one
+                # F.Cu channel and V1P2 V17 on /ddr2/VREF Y17 -- 20 contacts,
+                # none of the five ever tried. A route an earlier move in
+                # this loop already freed is left alone.
+                targets = [r for r in routes if r.net_id == net_id and r.pair_id is None
+                           and _route_collides(r, tracks, existing_tracks, min_spacing)]
+                for route in targets:
+                    if route not in routes or not _route_collides(
+                            route, tracks, existing_tracks, min_spacing):
+                        continue
+                    resolved = False
+                    alt_channels = []
+                    if route and route.channel is not None:
+                        # Get THE alternate channel (only one - on the opposite side)
+                        alt_channels = get_alternate_channels_for_pad(
+                            route.pad_pos[0], route.pad_pos[1],
+                            route.channel, route.escape_dir, channels
                         )
-                        if result:
-                            new_route, new_layer = result
 
-                            # Remove THIS route's old tracks (#508 finding 6:
-                            # net-scoped removal deleted other same-net
-                            # balls' escapes)
-                            _remove_route_tracks(tracks, route)
+                        # Try the alternate channel (there's only one)
+                        for alt_channel in alt_channels:
+                            result = try_reroute_single_ended(
+                                route, alt_channel, grid, exit_margin,
+                                tracks, existing_tracks, available_layers,
+                                track_width, clearance, no_inner_top_layer,
+                                None, None, None, None
+                            )
+                            if result:
+                                new_route, new_layer = result
 
-                            # Update route in routes list
-                            route_idx = routes.index(route)
-                            routes[route_idx] = new_route
+                                # Remove THIS route's old tracks (#508 finding 6:
+                                # net-scoped removal deleted other same-net
+                                # balls' escapes)
+                                _remove_route_tracks(tracks, route)
 
-                            # Add new tracks
-                            tracks.append(create_track(new_route.pad_pos, new_route.stub_end,
-                                                       track_width, new_layer, net_id,
-                                                       route_uid=route_uid(new_route)))
-                            tracks.append(create_track(new_route.stub_end, new_route.exit_pos,
-                                                       track_width, new_layer, net_id,
-                                                       route_uid=route_uid(new_route)))
+                                # Update route in routes list
+                                route_idx = routes.index(route)
+                                routes[route_idx] = new_route
 
-                            rerouted += 1
-                            resolved = True
-                            print(f"    Rerouted {identifier} to alternate channel on {new_layer}")
-                            break
+                                # Add new tracks
+                                tracks.append(create_track(new_route.pad_pos, new_route.stub_end,
+                                                           track_width, new_layer, net_id,
+                                                           route_uid=route_uid(new_route)))
+                                tracks.append(create_track(new_route.stub_end, new_route.exit_pos,
+                                                           track_width, new_layer, net_id,
+                                                           route_uid=route_uid(new_route)))
 
-                # If still not resolved, try to move a conflicting route to a jogged path
-                if not resolved and route is not None:
-                    # Find routes that conflict with this route's desired channel
-                    conflicting_routes = []
-                    for other_route in routes:
-                        if other_route.net_id == route.net_id:
-                            continue
-                        if other_route.channel is None:
-                            continue
-                        # Check if they use the same channel (or the alternate channel we tried)
-                        if other_route.channel == route.channel:
-                            conflicting_routes.append(other_route)
-                        elif alt_channels and other_route.channel in alt_channels:
-                            conflicting_routes.append(other_route)
-
-                    # Try to move the route that is FARTHER from escape edge to a jogged path
-                    # The route closer to the edge should keep the normal channel
-                    route_dist = get_distance_to_escape_edge(route, grid)
-
-                    for conflicting in conflicting_routes:
-                        conflicting_dist = get_distance_to_escape_edge(conflicting, grid)
-
-                        # Decide which route to jog based on distance to escape edge
-                        if route_dist > conflicting_dist:
-                            # route is farther from edge - jog route instead of conflicting
-                            to_jog = route
-                            to_keep = conflicting
-                        else:
-                            # conflicting is farther from edge - jog conflicting
-                            to_jog = conflicting
-                            to_keep = route
-
-                        farther_ch = get_farther_channel(to_jog, channels, grid)
-                        if farther_ch is None:
-                            continue
-
-                        result = try_jogged_route(
-                            to_jog, farther_ch, grid, exit_margin,
-                            tracks, existing_tracks, available_layers,
-                            track_width, clearance, None, no_inner_top_layer,
-                            None, None, None, None
-                        )
-                        if result:
-                            new_jogged_route, new_layer, new_jogged_tracks = result
-
-                            # If to_jog is one half of a diff pair, its partner must
-                            # move to the SAME layer too - jogging just one half splits
-                            # P and N across layers (and can leave the partner shorting
-                            # another net on the vacated channel), making the pair
-                            # unroutable downstream. Jog the partner onto new_layer
-                            # (layer forced, and seeing to_jog's new tracks so the two
-                            # halves don't collide). If the partner can't follow,
-                            # abandon this jog rather than split the pair.
-                            partner = None
-                            partner_result = None
-                            if to_jog.pair_id is not None:
-                                partner = next((r for r in routes
-                                                if r.pair_id == to_jog.pair_id
-                                                and r.net_id != to_jog.net_id), None)
-                                if partner is None:
-                                    continue
-                                # Keep the pair ADJACENT: shift the partner by the
-                                # SAME delta to_jog just moved, so both halves stay
-                                # one channel apart. Jogging the partner to its own
-                                # "farther channel" instead splays a vertical pair to
-                                # opposite sides (P right, N left), over-separating it
-                                # (e.g. 84.1/83.3 -> 84.9/82.5) so it can no longer
-                                # route as a tight pair.
-                                if to_jog.channel is None or partner.channel is None:
-                                    continue
-                                delta = farther_ch.position - to_jog.channel.position
-                                target_pos = partner.channel.position + delta
-                                same_orient = [c for c in channels
-                                               if c.orientation == partner.channel.orientation]
-                                partner_ch = min(same_orient,
-                                                 key=lambda c: abs(c.position - target_pos)) if same_orient else None
-                                if partner_ch is None or abs(partner_ch.position - target_pos) > 0.05:
-                                    continue
-                                partner_result = try_jogged_route(
-                                    partner, partner_ch, grid, exit_margin,
-                                    tracks + new_jogged_tracks, existing_tracks, [new_layer],
-                                    track_width, clearance, None, no_inner_top_layer,
-                                    None, None, None, None
-                                )
-                                if partner_result is None:
-                                    continue
-
-                            jogged_net_name = net_names.get(to_jog.net_id, f"net_{to_jog.net_id}")
-
-                            # Remove THIS route's old tracks (#508 finding 6)
-                            _remove_route_tracks(tracks, to_jog)
-
-                            # Update route in routes list
-                            jog_idx = routes.index(to_jog)
-                            routes[jog_idx] = new_jogged_route
-
-                            # Add new tracks for the jogged route
-                            tracks.extend(new_jogged_tracks)
-
-                            print(f"    Moved {jogged_net_name} to jogged path on {new_layer}")
-
-                            # Move the diff-pair partner onto the same layer
-                            if partner_result is not None:
-                                p_route, p_layer, p_tracks = partner_result
-                                _remove_route_tracks(tracks, partner)
-                                routes[routes.index(partner)] = p_route
-                                tracks.extend(p_tracks)
-                                p_name = net_names.get(partner.net_id, f"net_{partner.net_id}")
-                                print(f"    Moved {p_name} to jogged path on {p_layer} (diff-pair partner)")
-
-                            if to_jog is route:
-                                # We jogged the original failing route - it's now resolved
                                 rerouted += 1
                                 resolved = True
+                                print(f"    Rerouted {identifier} to alternate channel on {new_layer}")
                                 break
+
+                    # If still not resolved, try to move a conflicting route to a jogged path
+                    if not resolved and route is not None:
+                        # Find routes that conflict with this route's desired channel
+                        conflicting_routes = []
+                        for other_route in routes:
+                            if other_route.net_id == route.net_id:
+                                continue
+                            if other_route.channel is None:
+                                continue
+                            # Check if they use the same channel (or the alternate channel we tried)
+                            if other_route.channel == route.channel:
+                                conflicting_routes.append(other_route)
+                            elif alt_channels and other_route.channel in alt_channels:
+                                conflicting_routes.append(other_route)
+
+                        # Try to move the route that is FARTHER from escape edge to a jogged path
+                        # The route closer to the edge should keep the normal channel
+                        route_dist = get_distance_to_escape_edge(route, grid)
+
+                        for conflicting in conflicting_routes:
+                            conflicting_dist = get_distance_to_escape_edge(conflicting, grid)
+
+                            # Decide which route to jog based on distance to escape edge
+                            if route_dist > conflicting_dist:
+                                # route is farther from edge - jog route instead of conflicting
+                                to_jog = route
+                                to_keep = conflicting
                             else:
-                                # We jogged the conflicting route - now retry the original route
-                                # First try the original channel (now freed up)
-                                retry_result = try_reroute_single_ended(
-                                    route, route.channel, grid, exit_margin,
-                                    tracks, existing_tracks, available_layers,
-                                    track_width, clearance, no_inner_top_layer,
-                                    None, None, None, None
-                                )
-                                if retry_result:
-                                    new_route, retry_layer = retry_result
+                                # conflicting is farther from edge - jog conflicting
+                                to_jog = conflicting
+                                to_keep = route
 
-                                    # Remove THIS route's old tracks
-                                    # (#508 finding 6)
-                                    _remove_route_tracks(tracks, route)
+                            farther_ch = get_farther_channel(to_jog, channels, grid)
+                            if farther_ch is None:
+                                continue
 
-                                    # Update route in routes list
-                                    route_idx = routes.index(route)
-                                    routes[route_idx] = new_route
+                            result = try_jogged_route(
+                                to_jog, farther_ch, grid, exit_margin,
+                                tracks, existing_tracks, available_layers,
+                                track_width, clearance, None, no_inner_top_layer,
+                                None, None, None, None
+                            )
+                            if result:
+                                new_jogged_route, new_layer, new_jogged_tracks = result
 
-                                    # Add new tracks
-                                    tracks.append(create_track(new_route.pad_pos, new_route.stub_end,
-                                                               track_width, retry_layer, net_id,
-                                                               route_uid=route_uid(new_route)))
-                                    tracks.append(create_track(new_route.stub_end, new_route.exit_pos,
-                                                               track_width, retry_layer, net_id,
-                                                               route_uid=route_uid(new_route)))
+                                # If to_jog is one half of a diff pair, its partner must
+                                # move to the SAME layer too - jogging just one half splits
+                                # P and N across layers (and can leave the partner shorting
+                                # another net on the vacated channel), making the pair
+                                # unroutable downstream. Jog the partner onto new_layer
+                                # (layer forced, and seeing to_jog's new tracks so the two
+                                # halves don't collide). If the partner can't follow,
+                                # abandon this jog rather than split the pair.
+                                partner = None
+                                partner_result = None
+                                if to_jog.pair_id is not None:
+                                    partner = next((r for r in routes
+                                                    if r.pair_id == to_jog.pair_id
+                                                    and r.net_id != to_jog.net_id), None)
+                                    if partner is None:
+                                        continue
+                                    # Keep the pair ADJACENT: shift the partner by the
+                                    # SAME delta to_jog just moved, so both halves stay
+                                    # one channel apart. Jogging the partner to its own
+                                    # "farther channel" instead splays a vertical pair to
+                                    # opposite sides (P right, N left), over-separating it
+                                    # (e.g. 84.1/83.3 -> 84.9/82.5) so it can no longer
+                                    # route as a tight pair.
+                                    if to_jog.channel is None or partner.channel is None:
+                                        continue
+                                    delta = farther_ch.position - to_jog.channel.position
+                                    target_pos = partner.channel.position + delta
+                                    same_orient = [c for c in channels
+                                                   if c.orientation == partner.channel.orientation]
+                                    partner_ch = min(same_orient,
+                                                     key=lambda c: abs(c.position - target_pos)) if same_orient else None
+                                    if partner_ch is None or abs(partner_ch.position - target_pos) > 0.05:
+                                        continue
+                                    partner_result = try_jogged_route(
+                                        partner, partner_ch, grid, exit_margin,
+                                        tracks + new_jogged_tracks, existing_tracks, [new_layer],
+                                        track_width, clearance, None, no_inner_top_layer,
+                                        None, None, None, None
+                                    )
+                                    if partner_result is None:
+                                        continue
 
+                                jogged_net_name = net_names.get(to_jog.net_id, f"net_{to_jog.net_id}")
+
+                                # Remove THIS route's old tracks (#508 finding 6)
+                                _remove_route_tracks(tracks, to_jog)
+
+                                # Update route in routes list
+                                jog_idx = routes.index(to_jog)
+                                routes[jog_idx] = new_jogged_route
+
+                                # Add new tracks for the jogged route
+                                tracks.extend(new_jogged_tracks)
+
+                                print(f"    Moved {jogged_net_name} to jogged path on {new_layer}")
+
+                                # Move the diff-pair partner onto the same layer
+                                if partner_result is not None:
+                                    p_route, p_layer, p_tracks = partner_result
+                                    _remove_route_tracks(tracks, partner)
+                                    routes[routes.index(partner)] = p_route
+                                    tracks.extend(p_tracks)
+                                    p_name = net_names.get(partner.net_id, f"net_{partner.net_id}")
+                                    print(f"    Moved {p_name} to jogged path on {p_layer} (diff-pair partner)")
+
+                                if to_jog is route:
+                                    # We jogged the original failing route - it's now resolved
                                     rerouted += 1
                                     resolved = True
-                                    print(f"    Rerouted {identifier} after freeing channel on {retry_layer}")
                                     break
+                                else:
+                                    # We jogged the conflicting route - now retry the original route
+                                    # First try the original channel (now freed up)
+                                    retry_result = try_reroute_single_ended(
+                                        route, route.channel, grid, exit_margin,
+                                        tracks, existing_tracks, available_layers,
+                                        track_width, clearance, no_inner_top_layer,
+                                        None, None, None, None
+                                    )
+                                    if retry_result:
+                                        new_route, retry_layer = retry_result
 
-                # If STILL not resolved, remove the route and report failure
-                if not resolved and route is not None:
-                    net_name = net_names.get(net_id, f"net_{net_id}")
-                    failed_nets.append(net_name)
+                                        # Remove THIS route's old tracks
+                                        # (#508 finding 6)
+                                        _remove_route_tracks(tracks, route)
 
-                    # Remove the failed route from routes list
-                    if route in routes:
-                        routes.remove(route)
+                                        # Update route in routes list
+                                        route_idx = routes.index(route)
+                                        routes[route_idx] = new_route
 
-                    # Remove THIS route's tracks (#508 finding 6: net-scoped
-                    # removal deleted other same-net balls' escapes)
-                    _remove_route_tracks(tracks, route)
+                                        # Add new tracks
+                                        tracks.append(create_track(new_route.pad_pos, new_route.stub_end,
+                                                                   track_width, retry_layer, net_id,
+                                                                   route_uid=route_uid(new_route)))
+                                        tracks.append(create_track(new_route.stub_end, new_route.exit_pos,
+                                                                   track_width, retry_layer, net_id,
+                                                                   route_uid=route_uid(new_route)))
 
-                    print(f"    FAILED: Could not route {net_name} - no collision-free path found")
+                                        rerouted += 1
+                                        resolved = True
+                                        print(f"    Rerouted {identifier} after freeing channel on {retry_layer}")
+                                        break
+
+                    # If STILL not resolved, remove the route and report failure
+                    if not resolved and route is not None:
+                        net_name = net_names.get(net_id, f"net_{net_id}")
+                        failed_nets.append(net_name)
+
+                        # Remove the failed route from routes list
+                        if route in routes:
+                            routes.remove(route)
+
+                        # Remove THIS route's tracks (#508 finding 6: net-scoped
+                        # removal deleted other same-net balls' escapes)
+                        _remove_route_tracks(tracks, route)
+
+                        print(f"    FAILED: Could not route {net_name} - no collision-free path found")
 
     if rerouted > 0:
         print(f"  Rerouted {rerouted} signals to alternate channels")
 
     return reassigned + rerouted, failed_nets
+
+
+def _route_collides(route: 'FanoutRoute', tracks: List[Dict],
+                    existing_tracks: List[Dict], min_spacing: float) -> bool:
+    """True if one of `route`'s tracks comes within `min_spacing` of another
+    net's track on its layer (the test find_colliding_pairs applies), against
+    this run's tracks and the existing ones. The route's tracks are the ones
+    stamped with its uid (#508 finding 6), else its geometry on its layer."""
+    uid = route_uid(route)
+    mine = [t for t in tracks if t.get('route_uid') == uid]
+    if not mine:
+        mine = [dict(seg, layer=route.layer) for seg in route_segments(route)]
+    others = tracks + existing_tracks if existing_tracks else tracks
+    for t in mine:
+        (ax, ay), (bx, by) = t['start'], t['end']
+        lo_x, hi_x = min(ax, bx) - min_spacing, max(ax, bx) + min_spacing
+        lo_y, hi_y = min(ay, by) - min_spacing, max(ay, by) + min_spacing
+        for o in others:
+            if o['layer'] != t['layer'] or o.get('net_id') == route.net_id:
+                continue
+            if route.pair_id is not None and o.get('pair_id') == route.pair_id:
+                continue
+            (cx, cy), (dx, dy) = o['start'], o['end']
+            if max(cx, dx) < lo_x or min(cx, dx) > hi_x \
+                    or max(cy, dy) < lo_y or min(cy, dy) > hi_y:
+                continue
+            if check_segment_collision(t['start'], t['end'], o['start'], o['end'],
+                                       min_spacing):
+                return True
+    return False
 
 
 def _remove_route_tracks(tracks: List[Dict], route: 'FanoutRoute') -> int:
@@ -1230,9 +1268,7 @@ def repair_pad_crossings(routes: List[FanoutRoute], tracks: List[Dict],
                         failed_nets.append(name)
                     if leg in routes:
                         routes.remove(leg)
-                    old = [i for i, t in enumerate(tracks) if t.get('net_id') == leg.net_id]
-                    for idx in sorted(old, reverse=True):
-                        tracks.pop(idx)
+                    _remove_route_tracks(tracks, leg)   # #508 finding 6: this leg's only
                 print(f"    Pad-aware FAILED: diff pair {pair_id} crosses a pad on all layers")
             continue
 
@@ -1321,9 +1357,11 @@ def repair_pad_crossings(routes: List[FanoutRoute], tracks: List[Dict],
             failed_nets.append(name)
             if route in routes:
                 routes.remove(route)
-            old = [i for i, t in enumerate(tracks) if t.get('net_id') == net_id]
-            for idx in sorted(old, reverse=True):
-                tracks.pop(idx)
+            # THIS route's tracks (#508 finding 6): a net-scoped removal took
+            # every ball's escape of a multi-ball rail with it (daisho U1:
+            # one V1P2 ball given up here left 32 of its 50 balls bare and 16
+            # vias with no track)
+            _remove_route_tracks(tracks, route)
             print(f"    Pad-aware FAILED: {name} crosses a pad, no clear path")
 
     return repaired, failed_nets
