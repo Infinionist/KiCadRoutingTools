@@ -233,8 +233,16 @@ step, confirm the geometry actually has that problem:
    without fanout.
 2. **Wide-pitch SMD (>=1.27mm) perimeter part?** → No fanout; plain routing
    handles it.
-3. **Interior pads at fine pitch (<=0.6mm), or a perimeter at <=0.65mm with
-   many pads?** → Yes, fanout genuinely helps (this is the boxed-in case).
+3. **Interior pads at fine pitch (<=0.6mm)?** → Yes, fanout is needed: those
+   pads are boxed in, and ordinary routing cannot reach them (Step
+   5a-tuned-ii). **A perimeter at <=0.65mm with many pads (QFN/QFP)?** → A
+   candidate only. Every perimeter pad faces outward, so the router can
+   reach it without a fanout; the stubs only commit each escape in advance,
+   and that can cost more than it saves. On one board an LQFP-48 at 0.5 mm
+   routed worse with `qfn_fanout.py` than without, the chain otherwise the
+   same (blocking 30 vs 25, vias 77 vs 70). Route the chain with and without
+   the perimeter fanout and keep it only when it routes better (blocking,
+   then vias); one board is not enough to say which way it usually goes.
    **"Fine-pitch" is not one number in this file, and no sentence should be read
    as if it were.** It is the FANOUT trigger at <=0.6 mm interior / <=0.65 mm
    perimeter — the predicate in the code block above, the only executable one —
@@ -1224,7 +1232,10 @@ added to the plane step's `--nets`, ending with 0/23 pads connected while the ru
 reported success.
 
 **The invariant: every routable net (≥2 pads, not no-connect) must be claimed by
-exactly one stage. A net excluded from any stage MUST be claimed by a later one.**
+a stage. A net a route step excludes (`!X`) MUST be claimed by another: Step
+2b's impedance pass, or a LATER route step whose `--nets` takes it.** A claim
+before the exclusion does not count: the last route step to see a net is the
+one whose in-run finalize answers for it.
 
 Before running any command, write the net-handling ledger and reconcile it
 mechanically — do not eyeball it:
@@ -1235,28 +1246,42 @@ mechanically — do not eyeball it:
      in-run finalize taps whatever fill can't reach)
    - `diff-pair route` — detected pairs
    - `impedance SE route (Step 2b)` — single-ended controlled-impedance nets (RF/antenna
-     50 ohm, DDR SSTL 40 ohm); the ONLY nets excluded from the route step
-   - `pour` — nets the plane step pours; they are ALSO in the route step (see above)
+     50 ohm, DDR SSTL 40 ohm); the only nets the route step excludes for good
+   - `pour` — nets the plane step pours; they are ALSO in the route step (see above).
+     In Step 8's pour-last flow the signal step, which runs before that pour
+     exists, may leave the poured net out (`--nets "*" "!GND"`), and the
+     closing route step after the pour claims it
    - `wide trace` — power carried via `--power-nets` widths (never excluded)
 
-2. **Diff the pattern lists (#562 rules).** Two checks, and note that the old
+2. **Diff the pattern lists (#562 rules).** Three checks, and note that the old
    "every poured net must be excluded" rule is now exactly backwards — a
-   poured net that is missing from the route step is the bug, because nothing
-   then welds its pads to the pour:
-   - the route step's exclusions MUST equal the Step-2b impedance set;
+   poured net that no route step after its pour claims is the bug, because
+   nothing then welds its pads to the pour:
+   - every net a route step excludes is a Step-2b impedance net or is claimed
+     by a LATER route step;
+   - every Step-2b impedance net is excluded from a route step;
    - every poured net MUST appear in the route step's `--power-nets` (that is
      where the finalize's taps and welds get their width).
    ```python
-   route_exclusions = {"RF"}                    # the !X you will pass route.py
-   plane_nets       = {"GND", "+3V3"}           # the --nets you pass route_planes.py
-   impedance_se     = {"RF"}                    # nets routed in Step 2b (route.py --impedance)
-   power_nets       = {"GND", "+3V3"}           # the --power-nets on the route step
-   orphans = route_exclusions ^ impedance_se
+   from fnmatch import fnmatchcase
+   route_steps  = [["*", "!RF"]]              # each route.py step's --nets, in plan order
+   plane_nets   = {"GND", "+3V3"}             # the --nets you pass route_planes.py
+   impedance_se = {"RF"}                      # nets routed in Step 2b (route.py --impedance)
+   power_nets   = {"GND", "+3V3"}             # the --power-nets on the route steps
+   def claims(step, net):                     # the router's order: includes add, "!" removes
+       return (not any(p[0] == "!" and fnmatchcase(net, p[1:]) for p in step)
+               and any(p[0] != "!" and fnmatchcase(net, p) for p in step))
+   excluded = [{p[1:] for p in step if p[0] == "!"} for step in route_steps]
+   orphans = {n for i, ex in enumerate(excluded) for n in ex - impedance_se
+              if not any(claims(later, n) for later in route_steps[i + 1:])}
    assert not orphans, f"Net-coverage gap: {sorted(orphans)} handled by no stage"
+   unexcluded = impedance_se - set().union(*excluded)
+   assert not unexcluded, f"Step 2b nets no route step excludes: {sorted(unexcluded)}"
    unsized = plane_nets - power_nets
    assert not unsized, f"Poured but no route-step width: {sorted(unsized)}"
    ```
-   Do not proceed until both are empty.
+   Do not proceed until all three are empty. `route_plan_check.py` R14 runs
+   the same checks on the emitted plan (Step 9).
 
 3. **Secondary grounds / split rails** (`AGND`, `GNDA`, `DGND`, `VREF`, or any rail
    tied to its parent through a single 0Ω resistor or ferrite bead — find the tie
@@ -2151,7 +2176,9 @@ after the signal steps — the pour flows around existing copper; 80% of human
 `route.py --nets "*"` at the signal steps' parameters: a late pour connects
 nothing until that step's in-run finalize welds it (see "End every chain on
 route.py"; never `repair_planes.py`, which repairs at the board's class via
-and track, not the chain's sizes). Power rails as pours are a minority
+and track, not the chain's sizes). The signal steps may leave GND out
+(`--nets "*" "!GND"`) or keep it; either way that closing step is the one
+that claims GND (Step 5b, R14). Power rails as pours are a minority
 practice on 2-layer (≈38% of human boards) — pour them too when there's room,
 but GND-both-sides is the priority. Only plane-first on 2-layer boards with
 light signal content.
@@ -2237,6 +2264,17 @@ The Z80 board's hand layout does the latter and needs 212 vias; the flags'
 A board this size (the C64 is 390x180 mm) peaks around 5 GB per `route.py`
 run at the default grid, so run comparison arms one after another on a small
 machine.
+
+**A 2-layer through-hole board WITHOUT the buses** (a light interface or
+analog board) is not this class, and the table above does not cover it.
+One board is on record: GND poured on B.Cu, nearly every pad through-hole,
+the defaults (`--layer-costs 1.0 3.0`, via cost 75) routed every net with 16
+vias and 539 mm of copper, and `--layer-costs 1.0 1.0 --via-cost 600`
+routed every net with 0 vias and 535 mm. The likely reason: every link
+starts and ends on a pad present on both layers, so with B.Cu not priced 3x
+it can run wholly on either layer, and a high via cost keeps it there. One
+board is not a default, so route both as arms and keep
+the better (blocking first, then vias, then copper).
 
 ### Multi-Layer Boards (4+ layers)
 
@@ -2391,7 +2429,9 @@ Key options:
 
 ### QFN/QFP Components (Perimeter Pads)
 
-Use `qfn_fanout.py` instead of `bga_fanout.py`:
+Use `qfn_fanout.py` instead of `bga_fanout.py`, once Step 3's benefit check
+says the part gains from a fanout at all (a perimeter-only part is a
+candidate to compare, rule 3):
 
 ```bash
 python3 py_router/qfn_fanout.py board.kicad_pcb \
@@ -2604,7 +2644,18 @@ and `--turn-cost` (default: 1000) were measured on the corpus and no other
 value held up; `--proximity-heuristic-factor` (default: 0.02) beat 0, 0.01
 and 0.04 on a five-board probe and has had no corpus A/B since. Exception:
 2-layer through-hole bus boards, where Step 8 raises the first two together
-with `--layer-costs` and `--via-cost`.
+with `--layer-costs` and `--via-cost` (Step 8 also has a one-board arm for
+through-hole boards without the buses).
+
+**Via-in-pad is allowed by default (#1025).** `route.py` may put a via in a
+same-net SMD pad (an escape via, a via-in-pad rescue, a plane tap) and then
+prints `FAB NOTE: N via(s) placed in pad(s)`; such a via must be filled and
+capped (IPC-4761 Type VII), which the fab charges for. To keep every via off
+same-net pads and their paste openings, pass `--same-net-pad-clearance <mm>`
+(> 0) to `route.py`, not only to `route_planes.py` (`route_diff.py` takes it
+too). The value is recorded in the `.kicad_pro`, so later steps inherit it;
+`-1` allows via-in-pad again. It is not free: on one board, 0.1 mm took 15
+vias out of pads for one more via and +42 mm of copper (+7.5 %).
 
 Manufacturing constraints (set to match your fab's requirements):
 
@@ -2632,7 +2683,7 @@ decided by signal type in Step 4c, never as a spreading knob.
 
 ## Important Notes
 
-0. **Net-coverage invariant (Step 5b)** - Every routable net must be claimed by a stage. Since #562 the route step takes `"*"` INCLUDING the plane nets, so the only legitimate exclusions are the Step-2b impedance nets; reconcile the exclusion set against that set (symmetric difference empty), check every poured net also appears in the route step's `--power-nets`, and confirm `check_connected.py`'s unrouted list is empty at the end. This is the guard against a net (e.g. a secondary ground like GNDA) being silently dropped by every stage.
+0. **Net-coverage invariant (Step 5b)** - Every routable net must be claimed by a stage. Since #562 the route step takes `"*"` INCLUDING the plane nets, so a route step's exclusions are the Step-2b impedance nets plus, in Step 8's pour-last flow, a net a LATER route step claims (GND, left out of the signal step and claimed by the closing step after the pour). Reconcile them with Step 5b's asserts (every exclusion claimed by Step 2b or a later route step, every Step-2b net excluded), check every poured net also appears in the route step's `--power-nets`, and confirm `check_connected.py`'s unrouted list is empty at the end. This is the guard against a net (e.g. a secondary ground like GNDA) being silently dropped by every stage.
 1. **Always check for GND connections** - If a component has GND pads but GND isn't being fanned out, the fanout's own plane-drop vias (#424) plus the route step's in-run finalize will handle it
 2. **Fanout ALL non-plane nets** - Use `--nets "*" "!GND" "!VCC"` to fan out all nets except those handled by planes. Do NOT use `"/*"` alone as it misses nets with non-hierarchical names like `Net-(U9-Pad1)`. Unconnected nets are automatically filtered out.
 3. **Order matters** - Fanout (with plane-ball drops) comes AFTER the Step 1 bare pour (#424: planes FIRST, so the fill picks up the drop vias while intact and the fragility field steers every later route), then diff pairs, then the all-nets route with the plane nets INCLUDED (#562 — the run ends with the in-run plane finalize, so there is no separate repair step), then optional GND return vias/stitching. Signals route before stitching because stitching vias can relocate around tracks, but a diff pair cannot relocate around a badly placed via
@@ -3187,6 +3238,44 @@ hunt for.
    fully-unrouted multi-pad net, the board is NOT done — handle each (route or
    pour it) and re-verify before summarizing. Do not present an unrouted net as
    an accepted shortfall.
+4c. **Grade the silkscreen.** No grader on the DONE path reads silk
+   (`kicad_drc_compare` drops the silk classes by design), so read KiCad's
+   own (it can take minutes on a silk-heavy board, #333):
+   ```bash
+   kicad-cli pcb drc board_final.kicad_pcb --severity-all --format json -o /tmp/silk_drc.json
+   python3 -c "import json,collections;v=json.load(open('/tmp/silk_drc.json'))['violations'];print(dict(collections.Counter(x['type'] for x in v if x['type'].startswith('silk'))) or 'no silk violations')"
+   ```
+   Report each silk class in the summary. The tidy is
+   `python3 -X utf8 py_placer/beautify_labels.py board_final.kicad_pcb board_labels.kicad_pcb`:
+   it moves reference labels clear of pads, holes, the edge and each other,
+   silkscreen only (copper passes through byte for byte, siblings copied).
+   It does not see drawn silk, a part's own outline included, so it can
+   trade one overlap for another. Measured: one routed board went from 4
+   KiCad silk errors to 0, and another board from 54 to 76 (labels moved
+   onto footprint outlines). So grade `board_labels.kicad_pcb` the same
+   way and keep it as the final board only when its silk count is lower. It
+   moves the designer's labels, too: on a placement the user made, offer it
+   rather than run it.
+4d. **Deliver a filled copy (#910), last.** The routed board carries zone
+   OUTLINES with no fill: KiCad shows the planes empty until they are refilled
+   (press B), and plain `kicad-cli pcb drc` without `--refill-zones` reports
+   plane-net opens that are not real (`docs/utilities.md` measures 12 on one
+   in-repo board). `check_connected` and `check_complete` refill on their
+   own, so they never see this. From the verified final board (the labelled
+   copy, when 4c kept it):
+   ```bash
+   python3 -X utf8 py_tools/fill_for_delivery.py board_final.kicad_pcb -o board_delivered.kicad_pcb
+   ```
+   It fills with KiCad's own zone filler, copies the siblings, keeps the net
+   classes and prints `unconnected (no --refill-zones): N -> M`. The filled
+   copy is the deliverable, not a chain step: route nothing further from it,
+   since a fill stored before more copper is laid is stale. Exit 1 means the
+   fill did not run (it needs KiCad's bundled python) or a net class went
+   missing; then say in the summary that the board must be refilled (press B,
+   or `kicad-cli pcb drc --refill-zones`) before it is plotted. Keep
+   `board_delivered.kicad_pcb` beside the final board when cleaning up (item 6).
+   (`route.py --write-fill` fills in place at the end of a route step; use it
+   only on a step nothing will route after.)
 5. Summarize the final state of the board
 6. **Offer to clean up intermediate files**:
    - List the intermediate `.kicad_pcb` files created (e.g., `board_step1.kicad_pcb`, `board_step2.kicad_pcb`, etc.)
@@ -3294,7 +3383,7 @@ SECTION here each rule comes from so you can argue with it at its source.
 **Run `--list` BEFORE you author the plan**, not after it is refused — it
 prints all seventeen in a few lines. The five that bite most often are: the
 chain ends on `route.py`, verification is commented rather than executable,
-no pipes, Step 5b's two net-coverage `assert`s, and one cap pass after the
+no pipes, Step 5b's net-coverage `assert`s, and one cap pass after the
 last fanout.
 
 Exit **0** checked and clean — proceed. **1** the checker itself crashed:
