@@ -1720,9 +1720,13 @@ def route_single_ended_nets(
                                          _v652)
                 except Exception:
                     pass
+                # A forced oracle link (#572) failed between its OWN
+                # endpoints: attribute there (#1324).
+                _link301 = (result or {}).get('failed_link')
                 hint301, blockers301 = preexisting_blocker_hint(
                     _cells301, config, pcb_data, net_id,
-                    routed_net_ids=state.routed_net_ids, return_names=True)
+                    routed_net_ids=state.routed_net_ids, return_names=True,
+                    anchors=list(_link301) if _link301 else None)
                 if hint301:
                     _c301 = condense_hint(hint301)
                     if _c301:

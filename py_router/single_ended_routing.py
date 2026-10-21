@@ -1916,7 +1916,8 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
             print(f"    forced link endpoint layer not in the routing stack "
                   f"({al} / {bl}) -- link unroutable here")
             uncommit_dropped_result(pcb_data, merged)
-            return {'failed': True, 'iterations': 0}
+            return {'failed': True, 'iterations': 0,
+                    'failed_link': ((ax, ay), (bx, by))}
         gax, gay = coord.to_grid(ax, ay)
         gbx, gby = coord.to_grid(bx, by)
         print(f"    forced oracle link: ({ax:.3f},{ay:.3f})[{al}] <-> "
@@ -1933,12 +1934,17 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
                       f"a retry re-routes every link)")
             # ...and so is their #189 unblock copper, already in pcb_data.
             uncommit_dropped_result(pcb_data, merged)
-            return result if result else {'failed': True, 'iterations': 0}
+            result = result if result else {'failed': True, 'iterations': 0}
+            # The link this failure is about: the #103 blocker hint anchors
+            # there, not on the net's derived endpoints (#1324).
+            result['failed_link'] = ((ax, ay), (bx, by))
+            return result
         if not (result.get('new_segments') or result.get('new_vias')):
             print(f"    forced link claimed success with ZERO copper -- "
                   f"refused (#572 false-weld fingerprint)")
             uncommit_dropped_result(pcb_data, merged)
             result['failed'] = True
+            result['failed_link'] = ((ax, ay), (bx, by))
             return result
         if merged is None:
             merged = result

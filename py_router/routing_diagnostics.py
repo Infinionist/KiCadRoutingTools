@@ -415,7 +415,7 @@ def reset_hint_condenser() -> None:
 
 def preexisting_blocker_hint(blocked_cells, config, pcb_data, net_id,
                               routed_net_ids=(), rip_existing_names=None,
-                              return_names=False):
+                              return_names=False, anchors=None):
     """Name the PRE-EXISTING nets whose copper blocks a failed route (#301).
 
     Copper committed by an earlier run/step lives in the BASE obstacle map, so
@@ -425,6 +425,13 @@ def preexisting_blocker_hint(blocked_cells, config, pcb_data, net_id,
     step). Geometric frontier attribution (the plane-repair machinery) names
     them, and --rip-existing-nets (#103) is the existing, connectivity-safe way
     to let this run rip + re-route them. Returns '' when nothing attributable.
+
+    `anchors` are the (x, y) points the failed search ran between. Omitted,
+    they are the net's derived endpoints (`get_net_endpoints`). A forced
+    oracle link (#572) searches between its OWN endpoints, which on a pour
+    net can lie anywhere: anchored on GND's derived pads, the hint named a net
+    0.2 mm from one of them and 29.9 mm from the failed strap (#1324,
+    multichannel_mixer), so the caller passes the link's endpoints.
     """
     def _ret(text, names):
         return (text, names) if return_names else text
@@ -447,10 +454,13 @@ def preexisting_blocker_hint(blocked_cells, config, pcb_data, net_id,
     # lockout was GPIO5/GPIO3 flanking the pad).
     near_cells = []
     try:
-        from connectivity import get_net_endpoints
-        srcs, tgts, _err = get_net_endpoints(pcb_data, net_id, config)
-        anchors = [(s[3], s[4]) for s in (srcs or [])[:2]] + \
-                  [(t[3], t[4]) for t in (tgts or [])[:2]]
+        if anchors:
+            anchors = [(float(a[0]), float(a[1])) for a in anchors]
+        else:
+            from connectivity import get_net_endpoints
+            srcs, tgts, _err = get_net_endpoints(pcb_data, net_id, config)
+            anchors = [(s[3], s[4]) for s in (srcs or [])[:2]] + \
+                      [(t[3], t[4]) for t in (tgts or [])[:2]]
         if anchors:
             r_cells = max(4, int(2.0 / config.grid_step))
             for (gx, gy, l) in blocked_cells:
