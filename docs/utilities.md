@@ -929,10 +929,18 @@ python py_router/list_nets.py board.kicad_pcb --design-rules
 
 It reads two tiers of rules and combines them with the JLCPCB fab floor:
 
-- **Net-class values** from the sibling `.kicad_pro` (KiCad 8+,
-  `net_settings.classes`) or `(net_class …)` blocks (KiCad 6/7): `clearance`,
+- **Net-class values** from the sibling `.kicad_pro` (KiCad 6+,
+  `net_settings.classes`) or, failing that, `(net_class …)` blocks in the board
+  file (the pre-KiCad-6 form): `clearance`,
   `track_width`, `via_diameter`, `via_drill`, `diff_pair_gap`, `diff_pair_width`.
   These are KiCad *drawing defaults*; only `clearance` is a DRC minimum.
+  Membership is read in every form KiCad reads: explicit
+  `netclass_assignments`, `netclass_patterns` globs, and a KiCad 6 project's
+  `classes[].nets` lists, which count while the project's `net_settings` schema
+  is 0-2 (KiCad migrates them on load; from schema 3 it no longer reads the
+  key, #1304). `design_rules.project_class_membership` is the one parser, so
+  the router, the graders and the GUI's design-rule table agree on who is in
+  a class.
 - **Board Constraints** from `board.design_settings.rules`: `min_clearance`,
   `min_track_width`, `min_via_diameter`, `min_hole_to_hole`,
   `min_through_hole_diameter`. **These are what DRC actually enforces** for the

@@ -139,9 +139,11 @@ def effective_floors(constraints, copper_layers):
 def read_design_rules(pcb_path):
     """Read net-class design rules so a skill can pass them to the routing CLIs.
 
-    Net classes live in the sibling .kicad_pro (KiCad 8+, JSON under
-    net_settings.classes) or, for KiCad 6/7, in (net_class ...) blocks inside
-    the .kicad_pcb. The router itself does not read these - it defaults to
+    Net classes live in the sibling .kicad_pro (KiCad 6+, JSON under
+    net_settings.classes; membership through
+    design_rules.project_class_membership, KiCad 6's classes[].nets included)
+    or, failing that, in (net_class ...) blocks inside the .kicad_pcb. The
+    router itself does not read these - it defaults to
     routing_defaults.CLEARANCE etc. - so the analysis step should read them
     here and pass --clearance/--track-width/--via-size/--via-drill (and the
     diff-pair gap) explicitly, instead of over-/under-clearancing the board.
@@ -171,32 +173,19 @@ def read_design_rules(pcb_path):
                                  ('clearance', 'track_width', 'via_diameter',
                                   'via_drill', 'diff_pair_gap', 'diff_pair_width')
                                  if k in c}
-            # net -> class assignment (dict in newer files; list of pairs in some).
-            # KiCad 9 values can be a LIST of class names (a net may belong to
-            # several classes); normalize to a single class name (prefer the first
-            # non-Default) so downstream consumers see {net: classname}.
-            na = ns.get('netclass_assignments') or {}
-            if isinstance(na, dict):
-                # KiCad 9 values can be a LIST of class names (a net may belong to
-                # several classes); normalize to a single class name (prefer the
-                # first non-Default) so downstream consumers see {net: classname}.
-                for _net, _cls in na.items():
-                    if isinstance(_cls, list):
-                        _nd = [c for c in _cls if c and c != 'Default']
-                        assignments[_net] = _nd[0] if _nd else (_cls[0] if _cls else 'Default')
-                    elif _cls:
-                        assignments[_net] = _cls
-            # Wildcard assignments / net-name -> class glob patterns (KiCad 8+
-            # net_settings.netclass_patterns): the primary membership mechanism on
-            # many boards (explicit assignments are often empty). Consumers fnmatch
-            # net names against it; explicit assignment wins. Kept as (pattern,
-            # class) pairs, in file order.
-            for pe in ns.get('netclass_patterns') or []:
-                try:
-                    if pe.get('netclass'):
-                        patterns.append((pe.get('pattern', ''), pe['netclass']))
-                except (KeyError, TypeError, AttributeError):
-                    continue
+            # Membership, every form KiCad reads, through the ONE parser
+            # DesignRules.from_project uses too: explicit netclass_assignments,
+            # KiCad 6's classes[].nets (#1304), and the netclass_patterns globs
+            # (the primary mechanism on many boards; consumers fnmatch net
+            # names against them, explicit assignment wins). A net may belong
+            # to several classes (KiCad 9 lists); normalize to a single class
+            # name (prefer the first non-Default) so downstream consumers see
+            # {net: classname}.
+            from design_rules import project_class_membership
+            _members, patterns = project_class_membership(ns)
+            for _net, _cls in _members.items():
+                _nd = [c for c in _cls if c and c != 'Default']
+                assignments[_net] = _nd[0] if _nd else (_cls[0] if _cls else 'Default')
             # DRC-enforced Board Constraints (what humans actually route against).
             rules = ((pro.get('board', {}) or {}).get('design_settings', {}) or {}).get('rules', {}) or {}
             constraints = {k: rules[k] for k in _CONSTRAINT_FIELDS if k in rules}
