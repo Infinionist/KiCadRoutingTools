@@ -55,6 +55,9 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 SCHEMA = 1
 EDGES = ('N', 'S', 'E', 'W')
+# The intent spells edges out (floorplan._EDGES); a groups file written beside
+# one may too, and the full name is unambiguous.
+_EDGE_NAMES = {'north': 'N', 'south': 'S', 'east': 'E', 'west': 'W'}
 GROUP_KEYS = ('name', 'role', 'refs', 'anchor', 'why', 'edge', 'side', 'near',
               'apart', 'note', 'templates')
 #: What a template candidate is: a stage that switches current through an
@@ -128,6 +131,8 @@ def validate_doc(doc, where: str = 'groups') -> Dict:
         refs = g.get('refs')
         if not isinstance(refs, list) or not refs or not all(isinstance(r, str) for r in refs):
             raise GroupsError(f"{where}: group {name!r} needs a non-empty `refs` list of strings")
+        if isinstance(g.get('edge'), str) and g['edge'] in _EDGE_NAMES:
+            g['edge'] = _EDGE_NAMES[g['edge']]
         if g.get('edge') not in (None,) + EDGES:
             raise GroupsError(f"{where}: group {name!r} edge {g.get('edge')!r} is not one of {EDGES}")
         if g.get('side', 'F') not in ('F', 'B'):

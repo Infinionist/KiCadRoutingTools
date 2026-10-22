@@ -446,6 +446,11 @@ _WAIVER_KEYS = {'pair', 'context'} | _FREE_TEXT_KEYS
 # instead would be worse still: `note` is load-bearing, grepped for the
 # substring SUSPECT by emit_intent.
 _EDGES = ('north', 'south', 'east', 'west')
+# A groups file spells its edge hints N/S/E/W (grouping.EDGES), and an intent
+# written beside one is edited the same way: three of four live PCB-chat runs
+# on 2026-10-22 wrote `edge: 'E'` into edge_connectors and were refused. The
+# letter is unambiguous, so it is read as the edge it names.
+_EDGE_LETTERS = {'N': 'north', 'S': 'south', 'E': 'east', 'W': 'west'}
 
 
 class IntentError(ValueError):
@@ -1514,6 +1519,8 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
                               f"a `ref`")
         c = dict(c)
         edge = c.get('edge')
+        if isinstance(edge, str) and edge in _EDGE_LETTERS:
+            edge = c['edge'] = _EDGE_LETTERS[edge]
         if edge is not None and edge not in _EDGES:
             raise IntentError(
                 f"edge_connectors[{i}] ({c['ref']}): edge {edge!r}, expected "
