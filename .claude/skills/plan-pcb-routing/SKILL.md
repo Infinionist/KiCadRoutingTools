@@ -545,6 +545,22 @@ Use `list_nets.py` to detect differential pairs and power/ground nets:
 python3 py_router/list_nets.py path/to/file.kicad_pcb --diff-pairs --power
 ```
 
+### Size the power nets: run `/analyze-power-nets` now, on every board
+
+`list_nets.py --power` names the power and ground nets from their names and pin
+types; it does not say how much current each one carries. Before Step 6 writes
+the route step's `--power-nets` / `--power-nets-widths`, run `/analyze-power-nets`
+on the board, whether or not its parts carry part numbers (read
+`.claude/skills/analyze-power-nets/SKILL.md` and follow it inline). It classifies
+the parts that source, sink and pass current, traces the power paths through the
+board's connections, and recommends a width per net
+(`get_power_net_recommendations`); those are the widths the route step carries.
+Where a part has no part number or no datasheet answer, classify it and estimate
+its current yourself, and say in the report which currents are estimates. A
+power net the analysis could not trace gets the width its IPC-2221 table gives
+for your estimate. Settle the widths here: changing them after the board is
+routed means routing it again.
+
 ### Read the board's design rules and pass them to the CLI
 
 With a size flag omitted, the router takes the board's **Default net class**
@@ -2733,7 +2749,7 @@ decided by signal type in Step 4c, never as a spreading knob.
 2. **Fanout ALL non-plane nets** - Use `--nets "*" "!GND" "!VCC"` to fan out all nets except those handled by planes. Do NOT use `"/*"` alone as it misses nets with non-hierarchical names like `Net-(U9-Pad1)`. Unconnected nets are automatically filtered out.
 3. **Order matters** - Fanout (with plane-ball drops) comes AFTER the Step 1 bare pour (#424: planes FIRST, so the fill picks up the drop vias while intact and the fragility field steers every later route), then diff pairs, then the all-nets route with the plane nets INCLUDED (#562 — the run ends with the in-run plane finalize, so there is no separate repair step), then optional GND return vias/stitching. Signals route before stitching because stitching vias can relocate around tracks, but a diff pair cannot relocate around a badly placed via
 4. **Verify at the end** - Always run DRC, connectivity, and orphan stub checks
-5. **Consider the analyze-power-nets skill** - For complex boards where power net identification isn't obvious, use that skill first to analyze component datasheets
+5. **Size power nets with the analyze-power-nets skill (Step 4)** - Run it on every board before the plan writes `--power-nets-widths`: it finds power nets by what they connect, not by name, and recommends each one's width
 6. **Consider the find-high-speed-nets skill** - For accurate GND return via distance recommendations based on actual component datasheet speeds and rise times, run `/find-high-speed-nets` before planning. The lightweight inline analysis (Step 4) uses net name patterns only.
 7. **Stub layer switching is on by default** - The router automatically moves stubs to eliminate vias when beneficial; disable with `--no-stub-layer-swap`
 8. **Default layer costs** - 2-layer boards default to F.Cu=1.0, B.Cu=3.0 to prefer top layer; 4+ layer boards use 1.0 for all. On **dense** 2-layer boards this 3× back-side penalty can over-bias routing onto F.Cu (top channel exhausted, B.Cu empty, excess vias, stranded pads); if completion is low or the layer balance is badly skewed, **retry with more balanced `--layer-costs` (e.g. `1.0 1.5`, down toward `1.0 1.0`)** — see "Dense 2-layer boards: rebalance layer costs" under Diagnose and Retry (issue #178). On **4+ layer** boards the all-1.0 default is plane-blind: **derive `--layer-costs` from the plane→layer map and penalize the plane-reserved inner layers (~3×)** so signals stay on F.Cu/B.Cu and the planes stay whole — see "Multi-Layer Boards (4+ layers)" (issue #185).
