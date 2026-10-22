@@ -1157,7 +1157,11 @@ class QuenchState:
                  # INCLUDING the one `floorplan.grade` builds -- keeps doing
                  # so; `place_simple` and the renderer that draws its model
                  # ask for it.
-                 estimate_courtyards: bool = False):
+                 estimate_courtyards: bool = False,
+                 # ...except these refs, which keep the basis the board
+                 # draws (place_simple's fallback for a part the estimates
+                 # leave no legal pose)
+                 estimate_skip=()):
         bounds = pcb_data.board_info.board_bounds
         if bounds is None:
             raise ValueError("No board boundary (Edge.Cuts) found")
@@ -1203,7 +1207,8 @@ class QuenchState:
             from placement.body import courtyard_sides_with_estimates
             courtyards, self.courtyard_estimates = (
                 courtyard_sides_with_estimates(pcb_data, pcb_file,
-                                               drawn=self._drawn_courtyards))
+                                               drawn=self._drawn_courtyards,
+                                               skip=frozenset(estimate_skip)))
         file_locked = set(extract_locked_refs(pcb_file))
         locked_refs = set(file_locked)
         if extra_locked_refs:

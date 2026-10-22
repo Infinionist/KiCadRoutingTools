@@ -149,7 +149,8 @@ def hints(doc, state, movable, args):
     return out
 
 
-def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
+def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
+          estimate_skip=()):
     """`(state, model, movable, notes)` for the board, its groups and its
     base intent (the JSON for its claims; the loaded `intent`, with its
     resolved `blocks`, for its keep-outs and zones)."""
@@ -161,9 +162,10 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
     from placement.simple import Model
     notes = []
     clearance, edge, _ = board_floor_knobs(board)
-    # a part that draws no courtyard is seated on an estimated one (#1300)
+    # a part that draws no courtyard is seated on an estimated one (#1300),
+    # except the parts named in estimate_skip (place_simple's fallback)
     state = seat_state(pcb, board, intent, blocks, clearance, edge, fixed,
-                       estimate_courtyards=True)
+                       estimate_courtyards=True, estimate_skip=estimate_skip)
     movable = sorted(r for r, p in state.parts.items() if not p.locked)
     # claims: the intent's own, and each crystal at its IC's oscillator pins
     rows, xnotes = claim_rows(pcb, base)
@@ -777,35 +779,66 @@ def main(argv=None):
     t1 = time.time()
     moves = a.moves or MOVES_PER_PART * len(movable)
 
-    def ok(r):
-        p = state.parts[r]
-        if r in model.edge_seats:       # a declared pose's check, on its edge
+    def ok(r, st=None, mdl=None):
+        st, mdl = st or state, mdl or model
+        p = st.parts[r]
+        if r in mdl.edge_seats:         # a declared pose's check, on its edge
             from placement.edge_seat import legal_on_edge
-            fits = legal_on_edge(state, r, (p.x, p.y, p.rot))
+            fits = legal_on_edge(st, r, (p.x, p.y, p.rot))
         else:
-            fits = legal(state, r, p.x, p.y, p.rot)
-        return fits and state.intent_clear(r, p.grade_rects(p.x, p.y, p.rot))
-    kept = None             # (illegal count, poses, res) of the best run yet
+            fits = legal(st, r, p.x, p.y, p.rot)
+        return fits and st.intent_clear(r, p.grade_rects(p.x, p.y, p.rot))
+
+    def runs(st, mdl):
+        """The restarts on one state: `(kept, k)`, the run that left the
+        fewest parts illegal -- (illegal refs, poses, res), the earlier on a
+        tie -- and the last run's index."""
+        kept, k = None, -1
+        for k in range(RESTARTS + 1):
+            # a restart's own stream, distinct from every other seed's first run
+            seed = a.seed if k == 0 else (a.seed + 1) * 1000003 + k
+            simple_anneal.scatter(mdl, movable, seed=seed, clustered=clustered,
+                                  anchored=anchored)
+            res = simple_anneal.anneal(mdl, movable, moves=moves, seed=seed,
+                                       log=lambda s: print(f"  {s}"),
+                                       repair=k == RESTARTS, seats=mdl.edge_seats)
+            illegal = [r for r in movable if not ok(r, st, mdl)]
+            if kept is None or len(illegal) < len(kept[0]):
+                kept = (illegal, {r: (st.parts[r].x, st.parts[r].y, st.parts[r].rot)
+                                  for r in movable}, res)
+            if set(illegal) <= too_big:
+                break
+            print(f"  NOTE: run {k + 1} left no legal pose for {', '.join(illegal)}"
+                  + ("; annealing again from a fresh start" if k < RESTARTS else ""))
+        return kept, k
+    fallback = []           # parts seated on what the board draws instead (#1300)
     if not movable:
         print("place_simple: nothing to place; the board is written as it is")
-        k, kept = -1, (0, {}, {'moves': 0, 'reseated': [], 'stats': {}})
-    for k in range(RESTARTS + 1 if movable else 0):
-        # a restart's own stream, distinct from every other seed's first run
-        seed = a.seed if k == 0 else (a.seed + 1) * 1000003 + k
-        simple_anneal.scatter(model, movable, seed=seed, clustered=clustered,
-                              anchored=anchored)
-        res = simple_anneal.anneal(model, movable, moves=moves, seed=seed,
-                                   log=lambda s: print(f"  {s}"), repair=k == RESTARTS,
-                                   seats=model.edge_seats)
-        illegal = [r for r in movable if not ok(r)]
-        if kept is None or len(illegal) < kept[0]:
-            kept = (len(illegal), {r: (state.parts[r].x, state.parts[r].y, state.parts[r].rot)
-                                   for r in movable}, res)
-        if set(illegal) <= too_big:
-            break
-        print(f"  NOTE: run {k + 1} left no legal pose for {', '.join(illegal)}"
-              + ("; annealing again from a fresh start" if k < RESTARTS else ""))
-    _n, poses, res = kept
+        k, kept = -1, ([], {}, {'moves': 0, 'reseated': [], 'stats': {}})
+    else:
+        kept, k = runs(state, model)
+        # #1300: an ESTIMATED courtyard is ours, not the board's. When the
+        # runs leave a part no legal pose on the estimates, the part itself
+        # goes back to the basis KiCad judges (what the board draws, its pad
+        # box), then every part does -- the model before the estimates --
+        # and the run that leaves fewer parts illegal is kept, the estimates'
+        # on a tie: an estimate that costs a legal pose is not worth an
+        # illegal one (esp_prog U2 beside USB1, 7 of 12 seeds).
+        est = set(state.courtyard_estimates)
+        for skip in sorted({frozenset((set(kept[0]) - too_big) & est), frozenset(est)},
+                           key=len):
+            if not skip or not set(kept[0]) - too_big:
+                continue
+            print(f"  NOTE: {', '.join(sorted(set(kept[0]) - too_big))} left without a "
+                  f"legal pose on estimated courtyards; seating "
+                  f"{', '.join(sorted(skip)) if skip != est else 'every part'} on what "
+                  f"the board draws (#1300)")
+            st2, mdl2, _m2, _n2 = build(pcb, src, doc, base, a, intent, blocks,
+                                        set(fixed), estimate_skip=skip)
+            kept2, k2 = runs(st2, mdl2)
+            if len(kept2[0]) < len(kept[0]):
+                state, model, kept, k, fallback = st2, mdl2, kept2, k2, sorted(skip)
+    _ill, poses, res = kept
     for r, pose in poses.items():
         state.parts[r].ensure_rotation(pose[2])
         state.apply_move(r, *pose)
@@ -865,7 +898,7 @@ def main(argv=None):
                         else 'scattered'), 'runs': k + 1,
               'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
-              'illegal': illegal, 'refused': refused,
+              'illegal': illegal, 'refused': refused, 'estimate_fallback': fallback,
               'oversubscribed': model.edge_oversubscribed, 'floorplan': fp, 'assembly': asm,
               'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
@@ -876,7 +909,7 @@ def main(argv=None):
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
                                            'refused', 'oversubscribed', 'floorplan', 'assembly',
-                                           'hints_saturated', 'seconds')}))
+                                           'hints_saturated', 'estimate_fallback', 'seconds')}))
     return 4 if illegal or refused or model.edge_oversubscribed else 0
 
 
