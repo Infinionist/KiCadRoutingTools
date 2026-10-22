@@ -265,12 +265,38 @@ def test_the_weld_reach_test_is_layer_aware():
     print('  PASS: an end on a named layer is reached only on that layer')
 
 
+def test_the_exact_tier_reads_an_anchor_on_its_own_layer():
+    """butterstick GND: a carved-off ball's F.Cu pad anchor lies in no F.Cu
+    island but inside the In1 plane; the tier took the In1 plane as that
+    side and strapped it to the F.Cu pour where the two outlines coincide
+    (the board edge, 30 mm away). Fixture: an F.Cu pour y 0..10 and an In1
+    plane y 0..20 share three outline edges; the pad sits at (10, 12)."""
+    from kicad_oracle import _exact_fill_endpoints
+    f_main = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
+    in1 = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+    islands = {('GND', 'F.Cu'): [f_main], ('GND', 'In1.Cu'): [in1]}
+    pcb = NS(board_info=NS(board_outlines=[], board_outline=[],
+                           board_cutouts=[], board_bounds=(0, 0, 20, 20)))
+    r = _exact_fill_endpoints(pcb, 1, 'GND', (10.0, 12.0, 'F.Cu', 'pad'),
+                              (10.0, 9.9, 'F.Cu', 'zone'), islands,
+                              track_half=0.05)
+    assert isinstance(r, tuple), r
+    _src, _tgt, pa, pb, layer = r
+    assert layer == 'F.Cu' and pa[2] == 'F.Cu' and pb[2] == 'F.Cu', r[2:]
+    assert abs(pa[0] - 10.0) < 1e-6 and abs(pa[1] - 12.0) < 1e-6, \
+        f'the pad end must seed from the pad, got {pa}'
+    assert abs(pb[1] - 10.0) < 0.3 and abs(pb[0] - 10.0) < 0.5, \
+        f'the pour end must be the F.Cu edge facing the pad, got {pb}'
+    print(f'  PASS: strap {pa} -> {pb} on F.Cu (was the shared outline)')
+
+
 TESTS = [test_a_via_or_barrel_end_resolves_to_its_span,
          test_a_forced_link_to_a_via_routes_on_its_span,
          test_the_rescue_routes_the_forced_links,
          test_the_stub_swap_leaves_a_stub_carrying_a_link_end,
          test_a_path_that_lays_no_copper_is_not_a_weld,
-         test_the_weld_reach_test_is_layer_aware]
+         test_the_weld_reach_test_is_layer_aware,
+         test_the_exact_tier_reads_an_anchor_on_its_own_layer]
 
 
 if __name__ == '__main__':

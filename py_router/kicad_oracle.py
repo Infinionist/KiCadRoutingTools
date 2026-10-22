@@ -1291,25 +1291,34 @@ def _exact_fill_endpoints(pcb_data, net_id, net_name, A, B, exact_map,
         return samples_cache[idx]
 
     def _containing(x, y, prefer):
-        best = None
+        """(island index, contained) for an anchor, or (None, False).
+
+        An anchor on a NAMED layer is copper on that layer only, so only
+        that layer's islands can hold it. Falling through to any layer that
+        covers the point (the inner planes cover nearly everything) named
+        two parts of the PRIMARY cluster as the link's sides, and their
+        nearest approach is wherever their outlines coincide -- the board
+        edge: butterstick GND, a carved-off U11 ball 'strapped' at
+        (126.36,81.40) In1<->F.Cu, 30 mm away, zero copper, every round.
+        A via or barrel end (None, '*.Cu') is on every layer it spans."""
+        named = prefer is not None and '*' not in str(prefer) \
+            and '&' not in str(prefer)
         for i, (layer, poly) in enumerate(islands):
+            if named and layer != prefer:
+                continue
             if point_in_poly(x, y, poly):
-                if layer == prefer:
-                    return i
-                if best is None:
-                    best = i
-        if best is not None:
-            return best
-        # Edge quantization: the ratsnest anchor can sit ON the island
-        # boundary; take the island whose edge passes within 1mm, nearest
-        # first, preferring the anchor's layer.
+                return i, True
+        # Edge quantization: the anchor can sit ON the island boundary;
+        # take the island whose edge passes within 1mm, nearest first.
         cand = []
         for i, (layer, poly) in enumerate(islands):
+            if named and layer != prefer:
+                continue
             d = min((_m.hypot(px - x, py - y)
                      for px, py, _ in _samples(i)), default=float('inf'))
             if d <= 1.0:
-                cand.append((0 if layer == prefer else 1, d, i))
-        return min(cand)[2] if cand else None
+                cand.append((d, i))
+        return (min(cand)[1], False) if cand else (None, False)
 
     same_pt = abs(ax - bx) < 1e-6 and abs(ay - by) < 1e-6
 
@@ -1386,12 +1395,21 @@ def _exact_fill_endpoints(pcb_data, net_id, net_name, A, B, exact_map,
                 if _lay_best is not None and _lay_best[0] <= 3.0:
                     _pref_pair = (_lay_best[1], _lay_best[2])
 
-    ia = _containing(ax, ay, al) if a_pts is None else None
-    ib = None if (same_pt or a_pts is not None) else _containing(bx, by, bl)
+    ia, ina = _containing(ax, ay, al) if a_pts is None else (None, False)
+    ib, inb = (None, False) if (same_pt or a_pts is not None) \
+        else _containing(bx, by, bl)
+    if not same_pt and ia is not None and ia == ib:
+        if ina and inb:
+            return None  # both ends inside ONE exact island: flicker class
+        # One end only lies NEAR the island the other end is in: that end
+        # is not on it (a pad whose own fill was carved away sits beside
+        # the main pour), so it seeds from its own point.
+        if not ina:
+            ia = None
+        else:
+            ib = None
     if a_pts is None and ia is None and ib is None:
         return None
-    if not same_pt and ia is not None and ia == ib:
-        return None  # both ends inside ONE exact island: flicker class
 
     # (x, y, layer, origin_island_or_None) point lists per side.
     if a_pts is not None:
