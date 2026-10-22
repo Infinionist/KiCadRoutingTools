@@ -431,6 +431,82 @@ def _emit_summary_min(gate_report: Optional[dict] = None,
         print(f"  WARNING: could not emit JSON_SUMMARY_MIN: {_e}")
 
 
+def _exact_pour_states(board, board_file: Optional[str], names,
+                       project_from: Optional[str] = None
+                       ) -> Optional[Dict[str, Tuple[bool, int]]]:
+    """{net name: (connected, disconnected pad count)} for the pour nets
+    `names`, graded on KiCad's exact fill of `board_file` (`board` is its
+    parse): the pads outside the largest exact cluster are the disconnected
+    ones, as the improvement gate counts them. None when no refill can be had
+    (no KiCad python, a failed refill) or the board has several outlines,
+    where a cluster split may be a board boundary -- the caller keeps its
+    raster grade then."""
+    if not board_file or len(getattr(getattr(board, 'board_info', None),
+                                     'board_outlines', None) or []) >= 2:
+        return None
+    try:
+        import kicad_exact_fill as _kef
+        islands = _kef.refill_islands(board_file, project_from=project_from)
+    except Exception:                                            # noqa: BLE001
+        return None
+    if islands is None:
+        return None
+    id_of = {n.name: i for i, n in board.nets.items()}
+    out = {}
+    for name in names:
+        nid = id_of.get(name)
+        if nid is None or len(board.pads_by_net.get(nid) or ()) < 2:
+            continue
+        isl = [(layer, poly) for (n, layer), polys in islands.items()
+               if n == name for poly in polys]
+        pcl = [c for c in _kef.exact_clusters(board, nid, isl) if c['pads']]
+        if len(pcl) <= 1:
+            out[name] = (True, 0)
+            continue
+        keep = max(pcl, key=lambda c: len(c['pads']))
+        out[name] = (False, sum(len(c['pads']) for c in pcl if c is not keep))
+    return out
+
+
+def _exact_gate_pours(names, gui, input_file, output_file, before_pcb,
+                      after_pcb, stage_input, stage_output, drop):
+    """{name: (before state, after state)} for the improvement gate's pour
+    nets `names`, both boards graded on KiCad's exact fill
+    (_exact_pour_states); {} when either board cannot be refilled, and the
+    gate keeps its raster grade.
+
+    CLI: the input file and the written output (`before_pcb` / `after_pcb`
+    are their parses). GUI: `stage_input()` saves the live board -- still the
+    input, the applier runs after batch_route returns -- and `stage_output()`
+    ((path, temps)) writes the change-set onto another save; both are parsed
+    here and `drop` removes every temp. Rules come from the run's project
+    (`input_file`) on both: the output's sibling .kicad_pro is written after
+    batch_route returns."""
+    tmps = []
+    try:
+        if gui:
+            bf = stage_input() if stage_input is not None else None
+            if not bf:
+                return {}
+            tmps.append(bf)
+            af, more = stage_output()
+            tmps.extend(more or [])
+            if not af:
+                return {}
+            bp, ap = parse_kicad_pcb(bf), parse_kicad_pcb(af)
+        else:
+            bf, af, bp, ap = input_file, output_file, before_pcb, after_pcb
+        b = _exact_pour_states(bp, bf, names, project_from=input_file)
+        a = _exact_pour_states(ap, af, names, project_from=input_file)
+    except Exception:                                            # noqa: BLE001
+        return {}
+    finally:
+        drop(tmps)
+    if not b or not a:
+        return {}
+    return {n: (b[n], a[n]) for n in names if n in b and n in a}
+
+
 def _exact_open_grades(board, board_file: Optional[str], names, links,
                        project_from: Optional[str] = None) -> Dict[str, tuple]:
     """Re-grade the pour nets KiCad's exact fill left OPEN (#1339).
@@ -8212,8 +8288,44 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 _name_of = (lambda nid: (_after_pcb.nets[nid].name
                                          if nid in _after_pcb.nets
                                          else f"Net {nid}"))
-            _cmp = compare_connectivity(_before_map, _after_map, _name_of)
+            # The pour nets, for gate_verdict's pour-trade tie rule.
+            _zone_ids600 = {z.net_id for z in pour_zones(
+                pcb_data.zones if return_results else _after_pcb.zones)}
+            _cmp = compare_connectivity(_before_map, _after_map, _name_of,
+                                        zone_net_ids=_zone_ids600)
             _verdict = gate_verdict(_cmp)
+            # A rejection that rests on a pour net is checked on KiCad's
+            # exact fill of both boards first: the raster can join fill
+            # islands KiCad's refill splits, so its "connected before" may be
+            # a pour KiCad never saw whole (nrfmicro's retry: GND split on its
+            # input by KiCad, whole by the raster, so the run read as trading
+            # GND for /P0.17 when it had only connected /P0.17). Only a
+            # rejection pays the two refills -- the raster's error here runs
+            # one way, crediting a pour KiCad splits.
+            _zhit600 = sorted(
+                {_name_of(i) for i in _zone_ids600
+                 if i in _before_map and i in _after_map
+                 and (_after_map[i][1] > _before_map[i][1]
+                      or (_before_map[i][0] and not _after_map[i][0]))})
+            if _verdict == 'reject' and _zhit600:
+                _ex600 = _exact_gate_pours(
+                    _zhit600, return_results, input_file, output_file,
+                    locals().get('_before_pcb'), locals().get('_after_pcb'),
+                    stage_board_fn,
+                    lambda: _stage_change_set666('Improvement gate (GUI)'),
+                    _drop_staged666)
+                if _ex600:
+                    _id600 = {_name_of(i): i for i in _zone_ids600}
+                    for _nm600, (_b600, _a600) in _ex600.items():
+                        _before_map[_id600[_nm600]] = _b600
+                        _after_map[_id600[_nm600]] = _a600
+                    print(f"  Improvement gate: pour net(s) "
+                          f"{', '.join(sorted(_ex600))} graded on KiCad's "
+                          f"exact fill of both boards")
+                    _cmp = compare_connectivity(_before_map, _after_map,
+                                                _name_of,
+                                                zone_net_ids=_zone_ids600)
+                    _verdict = gate_verdict(_cmp)
             # #1114: zone nets the finalize excluded BY PLAN (outside
             # --nets) were never repaired before this grade.
             try:

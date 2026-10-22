@@ -137,6 +137,22 @@ IMPROVEMENT GATE: this run broke 3 previously-connected net(s) [/BMS.Can_L, /BMS
   disconnected pads: 3 -> 3 over 43 multi-pad net(s)
 ```
 
+**The one draw that does not ship is a pour trade**: it broke a net that owns
+a pour (a zone net) to connect nets that do not. The run's in-run plane
+finalize already tried to mend the cut before the gate grades it, so shipping
+the draw takes power pins off their plane to buy a signal that is any later
+step's ordinary retry; the board whose pours are whole wins the tie, and the
+report says so on a line of its own. A pour's state has to be KiCad's for
+this to mean anything: the gate's union-find reads pours through the raster
+fill model, which can join fill islands KiCad's refill splits, so before it
+acts on a rejection that rests on a pour net it re-grades those nets on
+KiCad's exact fill of both boards (the CLI's input and output files; the GUI's
+live board and a staged save of the change-set). nrfmicro's retry read as
+trading GND for /P0.17 on the raster; KiCad had GND split on the step's input
+already, so it was a plain gain and ships. Without a KiCad python the raster
+grade stands. The JSON report names the pour nets among `lost` / `gained` as
+`lost_zone` / `gained_zone`.
+
 The verdict is also emitted as a machine-readable `JSON_IMPROVEMENT_GATE:` line
 (`lost`, `gained`, `worsened`,
 `disconnected_pads_before/after`, `nets_compared`, `verdict`, and, when a
