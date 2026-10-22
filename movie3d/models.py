@@ -15,8 +15,9 @@ Two traps stage3d measured are handled here, not left to the viewer: KiCad
 10 ships only `.step` models while old boards reference `.wrl`, and an
 unresolved model is dropped SILENTLY -- so the board is staged with each
 reference made absolute, a missing `.wrl` pointed at its `.step` twin, and a
-still-missing one looked up by file name in the library; `matched` says how
-many parts got a model.
+still-missing one looked up by file name in the library, and failing that
+the model the make-3d-movie skill found on the web for it (find_models.py);
+`matched` says how many parts got a model.
 
 The export is cached in movie3d/cache/<key>/ (gitignored), keyed by the
 staged board text and kicad-cli's version, so a re-render does not export
@@ -126,31 +127,85 @@ def _by_name(path, dirs):
     return None
 
 
-def stage_models(board_text, dirs, board_dir):
+def _locate(path, dirs, board_dir):
+    """The file model reference `path` names, made absolute; else its
+    `.step` twin; else a library file of its name. Returns (file, how), or
+    (None, None)."""
+    real = _resolve(path, dirs)
+    if board_dir and not os.path.isabs(real) and '${' not in real:
+        real = os.path.normpath(os.path.join(board_dir, real))
+    if os.path.isfile(real):
+        return real, 'as is'
+    if path.lower().endswith(('.wrl', '.vrml')):
+        stem = os.path.splitext(real)[0]
+        for ext in TWIN_EXTS:
+            if os.path.isfile(stem + ext):
+                return stem + ext, 'twin'
+    found = _by_name(path, dirs)
+    return (found, 'named') if found else (None, None)
+
+
+def _hidden(fp_text, at):
+    """True when the model block starting at `at` is hidden (`hide` or
+    `(hide yes)`): kicad-cli draws none, so nothing is looked for."""
+    depth, i = 0, at
+    while i < len(fp_text):
+        c = fp_text[i]
+        depth += (c == '(') - (c == ')')
+        i += 1
+        if depth == 0:
+            break
+    return bool(re.search(r'\(model\s+"[^"]*"\s+hide\b|\(hide\s+yes\)', fp_text[at:i]))
+
+
+def stage_models(board_text, dirs, board_dir, found=None):
     """Every model reference made absolute, a missing `.wrl` pointed at an
     existing `.step` twin, and a reference still missing found by its file
-    name in the library dirs. Returns (text, n_twins, n_named)."""
-    n = [0, 0]
-
-    def fix(m):
-        path = m.group(2)
-        real = _resolve(path, dirs)
-        if board_dir and not os.path.isabs(real) and '${' not in real:
-            real = os.path.normpath(os.path.join(board_dir, real))
-        if os.path.isfile(real):
-            return m.group(1) + real.replace('\\', '/') + m.group(3)
-        if path.lower().endswith(('.wrl', '.vrml')):
-            stem = os.path.splitext(real)[0]
-            for ext in TWIN_EXTS:
-                if os.path.isfile(stem + ext):
-                    n[0] += 1
-                    return m.group(1) + (stem + ext).replace('\\', '/') + m.group(3)
-        found = _by_name(path, dirs)
-        if found:
-            n[1] += 1
-            return m.group(1) + found.replace('\\', '/') + m.group(3)
-        return m.group(0)
-    return _MODEL_RE.sub(fix, board_text), n[0], n[1]
+    name in the library dirs -- else, with `found` (find_models' index),
+    the model an AI agent found for it, one per footprint (an exact match
+    before an equivalent: a footprint naming two models that are both
+    missing must not get both). Returns (text, counts {'twin', 'named',
+    'found'}, missing: the shown references nothing resolves, found_refs:
+    the parts drawn from a found model)."""
+    from kicad_parser import iter_footprint_blocks
+    import find_models
+    counts = {'twin': 0, 'named': 0, 'found': 0}
+    missing, found_refs, out, last = [], [], [], 0
+    for start, end, fp, raw, key in iter_footprint_blocks(board_text):
+        subs, pending = [], []
+        for m in _MODEL_RE.finditer(fp):
+            if _hidden(fp, m.start()):
+                continue
+            real, how = _locate(m.group(2), dirs, board_dir)
+            if real:
+                if how in counts:
+                    counts[how] += 1
+                subs.append((m, real))
+            else:
+                pending.append(m)
+        got = None
+        if found is not None and pending and not subs:
+            cands = [(m, find_models.found_file(find_models.model_key(m.group(2)), index=found))
+                     for m in pending]
+            cands = [(m, f) for m, f in cands if f]
+            exact = [c for c in cands if (found.get(find_models.model_key(c[0].group(2))) or {})
+                     .get('match') == 'exact']
+            got = (exact or cands or [None])[0]
+        if got:
+            subs.append(got)
+            counts['found'] += 1
+            found_refs.append(key)
+        elif not subs:
+            missing += [m.group(2) for m in pending]
+        out.append(board_text[last:start])
+        pos = 0
+        for m, real in sorted(subs, key=lambda s: s[0].start()):
+            out.append(fp[pos:m.start()] + m.group(1) + real.replace('\\', '/') + m.group(3))
+            pos = m.end()
+        out.append(fp[pos:])
+        last = end
+    out.append(board_text[last:])
+    return ''.join(out), counts, missing, found_refs
 
 
 def _glb_node_names(glb_path):
@@ -176,19 +231,26 @@ def export(board_text, board_dir, refs, cli=None, cache=CACHE):
 
     `board_text` is the board the poses were read from; `board_dir` the
     ORIGINAL board's directory (KIPRJMOD and relative paths resolve there);
-    `refs` the references the movie draws. `info` = {'path', 'matched':
-    [refs with a model], 'cached': bool, 'note'}."""
+    `refs` the references the movie draws. A model nothing installed
+    resolves is drawn from the one recorded in find_models' cache, when the
+    make-3d-movie skill found one. `info` = {'path', 'matched': [refs with a
+    model], 'found': [refs drawn from a found model], 'missing': [model
+    references still missing], 'cached': bool, 'note'}."""
+    import find_models
     cli, why = resolve_cli(cli)
     if not cli:
         return None, why
     dirs = model_dirs(cli, board_dir)
-    text, nfix, nnamed = stage_models(board_text, dirs, board_dir)
+    text, counts, missing, found_refs = stage_models(board_text, dirs, board_dir,
+                                                     found=find_models.load_index())
     key = hashlib.sha1((text + '\0' + _cli_version(cli)).encode('utf-8')).hexdigest()[:16]
     out_dir = os.path.join(cache, key)
     glb = os.path.join(out_dir, 'parts.glb')
     meta = os.path.join(out_dir, 'export.json')
-    note = (f"{nfix} .wrl -> .step" if nfix else '') + \
-           ((', ' if nfix else '') + f"{nnamed} found by file name" if nnamed else '')
+    note = ', '.join(s for s in (f"{counts['twin']} .wrl -> .step" if counts['twin'] else '',
+                                 f"{counts['named']} found by file name" if counts['named'] else '',
+                                 f"{counts['found']} found on the web" if counts['found'] else '')
+                     if s)
     if os.path.isfile(glb) and os.path.isfile(meta):
         names = set(json.load(open(meta, encoding='utf-8'))['names'])
         cached = True
@@ -219,4 +281,6 @@ def export(board_text, board_dir, refs, cli=None, cache=CACHE):
     # a duplicate reference's later blocks are keyed `REF~2`... by the parser,
     # while kicad-cli names every node by the bare reference
     matched = sorted(r for r in refs if r.split('~')[0] in names)
-    return {'path': glb, 'matched': matched, 'cached': cached, 'note': note}, ''
+    found = sorted(r for r in found_refs if r in matched)
+    return {'path': glb, 'matched': matched, 'found': found, 'missing': sorted(set(missing)),
+            'cached': cached, 'note': note}, ''

@@ -173,6 +173,8 @@ def main(argv=None):
         if kind == 'info':
             print(f"make_movie: rendering on {msg.get('renderer')} (Chromium {msg.get('browser')}, "
                   f"three r{msg.get('three')}); {msg.get('models', 0)} part models loaded"
+                  + (f"; models found on the web that do not sit on their footprint, kept as "
+                     f"boxes: {', '.join(msg['misfit'])}" if msg.get('misfit') else '')
                   + (f" -- MODELS FAILED: {msg['modelError']}" if msg.get('modelError') else ''))
         elif kind == 'progress':
             print(f"  {msg['done']}/{msg['of']} frames", flush=True)

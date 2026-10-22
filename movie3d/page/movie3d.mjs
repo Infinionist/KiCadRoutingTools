@@ -211,6 +211,7 @@ async function loadModels(url, sc) {
   for (const o of picked) (byName[o.name] = byName[o.name] || []).push(o);
   const mm = new THREE.Matrix4().makeScale(1000, 1000, 1000);        // glTF metres -> mm
   const flip = new THREE.Matrix4().makeRotationX(Math.PI);
+  const found = new Set(sc.glb.found || []), misfit = [];
   let n = 0;
   for (const name of Object.keys(byName)) {
     const nodes = byName[name];
@@ -249,11 +250,29 @@ async function loadModels(url, sc) {
         if (part.P.fixed) sided(c, 3, part.up);
       });
       part.grp.add(clone);
+      // a model Claude found on the web (find_models.py) must sit on its
+      // footprint: its centre over the courtyard and its size near it, else
+      // the part keeps its box
+      if (found.has(part.P.ref) && !sits(clone, part)) {
+        part.grp.remove(clone);
+        misfit.push(part.P.ref);
+        return;
+      }
       if (part.boxed) part.grp.remove(part.boxed);
       n += 1;
     });
   }
-  return n;
+  return { n, misfit };
+}
+
+function sits(model, part) {
+  part.grp.updateMatrixWorld(true);       // the group stands at the origin until the first frame
+  const b = new THREE.Box3().setFromObject(model);
+  if (b.isEmpty()) return false;
+  const [x0, y0, x1, y1] = part.P.court;
+  const cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
+  const span = Math.max(b.max.x - b.min.x, b.max.z - b.min.z), court = Math.max(x1 - x0, y1 - y0);
+  return cx > x0 - 1 && cx < x1 + 1 && cz > y0 - 1 && cz < y1 + 1 && span < 4 * court + 2;
 }
 
 // ---------------------------------------------------------------- copper
@@ -704,10 +723,10 @@ window.m3dInit = async function (o) {
   buildParts(sc, root);
   buildAir(sc, root);
   if (sc.copper) buildCopper(sc, root);
-  let models = 0, modelError = null;
+  let models = 0, misfit = [], modelError = null;
   if (o.glbUrl && sc.glb) {
     // the models are decoration: a missing or corrupt GLB leaves the boxes
-    try { models = await loadModels(o.glbUrl, sc); } catch (e) { modelError = String(e).slice(0, 200); }
+    try { ({ n: models, misfit } = await loadModels(o.glbUrl, sc)); } catch (e) { modelError = String(e).slice(0, 200); }
   }
   S.root = root;
   if (sc.grid) buildGrid(sc, world);      // after the models: each cell clones the parts
@@ -716,7 +735,7 @@ window.m3dInit = async function (o) {
   const gl = renderer.getContext();
   const ext = gl.getExtension('WEBGL_debug_renderer_info');
   return { renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
-           three: THREE.REVISION, frames: tl.frames.length, models, modelError };
+           three: THREE.REVISION, frames: tl.frames.length, models, misfit, modelError };
 };
 
 window.m3dFrame = function (i) {

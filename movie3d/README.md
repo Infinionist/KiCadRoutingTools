@@ -42,6 +42,18 @@ library). It is found through `--kicad-cli`, then `$KICAD_CLI`, then the
 repo's `kicad_oracle` resolver, then `/Applications/KiCad/KiCad.app`, then
 PATH. Without it, every part is drawn as a box.
 
+**Models the library lacks** are looked for on the web by the
+`make-3d-movie` skill (`.claude/skills/make-3d-movie/SKILL.md`), which then
+makes the movie. `find_models.py missing BOARD` lists them (with the parts
+that use them and close-named library files, for a rename); Claude, in the
+session, searches; `find_models.py add KEY URL` downloads and checks one
+(https only, at most 40 MB, a zip read in memory, kept only when it is a
+STEP or VRML model), `library KEY PATH` records a renamed installed file and
+`none KEY` a model not found. The answers live in `movie3d/cache/found/`
+(gitignored). make_movie runs no agent: it draws whatever has been recorded,
+names the models still missing, and keeps the box for a found model that
+does not sit on its footprint.
+
 ## Make a movie
 
 ```bash
@@ -210,9 +222,10 @@ view across the board's long side wins a near tie.
 - `models.py` exports the parts' models with
   `kicad-cli pcb export glb --no-board-body --subst-models`. It first stages
   the board: each model path is made absolute, a `.wrl` the library no longer
-  ships is pointed at its `.step` twin, and a still-missing model is found by
-  its file name in the library. The GLB is cached in `movie3d/cache/<key>/`
-  (gitignored), keyed by the staged board and kicad-cli's version, so a
+  ships is pointed at its `.step` twin, a still-missing model is found by
+  its file name in the library, and failing that it takes the one the
+  make-3d-movie skill found on the web (`find_models.py`, one per
+  footprint). The GLB is cached in `movie3d/cache/<key>/` (gitignored), keyed by the staged board and kicad-cli's version, so a
   re-render or another seed does not export again. kicad-cli writes no
   metallic factor, and glTF's default of 1 makes every model a black mirror,
   so the page sets each model material's metalness to 0.15.
@@ -247,8 +260,8 @@ Blender path was not carried over, and the turn over is this page's own.
 
 - The seed grid shows each judged seed's fast route as it ended, not played.
   Only the filmed seed's and the best seed's routes play.
-- A part whose model is missing from the installed library is a box with a
-  guessed height. On ch32, U3's `QFN-20-1EP_3x3mm_P0.45mm` is not in KiCad
+- A part whose model is missing from the installed library, and not found
+  on the web, is a box with a guessed height. On ch32, U3's `QFN-20-1EP_3x3mm_P0.45mm` is not in KiCad
   10's library. The occlusion measure uses the guessed heights even for parts
   drawn from models. A custom pad is drawn as its bounding box. No silkscreen
   is drawn, and in a flow a pour is drawn by its zone outline, not its fill.

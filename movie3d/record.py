@@ -191,7 +191,8 @@ class Recorder(Story):
         # input, or place_simple's copy with the declared faces written), its
         # model paths resolved against the ORIGINAL board's directory
         with open(board, encoding='utf-8') as f:
-            self.model_src = (f.read(), os.path.dirname(os.path.abspath(args.board)))
+            self.model_src = (f.read(), os.path.dirname(os.path.abspath(args.board)),
+                              os.path.abspath(args.board))
         self.hold = max(1, int(round(HOLD_S * self.a.fps)))
         th = render_theme.theme('dark', strict=False)
         # each group with a movable member its own colour, as place_movie
@@ -621,7 +622,7 @@ def attach_models(a, rec):
     fitted = [p for p in sc['parts'] if not p.get('dnp')]
     boxed = sorted(p['ref'] for p in fitted if not p['model'] and p['body'])
     bare = sorted(p['ref'] for p in fitted if not p['model'] and not p['body'])
-    sc['glb'] = {'path': info['path'], 'matched': sorted(matched)}
+    sc['glb'] = {'path': info['path'], 'matched': sorted(matched), 'found': info['found']}
     rec.model_report = {'models': len(matched), 'parts': len(fitted), 'boxes': boxed,
                         'bare': bare, 'dnp': dnp, 'cached': info['cached']}
     print(f"record: {len(matched)} of {len(fitted)} populated parts drawn from their KiCad "
@@ -629,8 +630,14 @@ def attach_models(a, rec):
           + (f"; {info['note']}" if info['note'] else '') + "); "
           + (f"{len(boxed)} fell back to a box ({', '.join(boxed)})" if boxed else 'none fell back to a box')
           + (f"; {len(bare)} have no model and nothing assembled ({', '.join(bare)})" if bare else '')
+          + (f"; drawn from models found on the web: {', '.join(info['found'])}"
+             if info['found'] else '')
           + (f"; {len(dnp)} DNP part(s) not populated, so drawn as pads: "
              f"{', '.join(dnp[:8])}{'...' if len(dnp) > 8 else ''}" if dnp else ''))
+    if info['missing']:
+        print(f"record: {len(info['missing'])} model(s) the installed library lacks; the make-3d-movie "
+              f"skill looks for them on the web (python3 movie3d/find_models.py missing "
+              f"{rec.model_src[2]})")
 
 
 def own_args(ap, work_required=True):
