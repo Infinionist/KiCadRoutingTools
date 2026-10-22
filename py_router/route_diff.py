@@ -2082,6 +2082,16 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         print(f"  {YELLOW}Hybrid escape: {len(_hyb)} pair(s) routed as a coupled middle "
               f"+ point-to-point terminal legs (terminals NOT coupled): "
               f"{', '.join(_hyb)} — JSON_SUMMARY.pair_reports[].coupled_terminals{RESET}")
+    # Companion GND return vias the shipped routes could not place (no site
+    # clears the pair's own copper, or a drill rule) -- each was named when
+    # it was dropped; the total is here and in JSON_SUMMARY.
+    gnd_vias_not_placed = [d for r in results
+                           for d in (r.get('gnd_vias_not_placed') or ())]
+    if gnd_vias_not_placed:
+        print(f"  {YELLOW}GND vias not placed: {len(gnd_vias_not_placed)} companion "
+              f"return via(s) on {len({d['pair'] for d in gnd_vias_not_placed})} "
+              f"pair(s) -- no legal site (see 'GND return via at' above) — "
+              f"JSON_SUMMARY.gnd_vias_not_placed{RESET}")
     if ripup_success_pairs:
         print(f"  Rip-up success: {len(ripup_success_pairs)} (routes that ripped blockers)")
     if rerouted_pairs:
@@ -2166,6 +2176,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         # Single-ended member fallback tally (additive): members of non-coupled
         # pairs attempted P->P / N->N in-run (Class 2 - both members owned).
         'single_ended_fallback': se_fallback_summary,
+        # Companion GND vias not placed, one record each ({x, y, pair,
+        # reason: 'pair-copper' | 'drill', detail}); [] when all were placed.
+        'gnd_vias_not_placed': gnd_vias_not_placed,
     }
     # #1247: every length-match group this call formed, by member name, and
     # what `auto` left out and why (route.py reports the same keys).
@@ -2264,6 +2277,8 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             'pair_reports': pair_reports,
             'casualty_reconcile': casualty_summary,
             'single_ended_fallback': se_fallback_summary,
+            # Same data as JSON_SUMMARY['gnd_vias_not_placed'].
+            'gnd_vias_not_placed': gnd_vias_not_placed,
             # #1247: same data as JSON_SUMMARY['length_match_groups'] (empty
             # without a group); the `auto` report stays in
             # JSON_SUMMARY['length_match_auto'], as in route.py.

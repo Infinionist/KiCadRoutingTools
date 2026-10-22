@@ -1080,8 +1080,9 @@ def _largest_track_component_points(pcb_data, net_id, max_pts: int = 40):
 def _via_abuts_graphic(vias_, segs) -> bool:
     """True if any of `vias_` overlaps a same-net GRAPHIC in `segs` (#337 art).
 
-    Graphics do not conduct in our connectivity graph (#513) but ARE copper to
-    KiCad, so a barrel touching one is joined to the net through it. Every
+    Graphics ARE copper to KiCad (and to our connectivity graph since it
+    conducts through board art), so a barrel touching one is joined to the
+    net through it. Every
     debris deleter has to honour this or it removes a real connection: the
     segment-based guards test `any(seg.graphic)` over the cluster, which is
     vacuous for a cluster that has no segments. No layer test -- a barrel
@@ -1291,25 +1292,34 @@ def _exact_fill_endpoints(pcb_data, net_id, net_name, A, B, exact_map,
         return samples_cache[idx]
 
     def _containing(x, y, prefer):
-        best = None
+        """(island index, contained) for an anchor, or (None, False).
+
+        An anchor on a NAMED layer is copper on that layer only, so only
+        that layer's islands can hold it. Falling through to any layer that
+        covers the point (the inner planes cover nearly everything) named
+        two parts of the PRIMARY cluster as the link's sides, and their
+        nearest approach is wherever their outlines coincide -- the board
+        edge: on one board's GND, a carved-off BGA ball was 'strapped' at
+        an In1<->F.Cu point 30 mm away, zero copper, every round.
+        A via or barrel end (None, '*.Cu') is on every layer it spans."""
+        named = prefer is not None and '*' not in str(prefer) \
+            and '&' not in str(prefer)
         for i, (layer, poly) in enumerate(islands):
+            if named and layer != prefer:
+                continue
             if point_in_poly(x, y, poly):
-                if layer == prefer:
-                    return i
-                if best is None:
-                    best = i
-        if best is not None:
-            return best
-        # Edge quantization: the ratsnest anchor can sit ON the island
-        # boundary; take the island whose edge passes within 1mm, nearest
-        # first, preferring the anchor's layer.
+                return i, True
+        # Edge quantization: the anchor can sit ON the island boundary;
+        # take the island whose edge passes within 1mm, nearest first.
         cand = []
         for i, (layer, poly) in enumerate(islands):
+            if named and layer != prefer:
+                continue
             d = min((_m.hypot(px - x, py - y)
                      for px, py, _ in _samples(i)), default=float('inf'))
             if d <= 1.0:
-                cand.append((0 if layer == prefer else 1, d, i))
-        return min(cand)[2] if cand else None
+                cand.append((d, i))
+        return (min(cand)[1], False) if cand else (None, False)
 
     same_pt = abs(ax - bx) < 1e-6 and abs(ay - by) < 1e-6
 
@@ -1386,12 +1396,21 @@ def _exact_fill_endpoints(pcb_data, net_id, net_name, A, B, exact_map,
                 if _lay_best is not None and _lay_best[0] <= 3.0:
                     _pref_pair = (_lay_best[1], _lay_best[2])
 
-    ia = _containing(ax, ay, al) if a_pts is None else None
-    ib = None if (same_pt or a_pts is not None) else _containing(bx, by, bl)
+    ia, ina = _containing(ax, ay, al) if a_pts is None else (None, False)
+    ib, inb = (None, False) if (same_pt or a_pts is not None) \
+        else _containing(bx, by, bl)
+    if not same_pt and ia is not None and ia == ib:
+        if ina and inb:
+            return None  # both ends inside ONE exact island: flicker class
+        # One end only lies NEAR the island the other end is in: that end
+        # is not on it (a pad whose own fill was carved away sits beside
+        # the main pour), so it seeds from its own point.
+        if not ina:
+            ia = None
+        else:
+            ib = None
     if a_pts is None and ia is None and ib is None:
         return None
-    if not same_pt and ia is not None and ia == ib:
-        return None  # both ends inside ONE exact island: flicker class
 
     # (x, y, layer, origin_island_or_None) point lists per side.
     if a_pts is not None:
@@ -1633,25 +1652,43 @@ def _direct_sliver_weld(pcb_data, net_id, ax, ay, bx, by, layer, config,
 
 
 def _weld_touches_endpoints(segs, vias, x0, y0, x1, y1,
-                            tol: float = 1.0) -> bool:
+                            tol: float = 1.0, layers=(None, None)) -> bool:
     """#648 sharpening of the #570 guard: the rescue was handed EXACT gap
     endpoints (strict), so its copper must actually REACH both. Copper
     merely inside the corridor box can be an unrelated fragment join -- the
     rescue's own component model credited three In3 debris segments ~2.8mm
     from either endpoint of an F.Cu zone link, three rounds running, while
     KiCad re-reported the identical link. `tol` is deliberately loose (the
-    rescue may walk an endpoint to an adjacent legal cell)."""
-    def _near(x, y):
+    rescue may walk an endpoint to an adjacent legal cell).
+
+    ...but never across layers. `layers` are the two ends' layers as the
+    link names them: an end on a named layer is reached only by copper ON
+    that layer (a segment there, or a via whose span covers it); None or
+    '*.Cu' (a via, a plated barrel) is reached on any layer. The scoped
+    rescue is layer-blind, and a GND capacitor's B.Cu pad was
+    credited, two rounds running, with a 0.28mm In1.Cu piece lying on the
+    net's existing In1 copper: xy within tol of both ends, joining nothing."""
+    from geometry_utils import via_on_layer
+
+    def _any_layer(lay):
+        return lay is None or '*' in str(lay) or '&' in str(lay)
+
+    def _near(x, y, lay):
         for s in segs:
+            if not _any_layer(lay) and s.layer != lay:
+                continue
             from geometry_utils import point_to_segment_distance as _p2s
             if _p2s(x, y, s.start_x, s.start_y, s.end_x, s.end_y) \
                     <= s.width / 2.0 + tol:
                 return True
         for v in vias:
+            if not _any_layer(lay) and not via_on_layer(v, lay):
+                continue
             if math.hypot(v.x - x, v.y - y) <= v.size / 2.0 + tol:
                 return True
         return False
-    return bool(segs or vias) and _near(x0, y0) and _near(x1, y1)
+    l0, l1 = layers
+    return bool(segs or vias) and _near(x0, y0, l0) and _near(x1, y1, l1)
 
 
 def _copper_in_corridor(segs, vias, x0, y0, x1, y1, pad: float = 3.0) -> bool:
@@ -1669,6 +1706,38 @@ def _copper_in_corridor(segs, vias, x0, y0, x1, y1, pad: float = 3.0) -> bool:
         if not (bx0 <= v.x <= bx1 and by0 <= v.y <= by1):
             return False
     return True
+
+
+def _weld_joins_seeds(segs, vias, src, tgt, tol: float = 0.06) -> bool:
+    """True when a weld routed BETWEEN two seed sets (the oracle's exact-fill
+    clusters, `(x, y[, layer])`) reaches a seed of each side on that seed's
+    layer. The seeded escalation's copper starts and ends on seeds by
+    construction; this is the check that it did, where the anchor-distance
+    test (_weld_touches_endpoints) does not apply -- a seeded route may meet
+    an island anywhere along its facing edge, not only at the nearest-
+    approach anchors."""
+    from geometry_utils import point_to_segment_distance as _p2s, via_on_layer
+
+    def _any(lay):
+        return lay is None or '*' in str(lay)
+
+    def _reaches(pts):
+        for p in pts or ():
+            x, y = p[0], p[1]
+            lay = p[2] if len(p) > 2 else None
+            for s in segs:
+                if not _any(lay) and s.layer != lay:
+                    continue
+                if _p2s(x, y, s.start_x, s.start_y, s.end_x, s.end_y) \
+                        <= s.width / 2.0 + tol:
+                    return True
+            for v in vias:
+                if not _any(lay) and not via_on_layer(v, lay):
+                    continue
+                if math.hypot(v.x - x, v.y - y) <= v.size / 2.0 + tol:
+                    return True
+        return False
+    return bool(segs or vias) and _reaches(src) and _reaches(tgt)
 
 
 def _via_drill_radius(via, fallback: float) -> float:
@@ -2511,10 +2580,16 @@ def oracle_reconnect(board_file: str, net_names, config,
                     # #1137: the round's re-keyed class map (None when there
                     # is none), so the escalation's own obstacle map prices
                     # foreign nets at their class too
+                    # Seeded (#572 follow-up): route the exact clusters'
+                    # own seeds to each other, on their layers. The gap
+                    # derivation saw only the net's tracks/pads/vias near
+                    # the gap -- never the fill a plane link must reach --
+                    # and joined whatever lay there on any layer (on one
+                    # board, 17 B.Cu GND segments for an F.Cu ball island).
                     _esc2, _esc2_cfg = _attempt_edge(
                         pcb_data, net_id, _gap2, config,
                         config.net_clearances or None,
-                        strict_endpoints=True)
+                        strict_endpoints=True, endpoints=(_esrc, _etgt))
                 except Exception:
                     _esc2 = None
                 if _esc2 and not _esc2.get('failed'):
@@ -2529,17 +2604,12 @@ def oracle_reconnect(board_file: str, net_names, config,
                               f"net, #658)")
                         _esc2 = None
                 if _esc2 and not _esc2.get('failed') \
-                        and (not _copper_in_corridor(
+                        and not _weld_joins_seeds(
                             _esc2.get('new_segments') or [],
-                            _esc2.get('new_vias') or [],
-                            _pa[0], _pa[1], _pb[0], _pb[1])
-                            or not _weld_touches_endpoints(
-                            _esc2.get('new_segments') or [],
-                            _esc2.get('new_vias') or [],
-                            _pa[0], _pa[1], _pb[0], _pb[1])):
+                            _esc2.get('new_vias') or [], _esrc, _etgt):
                     print(f"    {net_name}: exact-fill strap REJECTED "
-                          f"(emitted copper outside the link corridor -- "
-                          f"#570/#648 false-claim guard)")
+                          f"(its copper does not reach both exact clusters "
+                          f"on their layers -- #570/#648 false-claim guard)")
                     _esc2 = None
                 if _esc2 and not _esc2.get('failed'):
                     _e2segs = _esc2.get('new_segments') or []
@@ -2845,15 +2915,26 @@ def oracle_reconnect(board_file: str, net_names, config,
                     from net_rescue import _attempt_edge
                     _gap = (math.hypot(bx - ax, by - ay), ax, ay, bx, by)
                     # #1137: the round's re-keyed class map (see above)
+                    # Cluster mode already holds the exact clusters' seeds:
+                    # route them to each other (see the exact tier).
                     _esc, _esc_cfg = _attempt_edge(
                         pcb_data, net_id, _gap, config,
                         config.net_clearances or None,
-                        strict_endpoints=True)
+                        strict_endpoints=True,
+                        endpoints=(src, tgt) if _cluster_link else None)
                 except Exception as _ee:
                     if verbose:
                         print(f"    (weld escalation unavailable: {_ee})")
                     _esc = None
-                if _esc and not _esc.get('failed') \
+                if _cluster_link and _esc and not _esc.get('failed') \
+                        and not _weld_joins_seeds(
+                            _esc.get('new_segments') or [],
+                            _esc.get('new_vias') or [], src, tgt):
+                    print(f"    {net_name}: weld escalation REJECTED "
+                          f"(its copper does not reach both exact clusters "
+                          f"on their layers -- #570/#648 false-claim guard)")
+                    _esc = None
+                if not _cluster_link and _esc and not _esc.get('failed') \
                         and not _copper_in_corridor(
                             _esc.get('new_segments') or [],
                             _esc.get('new_vias') or [], ax, ay, bx, by):
@@ -2861,13 +2942,14 @@ def oracle_reconnect(board_file: str, net_names, config,
                           f"(emitted copper outside the link corridor -- "
                           f"#570 false-claim guard)")
                     _esc = None
-                if _esc and not _esc.get('failed') \
+                if not _cluster_link and _esc and not _esc.get('failed') \
                         and not _weld_touches_endpoints(
                             _esc.get('new_segments') or [],
-                            _esc.get('new_vias') or [], ax, ay, bx, by):
+                            _esc.get('new_vias') or [], ax, ay, bx, by,
+                            layers=(al, bl)):
                     print(f"    {net_name}: weld escalation REJECTED "
                           f"(copper reaches neither/only one gap endpoint "
-                          f"-- unrelated fragment join, #648)")
+                          f"on its layer -- unrelated fragment join, #648)")
                     _esc = None
                 # #658: the rescue's scoped fine router has no layer-cost
                 # plumbing, so a FORBIDDEN layer (cost -1, e.g. power
@@ -3271,6 +3353,19 @@ def oracle_reconnect(board_file: str, net_names, config,
             # #1169: wide where the net's own width fits, narrow at the pinch.
             _legs = widen_link_legs(route_points, used_width, pcb_data,
                                     net_id, config)
+            if not (_legs or _extra_conn or via_positions):
+                # Nothing to write: the path only changed layer at an existing
+                # barrel, or its points coincide (the exact tier's nearest
+                # approach can be one point). KiCad has just reported these
+                # clusters apart, so no-copper is no weld -- the #572 false-
+                # weld fingerprint (a GND link reported "OK 0 seg(s),
+                # 0 via(s)" and credited every round, link still open).
+                print(f"    {net_name}: ({ax:.2f},{ay:.2f})<->({bx:.2f},"
+                      f"{by:.2f})  FAILED (the path lays no copper -- a "
+                      f"zero-copper weld cannot join clusters KiCad reports "
+                      f"apart, #572)")
+                failed += 1
+                continue
             for x1, y1, x2, y2, l1, _lw in _legs:
                 new_sexprs.append(generate_segment_sexpr(
                     (x1, y1), (x2, y2), _lw, l1, net_id,

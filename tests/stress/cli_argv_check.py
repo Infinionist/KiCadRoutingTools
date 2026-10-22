@@ -25,6 +25,9 @@ The child judges those too, from the parsed arguments: see POST_PARSE and
 REFUSAL_SITES below, and why that is a hand-kept inventory rather than a run
 of the main.
 
+`parsed_args(argv)` hands back the parsed namespace itself, through the
+same child: lineage_scope.py reads what each step SCOPES that way.
+
 The parser is TODAY'S. A command recorded under an older commit that used a
 flag removed since then reads as rejected here; that is what a replay of it
 would do today too, and `rejection` says which flag in its reason. (Over the
@@ -116,6 +119,16 @@ for line in sys.stdin:
             why = cli_argv_check.post_parse_rejection(tool_name, ns, cwd)
         reply = {'ok': True} if not why else {'ok': False, 'code': 2,
                                               'why': why, 'post': True}
+        if reply['ok'] and req.get('ns'):
+            # parsed_args(): the namespace itself, every JSON-able value.
+            ns_out = {}
+            for k, v in vars(ns).items():
+                try:
+                    json.dumps(v)
+                except (TypeError, ValueError):
+                    continue
+                ns_out[k] = v
+            reply['ns'] = ns_out
     except SystemExit as e:
         msg = [l for l in err.getvalue().splitlines() if l.strip()]
         reply = {'ok': False, 'code': e.code,
@@ -486,22 +499,58 @@ def rejection(argv, cwd=None):
     if found is None:
         return None
     tool, args = found
+    reply = _ask(tool, args, cwd)
+    if reply is _NO_PARSER:
+        return _flag_list_rejection(tool, args)
+    if reply is None or reply['ok']:
+        return None
+    if reply.get('code') == 0:
+        return f"{tool} prints and exits at parse time ({reply['why']})"
+    if reply.get('post'):
+        return f"{tool} refuses its arguments after parsing: {reply['why']}"
+    return f"{tool} rejects its arguments: {reply['why']}"
+
+
+_NO_PARSER = object()
+
+
+def _ask(tool, args, cwd, want_ns=False):
+    """The child's reply to one command line, `_NO_PARSER` when the tool's
+    parser could not be built here, or None when the child said nothing."""
     proc = _child(tool)
     if proc is None:
-        return _flag_list_rejection(tool, args)
-    proc.stdin.write(json.dumps({'args': args, 'cwd': cwd}) + '\n')
+        return _NO_PARSER
+    proc.stdin.write(json.dumps({'args': args, 'cwd': cwd, 'ns': want_ns}) + '\n')
     proc.stdin.flush()
     for line in proc.stdout:
         if line.startswith('##R '):
-            reply = json.loads(line[4:])
-            if reply['ok']:
-                return None
-            if reply.get('code') == 0:
-                return f"{tool} prints and exits at parse time ({reply['why']})"
-            if reply.get('post'):
-                return f"{tool} refuses its arguments after parsing: {reply['why']}"
-            return f"{tool} rejects its arguments: {reply['why']}"
+            return json.loads(line[4:])
     return None
+
+
+def parsed_args(argv, cwd=None):
+    """What the recorded command's tool PARSED it into, by its real parser.
+
+    Returns None when the tool is not one this module checks or its parser
+    cannot be built here; otherwise a dict with `tool`, `ok` and, when the
+    tool would go ahead, `ns` = {dest: value} (every JSON-able value of the
+    argparse namespace), else `why` it refuses. This is how a reader learns
+    what a step SCOPES (its positional net patterns, --nets, --component ...)
+    without copying a parser: a hand-rolled split cannot tell a positional
+    net from the value of a flag it does not know takes one."""
+    found = tool_args(argv)
+    if found is None:
+        return None
+    tool, args = found
+    reply = _ask(tool, args, cwd, want_ns=True)
+    if reply is _NO_PARSER or reply is None:
+        return None
+    out = {'tool': tool, 'ok': bool(reply.get('ok'))}
+    if out['ok']:
+        out['ns'] = reply.get('ns') or {}
+    else:
+        out['why'] = reply.get('why')
+    return out
 
 
 if __name__ == '__main__':

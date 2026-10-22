@@ -3039,13 +3039,12 @@ def remove_orphan_islands(results, pcb_data: PCBData, scope_net_ids=None,
             rep = via_reprs.get(j)
             if rep is not None:
                 comp_segs.setdefault(uf.find(rep), [])
-        # #513 item 6 made graphics NON-conductive in the connectivity graph
-        # (correct for grading: KiCad never credits them), so a track that
-        # touches only a graphic is now its OWN pad-less component and the
-        # in-component graphic test below can no longer see the anchor. The
-        # copper still physically touches real (graphic) copper on the board,
-        # and deletion must stay conservative (#337) -- so anchor by GEOMETRY:
-        # an island whose copper overlaps a same-net graphic capsule is kept.
+        # The connectivity graph conducts through board art as KiCad 10 does
+        # (check_connected.conducting_stroke), so a track touching a graphic
+        # is normally in the graphic's component and the in-component test
+        # below keeps it. Deletion must stay conservative (#337), so an island
+        # is ALSO anchored by GEOMETRY: one whose copper overlaps a same-net
+        # graphic capsule (at its modelled, never narrower, width) is kept.
         net_graphics = [g for g in net_segs if getattr(g, 'graphic', False)]
 
         def _touches_graphic(segs, vias_=()):
@@ -3064,9 +3063,8 @@ def remove_orphan_islands(results, pcb_data: PCBData, scope_net_ids=None,
             # sitting ON a same-net graphic was swept as debris -- measured
             # on openstint /A-, where the via bridging the net's copper to
             # its 216-segment graphic disappeared and KiCad went from 0
-            # unconnected items to 2. Our model does not credit graphics
-            # (#513), so such a via looks pad-less; KiCad DOES credit them,
-            # so it is load-bearing. No layer test: a barrel spans layers.
+            # unconnected items to 2: KiCad credits the art, so the via is
+            # load-bearing. No layer test: a barrel spans layers.
             import math as _m
             for v in vias_:
                 for g in net_graphics:
@@ -4338,6 +4336,23 @@ def prune_grazing_segments(results, pcb_data: PCBData, scope_net_ids=None,
         before_strict, graph_strict = _strict_conn_graph(
             net_id, net_segs, net_vias, net_pads, net_zones,
             zone_credit_validator=_zcv, pcb_data=pcb_data)
+        # The validator only DENIES zone credit, which is conservative for the
+        # pad it would over-credit and the opposite for the copper being
+        # removed: a tap whose end lies in a narrow fill island (an F.Cu
+        # pocket between a BGA's fanout tracks) is that island's only link,
+        # yet with its end's credit denied it reads as a dead end, the pad as
+        # already open, and the removal as free. So a removal must ALSO leave
+        # the GRADING model (the same check without the validator, which is
+        # what check_connected and route.py's #209 gate read) no worse.
+        # Measured: a 0.5mm csBGA's GND ball shipped open after this pass
+        # dropped its 0.33mm F.Cu tail into the ball's fill island in every
+        # route step.
+        before_grade, graph_grade = None, None
+        if _zcv is not None:
+            before_grade = check_net_connectivity(
+                net_id, net_segs, net_vias, net_pads, net_zones,
+                return_graph=True, pcb_data=pcb_data)
+            graph_grade = before_grade.get('graph')
         seg_pos = {id(s): i for i, s in enumerate(net_segs)}
         _verify = _PRUNE_CONN_VERIFY
         dropped = []
@@ -4380,6 +4395,16 @@ def prune_grazing_segments(results, pcb_data: PCBData, scope_net_ids=None,
             if graph_strict is not None and worse(
                     before_strict, analyze_conn_excluding(graph_strict, trial_excl)):
                 continue  # #322: coincidence-level connectivity would worsen
+            if before_grade is not None:
+                if graph_grade is not None:
+                    after_grade = analyze_conn_excluding(graph_grade, trial_excl)
+                else:
+                    after_grade = check_net_connectivity(
+                        net_id, [x for i, x in enumerate(net_segs)
+                                 if i not in trial_excl],
+                        net_vias, net_pads, net_zones, pcb_data=pcb_data)
+                if worse(before_grade, after_grade):
+                    continue  # load-bearing through fill the validator denies
             kept_after = [x for i, x in enumerate(net_segs) if i not in trial_excl]
             if _soft_joint_pairs(kept_after, net_vias, net_pads) - baseline_joints:
                 # Removal would open a soft joint: neck to clear instead.

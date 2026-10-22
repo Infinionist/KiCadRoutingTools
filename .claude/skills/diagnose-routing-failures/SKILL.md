@@ -138,6 +138,7 @@ Work through the failure modes most-targeted-first. Do not jump straight to glob
 
 | Evidence | Failure mode | Fix |
 |----------|--------------|-----|
+| `unroutable_as_designed` names the net (JSON_SUMMARY rows, JSON_SUMMARY_MIN names; the console prints "Unroutable as designed") | A pad is already shorted to another net as drawn: another net's pad on it, or another part's copper (stacked or swapped net-tie footprints) | Stop retrying: no routing reaches that pad without the short, and KiCad grades it `shorting_items` before any routing. Report the pad and the foreign copper named in the row; the fix is the board's (re-pose the part), not a router flag |
 | "no rippable blockers found" near a BGA/PGA | Blocked by the BGA exclusion zone or pre-existing copper | `--no-bga-zone <ref>` for that component |
 | Stuck positions cluster in one corridor; blockers are routed nets that themselves had few alternatives | Corridor congestion | Suggest the user **draw a guide corridor**: a polyline on `User.1` through a less congested region, then re-route the failed nets with `--guide-corridor`. Describe in words where the corridor should go (e.g. "south of J3, between the mounting hole and C14"). **Do not draw the geometry yourself** — guide drawing is the user's decision |
 | Failed nets have source and target stubs on conflicting layers; rip-up histories show repeated mutual ripping | Same-layer crossing conflicts | `--mps-layer-swap`, or revisit `--layer-costs` |

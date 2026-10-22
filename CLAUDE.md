@@ -896,6 +896,14 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
   `legality.format_required_clause`, never a hand-copied string), and
   `placement/fanout_clearance.py` prices its pairs through the same model
   (#725).
+- `pad.zone_connection` - RESOLVED zone-connection override ('none', 'thermal',
+  'solid', 'thru_hole_only'; None = the zone decides): the pad's own
+  `(zone_connect N)`, else its footprint's, both parse paths. Ask
+  `kicad_parser.pad_joins_zone(pad, zone)` / `pad_zone_connection(pad, zone)`,
+  never the raw field: a pad a zone does not join (NONE) gets no pour credit in
+  `check_net_connectivity` and is knocked out of the fill model at the zone's
+  clearance, so it needs its own track (a GND solder-jumper half with
+  `(zone_connect 0)` shipped open while every grade credited the pour).
 
 ### Through-Hole vs SMD Pads
 

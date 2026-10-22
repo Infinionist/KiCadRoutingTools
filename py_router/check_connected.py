@@ -256,6 +256,43 @@ def track_reaches_pad(seg, pad, tolerance: float = 0.02) -> bool:
 PAD_JOIN_EPS = 1e-6
 
 
+class _GraphicStroke:
+    """A board-level copper graphic's stroke at its DRAWN width (#962), the
+    width KiCad's connectivity collides it at. `Segment.width` gives a
+    stroke-0 filled shape the fab track width, which would credit a track
+    ending up to 0.15 mm outside the shape."""
+    __slots__ = ('start_x', 'start_y', 'end_x', 'end_y', 'layer', 'width')
+
+    def __init__(self, seg, width):
+        self.start_x, self.start_y = seg.start_x, seg.start_y
+        self.end_x, self.end_y = seg.end_x, seg.end_y
+        self.layer, self.width = seg.layer, width
+
+
+def conducting_stroke(seg):
+    """The copper the connectivity graph joins through for segment `seg`, or
+    None when it conducts nothing.
+
+    A track conducts. So does a BOARD-level copper graphic (#337 `gr_*`, its
+    `owner_ref` empty): measured on pcbnew 10.0.0 / kicad-cli 10.0.0, a
+    net-tagged gr_line, gr_arc and the stroke of a gr_rect / gr_poly /
+    gr_circle join every same-net pad, via and track they touch -- a track
+    crossing the stroke mid-span included -- and a FILLED one joins across its
+    whole interior (`check_net_connectivity` reads `graphic_ring` for that).
+    An unfilled outline does not conduct through its empty middle. A
+    footprint's own copper (#908, `owner_ref` set) is never a connectivity
+    item: KiCad grades two pads joined only by their footprint's fp_line
+    unconnected (and the line a short against them)."""
+    if not getattr(seg, 'graphic', False):
+        return seg
+    if getattr(seg, 'owner_ref', ''):
+        return None
+    w = getattr(seg, 'drawn_width', None)
+    if w is None or w == seg.width:
+        return seg
+    return _GraphicStroke(seg, w)
+
+
 def _pad_is_point(p) -> bool:
     """A pad-like terminal with no outline (an _EndpointStub, or a pad with
     no shape or size): a point, not copper."""
@@ -473,7 +510,8 @@ def net_copper_fragments(net_id, segments, vias, pads, zones=None,
     frag_anchor: Dict[int, Tuple[float, float]] = {}
     for i, seg in enumerate(seg_list):
         if getattr(seg, 'graphic', False):
-            continue    # graphics never conduct (#513 item 6)
+            continue    # art is not routed copper (#337): it joins the
+            # fragments it touches, but is not one of its own
         root = uf.find(2 * i)
         if root not in frag_anchor:
             frag_anchor[root] = (seg.start_x, seg.start_y)
@@ -637,11 +675,14 @@ def net_dead_copper(pcb_data, net_id, segments, vias, pads, zones=None):
     for i, s in enumerate(segments):
         if getattr(s, 'graphic', False):
             graphic_roots.add(uf.find(2 * i))
-    # A cluster ABUTTING the art is joined to it in copper even though the
-    # graph does not conduct through it (#513). Measured on openstint: the
-    # via bridging /A-'s copper to its graphic looks pad-less to us and is
-    # load-bearing to KiCad -- deleting it took that board from 0 unconnected
-    # items to 2. Same rule remove_orphan_islands' _touches_graphic applies.
+    # A cluster ABUTTING the art is joined to it in copper. The graph
+    # conducts through board art (`conducting_stroke`), so such a cluster is
+    # normally in the art's own component already; the geometric test below
+    # stays as the conservative anchor (it reads the modelled stroke width,
+    # never narrower than the drawn one). Measured: deleting the via bridging
+    # a net's copper to its graphic took a board from 0 unconnected items
+    # to 2. Same rule remove_orphan_islands'
+    # _touches_graphic applies.
     import math as _m
 
     def _abuts_art_seg(s):
@@ -701,9 +742,12 @@ def classify_unconnected_link(pcb_data, net_id, pt_a, pt_b,
       'padless' -- the cluster reaches no pad and no zone. It is rip/reroute
                    DEBRIS: it conducts nothing, so welding it adds dead metal
                    and deletion is the fix (remove_orphan_islands).
-      'graphic' -- the cluster is net-tagged copper ART (#337), which is
-                   immutable: neither weld nor delete applies, and the board's
-                   author has to convert it to pads/tracks (#513).
+      'graphic' -- the cluster holds net-tagged copper ART (#337) and
+                   reaches no pad or pour. KiCad conducts through art, so the
+                   open is real, but the art is immutable and the router never
+                   targets it: neither weld nor delete applies, and joining it
+                   is a board-authoring fix. A cluster that reaches a pad
+                   THROUGH art is 'live'.
       'unknown' -- no copper of this net located at the point (a shape the
                    parser models differently, e.g. a filled gr_circle whose
                    reported position is its centre).
@@ -768,9 +812,9 @@ def classify_unconnected_link(pcb_data, net_id, pt_a, pt_b,
             if vb is None:
                 return 'unknown'
             root = uf.find(via_repr[vb])
-        if root in graphic_roots:
-            return 'graphic'
-        return 'live' if root in live else 'padless'
+        if root in live:
+            return 'live'
+        return 'graphic' if root in graphic_roots else 'padless'
 
     return _one(pt_a, kind_a), _one(pt_b, kind_b)
 
@@ -1148,17 +1192,15 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     point_id = 0
     point_info = {}  # Maps point_id to descriptive info
 
-    # Add segment endpoints
+    # Add segment endpoints. A board-level copper GRAPHIC conducts as KiCad
+    # 10 has it (`conducting_stroke`): its stroke joins like a track, at its
+    # drawn width, and a filled one's interior is credited below. Footprint
+    # copper conducts nothing; it keeps its two point ids (callers rely on
+    # "segment i -> ids 2i / 2i+1") and stays out of the join graph.
+    strokes = [conducting_stroke(s) for s in segments]
     for seg_idx, seg in enumerate(segments):
-        if getattr(seg, 'graphic', False):
-            # Net-tagged copper GRAPHICS (gr_line/gr_rect fingers etc.) are
-            # DRC-real obstacles but NOT electrical connections: KiCad's
-            # connectivity engine never credits them, so copper that only
-            # joins "through" a graphic is electrically split (#513 item 6 --
-            # opengammakit shipped 5 nets open while this model read them
-            # connected through the card-edge finger graphics). Allocate the
-            # two point ids (callers rely on "segment i -> ids 2i / 2i+1")
-            # but keep the points out of the join graph entirely.
+        seg = strokes[seg_idx]
+        if seg is None:
             point_id += 2
             continue
         start_id = point_id
@@ -1247,6 +1289,17 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
             if _h:
                 pad_hole_only[pad_idx] = _h
 
+    # A pad whose zone connection resolves to NONE for a zone (a pad or
+    # footprint `(zone_connect 0)`, or the zone's `connect_pads no`) never
+    # touches that zone's fill in KiCad: the filler knocks it out like foreign
+    # copper, so it joins the net only through tracks, vias or pads.
+    from kicad_parser import pad_joins_zone as _pad_joins_zone
+
+    def _pad_refused_by_zone(pid, zone):
+        info = point_info.get(pid)
+        return bool(info and info[0] == 'pad'
+                    and not _pad_joins_zone(pads[info[1]], zone))
+
     # Connect points through zones (power planes)
     # All points on the same layer that are inside the same zone are connected
     zone_repr_id = {}  # zone_idx -> a representative point id credited to the zone
@@ -1290,6 +1343,8 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
             if _mask.any():
                 _mask &= ~points_in_polygon_mask(_pxs, _pys, _hole)
         for _in_poly, (x, y, layer, pid, size) in zip(_mask, points_on_layer):
+            if _in_poly and _pad_refused_by_zone(pid, zone):
+                continue   # zone connection NONE: KiCad keeps the fill off it
             if _in_poly:
                 # Removal gates pass a fill validator (#outline-over-credit,
                 # bitaxe Q2): outline membership only counts where real fill
@@ -1449,9 +1504,9 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     # pad outline on a copper layer the pad occupies.
     if pad_repr_id and segments:
         endpoint_index = SpatialIndex(cell_size=1.0)
-        for seg_idx, seg in enumerate(segments):
-            if getattr(seg, 'graphic', False):
-                continue  # graphics never conduct (#513 item 6, see above)
+        for seg_idx, seg in enumerate(strokes):
+            if seg is None:
+                continue  # footprint copper conducts nothing (see above)
             if seg.layer.endswith('.Cu'):
                 endpoint_index.add(seg.start_x, seg.start_y, seg.layer, seg_idx * 2, seg.width)
                 endpoint_index.add(seg.end_x, seg.end_y, seg.layer, seg_idx * 2 + 1, seg.width)
@@ -1477,13 +1532,13 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     # any point below can need, so every query below is a single 3x3-cell
     # ring — on 0.05mm-pitch plane fill the old fixed 1mm cells held hundreds
     # of segments each and this loop dominated plane-step runtime (#363).
-    max_seg_width = max((seg.width for seg in segments), default=0.0)
+    max_seg_width = max((seg.width for seg in strokes if seg is not None),
+                        default=0.0)
     _max_reach = max((max_point_size + max_seg_width) / 2, tolerance)
     seg_index = SegmentIndex(cell_size=max(_max_reach * 1.01, 0.05))
-    for seg_idx, seg in enumerate(segments):
-        if getattr(seg, 'graphic', False):
-            continue  # graphics never conduct (#513 item 6): a point lying on
-            # a graphic must not union through it (T-junction/through-pad rules)
+    for seg_idx, seg in enumerate(strokes):
+        if seg is None:
+            continue  # footprint copper: no T-junction/through-pad credit
         seg_start_id = seg_idx * 2
         seg_index.add(seg, seg_start_id)
 
@@ -1604,6 +1659,39 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
                 if segments_intersect(_sa.start_x, _sa.start_y, _sa.end_x, _sa.end_y,
                                       _sb.start_x, _sb.start_y, _sb.end_x, _sb.end_y):
                     _union(_ida, _idb)
+
+    # A FILLED board-level graphic conducts across its whole interior (KiCad
+    # 10, `conducting_stroke`): a pad, via or track end inside it joins it
+    # though it touches no stroke (an inductor pad can lie wholly inside
+    # its net's own filled B.Cu gr_poly). Anything reaching the interior
+    # from outside crosses the outline, which the stroke rules above already credit, so
+    # point containment is the one case left. A circle is tested on its true
+    # radius, not the parser's inscribed 16-gon.
+    # Keyed by the ring OBJECT, which every segment of one shape shares (both
+    # parse paths build it once per shape): hashing the vertex tuple per
+    # segment would cost a many-vertex shape quadratic time on every call.
+    _fills = {}
+    for seg_idx, seg in enumerate(segments):
+        ring = getattr(seg, 'graphic_ring', None)
+        if ring and strokes[seg_idx] is not None:
+            _rep = _fills.setdefault((id(ring), seg.layer),
+                                     (seg_idx * 2,
+                                      getattr(seg, 'graphic_circle', None),
+                                      ring))[0]
+            _union(_rep, seg_idx * 2)
+    for (_rid, layer), (_rep, circle, ring) in _fills.items():
+        _on = [p for p in all_points if p[2] == layer]
+        if not _on:
+            continue
+        if circle:
+            _cx, _cy, _r = circle
+            _inside = [math.hypot(p[0] - _cx, p[1] - _cy) <= _r for p in _on]
+        else:
+            _inside = points_in_polygon_mask([p[0] for p in _on],
+                                             [p[1] for p in _on], list(ring))
+        for _in, p in zip(_inside, _on):
+            if _in:
+                _union(_rep, p[3])
 
     # Optional reusable graph for exclusion re-evaluation (see _union note).
     # pad_index_repr maps each input pad's INDEX to a representative point id,

@@ -2303,76 +2303,10 @@ def check_pad_drill_via_overlap(pad: Pad, via: Via, hole_to_hole_clearance: floa
     return False, 0.0
 
 
-def check_segment_board_edge(seg: Segment, board_bounds: Tuple[float, float, float, float],
-                             clearance: float, clearance_margin: float = 0.05) -> Tuple[bool, float, str]:
-    """Check if a segment is too close to the board edge.
-
-    Args:
-        seg: Segment to check
-        board_bounds: (min_x, min_y, max_x, max_y) of the board
-        clearance: Minimum clearance from board edge in mm
-        clearance_margin: Fraction of clearance to use as tolerance (default 0.05 = 5%).
-
-    Returns:
-        (has_violation, overlap_mm, edge_name)
-    """
-    min_x, min_y, max_x, max_y = board_bounds
-    half_width = seg.width / 2
-    required_clearance = clearance + half_width
-    tolerance = _grade_tol(clearance, clearance_margin)
-
-    # Report the WORST overlap over all endpoints x edges (not the first match,
-    # so a strict margin=0 result can derive any margined verdict exactly).
-    best_overlap, best_edge = 0.0, ""
-    for x, y in [(seg.start_x, seg.start_y), (seg.end_x, seg.end_y)]:
-        for dist, name in ((x - min_x, "left"), (max_x - x, "right"),
-                           (y - min_y, "bottom"), (max_y - y, "top")):
-            overlap = required_clearance - dist
-            if overlap > tolerance and overlap > best_overlap:
-                best_overlap, best_edge = overlap, name
-    if best_edge:
-        return True, best_overlap, best_edge
-    return False, 0.0, ""
-
-
-def check_via_board_edge(via: Via, board_bounds: Tuple[float, float, float, float],
-                         clearance: float, clearance_margin: float = 0.05) -> Tuple[bool, float, str]:
-    """Check if a via is too close to the board edge.
-
-    Args:
-        via: Via to check
-        board_bounds: (min_x, min_y, max_x, max_y) of the board
-        clearance: Minimum clearance from board edge in mm
-        clearance_margin: Fraction of clearance to use as tolerance (default 0.05 = 5%).
-
-    Returns:
-        (has_violation, overlap_mm, edge_name)
-    """
-    min_x, min_y, max_x, max_y = board_bounds
-    half_size = via.size / 2
-    required_clearance = clearance + half_size
-    tolerance = _grade_tol(clearance, clearance_margin)
-
-    x, y = via.x, via.y
-
-    # Report the WORST overlap over all edges (not the first match, so a
-    # strict margin=0 result can derive any margined verdict exactly).
-    best_overlap, best_edge = 0.0, ""
-    for dist, name in ((x - min_x, "left"), (max_x - x, "right"),
-                       (y - min_y, "bottom"), (max_y - y, "top")):
-        overlap = required_clearance - dist
-        if overlap > tolerance and overlap > best_overlap:
-            best_overlap, best_edge = overlap, name
-    if best_edge:
-        return True, best_overlap, best_edge
-
-    return False, 0.0, ""
-
-
 # --- Real-outline board-edge geometry (issue #236) ---------------------------
-# The bbox checks above measure to the rectangular board extent. On a board with
-# an internal cutout, slot, or notch, copper routed INTO the cutout sits inside
-# the bbox and is never flagged. These helpers measure to the actual Edge.Cuts
+# A bounding-box-only check measures to the rectangular board extent. On a board
+# with an internal cutout, slot, or notch, copper routed INTO the cutout sits
+# inside the bbox and is never flagged. These helpers measure to the actual Edge.Cuts
 # outline (outer ring + interior cutouts), matching KiCad's copper_edge_clearance.
 
 def npth_slot_capsules(pcb_data):
@@ -5236,7 +5170,8 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
     # Check board edge clearances. Measure to the real Edge.Cuts outline (outer
     # ring + interior cutouts) when the parser found one, so copper routed into a
     # cutout/slot/notch -- which sits inside the bounding box -- is caught (issue
-    # #236). Fall back to the rectangular bounding box otherwise.
+    # #236). Otherwise tracks and vias measure to the bounding-box rectangle,
+    # given to them AS a ring (see the block below).
     board_bounds = pcb_data.board_info.board_bounds
     # Honor the board's own copper_edge_clearance DRC severity (#427): when the
     # project sets it to 'ignore', KiCad runs NO board-edge check (its oracle
@@ -5311,10 +5246,31 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
               "(project sets copper_edge_clearance severity to 'ignore')...")
     if board_bounds and effective_board_edge_clearance > 0 and not edge_ignored:
         edge_rings, edge_outer, edge_cutouts = board_edge_geometry(pcb_data.board_info)
-        use_poly = bool(edge_rings)
+        # The pad check below keeps the parser's own geometry: placement
+        # legality calls check_pad_board_edge with exactly these rings, and
+        # `--check-pad-edge` must report the same overlap it does.
+        pad_edge_rings, pad_edge_outer = edge_rings, edge_outer
+        # No ring from the parser -- a plain 4-segment rectangle, which
+        # extract_board_contours deliberately returns as no outline, or an
+        # Edge.Cuts that does not chain into one. Tracks and vias are then
+        # measured to the bounding-box rectangle, and it is given to them AS A
+        # RING, so they take the one path every other outline takes: its
+        # off-board test and its edge-exempt-pad acceptance below. The
+        # rectangle is the same geometry the old bounding-box-only checks
+        # measured, so no distance changes; what they lacked was the
+        # acceptance. #441: the router lands tracks on edge-launch SMA pins
+        # inside the board's own 0.5 mm edge rule, by design
+        # (obstacle_map._edge_band_pad_layer_exemption), and 5 such tracks on
+        # one board counted as real DRC only because its outline is 4
+        # gr_lines.
+        bounds_ring = not edge_rings
+        if bounds_ring:
+            x0, y0, x1, y1 = board_bounds
+            _rect = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+            edge_rings, edge_outer = [_rect], [_rect]
         if not quiet:
             print("Checking board edge clearances "
-                  f"({'real Edge.Cuts outline' if use_poly else 'bounding box'})...")
+                  f"({'bounding box' if bounds_ring else 'real Edge.Cuts outline'})...")
 
         # Near-edge pad copper: a track whose edge-violating portion lies INSIDE an
         # (edge-exempt) pad adds no NEW edge-violating copper -- the pad copper was
@@ -5333,7 +5289,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         # loosens the TOUCH test; the pad-closer-to-edge guard below stays strict, so
         # a track poking genuinely CLOSER to the edge than the pad is still a real graze.
         _edge_touch_quant = 0.025
-        if use_poly and edge_rings:
+        if edge_rings:
             for _pd in (p for fp in pcb_data.footprints.values() for p in fp.pads):
                 if getattr(_pd, 'pad_type', '') == 'np_thru_hole' or not (_pd.size_x and _pd.size_y):
                     continue  # NPTH has no copper
@@ -5389,18 +5345,14 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             # +3V3 taps graze 0.008/0.020mm, below the 0.025mm margin, but are
             # pad-covered -- they were silently margin-dropped and left their kicad
             # findings orphaned as false-negative alarms).
-            if use_poly:
-                s_viol, s_overlap, s_edge = check_segment_board_edge_poly(
-                    seg, edge_rings, edge_outer, edge_cutouts,
-                    effective_board_edge_clearance, 0.0)
-            else:
-                s_viol, s_overlap, s_edge = check_segment_board_edge(
-                    seg, board_bounds, effective_board_edge_clearance, 0.0)
+            s_viol, s_overlap, s_edge = check_segment_board_edge_poly(
+                seg, edge_rings, edge_outer, edge_cutouts,
+                effective_board_edge_clearance, 0.0)
             if not s_viol:
                 continue  # no sub-rule edge graze at all
             net_name = pcb_data.nets.get(seg.net_id, None)
             net_str = net_name.name if net_name else f"net_{seg.net_id}"
-            if s_edge != "off-board" and use_poly and _seg_edge_all_in_pads(seg):
+            if s_edge != "off-board" and _seg_edge_all_in_pads(seg):
                 _accepted_edge.append({
                     'type': 'segment-board-edge', 'net1': net_str, 'edge': s_edge,
                     'item1': graphic_item_label(seg),
@@ -5503,13 +5455,9 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                 continue
             # One STRICT check; the margined verdict is derived from it (same
             # distances, different tolerance -- avoids a second ring scan).
-            if use_poly:
-                s_viol, s_overlap, s_edge = check_via_board_edge_poly(
-                    via, edge_rings, edge_outer, edge_cutouts,
-                    effective_board_edge_clearance, 0.0)
-            else:
-                s_viol, s_overlap, s_edge = check_via_board_edge(
-                    via, board_bounds, effective_board_edge_clearance, 0.0)
+            s_viol, s_overlap, s_edge = check_via_board_edge_poly(
+                via, edge_rings, edge_outer, edge_cutouts,
+                effective_board_edge_clearance, 0.0)
             has_violation = s_viol and (
                 s_edge == "off-board"
                 or s_overlap > _grade_tol(effective_board_edge_clearance, clearance_margin))
@@ -5522,7 +5470,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             # the pad's own copper already is, adds no NEW edge exposure --
             # the last-resort via-in-pad rescue (#189) legitimately taps USB
             # connector pads that overhang the outline (crkbd rJ1 VBUSR).
-            if s_viol and s_edge != "off-board" and use_poly and _edge_pads:
+            if s_viol and s_edge != "off-board" and _edge_pads:
                 _via_edge_d = _point_to_rings_distance(via.x, via.y, edge_rings) - via.size / 2.0
                 if any(point_to_pad_distance(via.x, via.y, _pd) <= via.size / 2.0 + _edge_touch_quant
                        and _ep_edge[id(_pd)] <= _via_edge_d + 1e-6
@@ -5677,7 +5625,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                     if _pad_has_no_copper(pad):
                         continue  # No copper on this pad (pure NPTH)
                     has_violation, overlap, edge = check_pad_board_edge(
-                        pad, edge_rings, edge_outer, edge_cutouts,
+                        pad, pad_edge_rings, pad_edge_outer, edge_cutouts,
                         effective_board_edge_clearance, board_bounds, clearance_margin)
                     if has_violation:
                         net_name = pcb_data.nets.get(pad_net, None)

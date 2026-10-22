@@ -471,6 +471,14 @@ class Pad:
     # paths; placement reads it (`legality.pad_copper_box`), routing reads
     # `polygons`.
     copper_box: Optional[Tuple[float, float, float, float]] = None
+    # The pad's zone-connection OVERRIDE, spelled like Zone.pad_connection
+    # ('none', 'thermal', 'solid', 'thru_hole_only'): the pad's own
+    # `(zone_connect N)`, else its footprint's, resolved at parse time the way
+    # local_clearance is. None = no override, so each zone's own connect_pads
+    # decides. Never read it directly to ask "does the pour reach this pad":
+    # pad_zone_connection(pad, zone) applies the zone and THT rules. Set by
+    # BOTH parse paths.
+    zone_connection: Optional[str] = None
 
 
 _VIA_BIRTH_WATCH = None
@@ -806,6 +814,10 @@ class Footprint:
     # paths agree string for string. '' = the file names no sheet. Appended.
     sheet_name: str = ""
     sheet_file: str = ""
+    # The footprint-level `(zone_connect N)` override, raw (see
+    # Pad.zone_connection, which already carries it for every pad without one
+    # of its own). None = not set. Appended.
+    zone_connection: Optional[str] = None
 
 
 #: The (attr ...) flags `Footprint.attrs` keeps -- the ones the text form and
@@ -4561,6 +4573,12 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
         # clearance above, so a PAD's own token cannot be mistaken for one.
         fp_paste_margin, fp_paste_ratio = _paste_overrides(fp_text[:_clr_end],
                                                            _file_version)
+        # Footprint-level zone connection override. KiCad writes it right
+        # after the header (clearance ...); its own bound, because the one
+        # above stops at '(zone', which is a prefix of '(zone_connect'.
+        _zc_child = re.search(r'\((?:pad\s|fp_|zone\s|model\s)', fp_text)
+        fp_zone_connection = zone_connect_from_text(
+            fp_text[:_zc_child.start()] if _zc_child else fp_text)
 
         # Net-tie pad groups: (net_tie_pad_groups "1, 2" "3, 4") -- each quoted
         # string is one comma-separated group of pad numbers this footprint
@@ -4627,6 +4645,7 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             ref_label=ref_label,
             paste_margin=fp_paste_margin,
             paste_margin_ratio=fp_paste_ratio,
+            zone_connection=fp_zone_connection,
             parsed_pose=(fp_x, fp_y, fp_rotation, fp_layer),
             attrs=fp_attrs,
             has_model=fp_has_model,
@@ -4878,6 +4897,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
                 die_length=_pad_die[0],
                 die_delay=_pad_die[1],
                 copper_box=copper_box,
+                zone_connection=(zone_connect_from_text(pad_text)
+                                 or fp_zone_connection),
             )
 
             footprint.pads.append(pad)
@@ -5910,17 +5931,21 @@ def _extract_via_protection_attrs(content: str) -> Dict[str, Dict[str, str]]:
 
 
 def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
-    """Warn loudly when a board carries NET-TAGGED copper graphics (#513 item 6).
+    """Say when a board carries NET-TAGGED copper graphics.
 
     KiCad allows a ``gr_line``/``gr_rect``/... on a copper layer to carry a
-    ``(net ...)`` field (card-edge/pogo connector fingers drawn as graphics),
-    but its connectivity engine does NOT treat graphics as electrical
-    connections. These parse as ``Segment(graphic=True)`` and are modelled as
-    obstacles/DRC-real copper ONLY -- the router cannot route TO them and the
-    connectivity model must not credit joins THROUGH them, or a physically
-    open net reads "already fully connected" (opengammakit: 5 nets shipped
-    split with 0 DRC violations). Returns the number of net-tagged graphic
-    segments found. Called by BOTH parse paths (file text and pcbnew build)."""
+    ``(net ...)`` field (card-edge/pogo connector fingers drawn as graphics,
+    a filled copper area). KiCad 10's connectivity conducts through them --
+    measured with pcbnew and kicad-cli 10.0.0: a stroke joins the same-net
+    copper it touches, a filled shape its whole interior -- and so does
+    `check_connected.check_net_connectivity` (`conducting_stroke`). #513
+    item 6 had concluded the opposite and graded such joins open: an
+    inductor pad inside its net's own filled B.Cu gr_poly read
+    open to the grader and to the route step while KiCad called it
+    connected. They parse as ``Segment(graphic=True)``, immovable art (#337)
+    the router routes around and never targets. Returns the number of
+    net-tagged graphic segments found. Called by BOTH parse paths (file text
+    and pcbnew build)."""
     tagged = [s for s in segments
               if getattr(s, 'graphic', False) and getattr(s, 'net_id', 0)]
     if not tagged:
@@ -5929,23 +5954,20 @@ def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
     nets = sorted({id_to_name.get(s.net_id, f'net {s.net_id}') for s in tagged})
     preview = ', '.join(nets[:6]) + (', ...' if len(nets) > 6 else '')
     print(f"WARNING: {len(tagged)} NET-TAGGED copper graphic segment(s) on "
-          f"{len(nets)} net(s) ({preview}). KiCad does NOT treat graphics as "
-          f"electrical connections: they are obstacles only, the router cannot "
-          f"target them, and copper joined only through them is electrically "
-          f"OPEN. Convert them to footprint pads or tracks if they must "
-          f"conduct (#513).")
+          f"{len(nets)} net(s) ({preview}). KiCad conducts through them (a "
+          f"stroke joins the copper it touches, a filled shape its whole "
+          f"interior) and so does our connectivity grading, but they are "
+          f"immovable art the router routes around and never targets (#337).")
     # ...and say what it will look like AFTERWARDS, which is the part people
-    # actually hit (#659). KiCad's own DRC lists such a net as unconnected on
-    # every run, forever: the art is copper to KiCad, so it demands a link to
-    # it, while #337 makes the art immutable so no routing pass may weld to it
-    # or delete it. Measured over 31 recorded boards, this is the DOMINANT
-    # class of "KiCad says open, our grading says connected" -- 36 of 51 such
-    # links on zone-less signal nets. Nobody should spend a retry on it.
-    print(f"         Expect KiCad DRC to keep reporting these {len(nets)} "
-          f"net(s) as UNCONNECTED on every run: no routing pass can fix it "
-          f"(the art is immutable, #337), so this is a board-authoring fix, "
-          f"not a routing failure. It is the single largest source of "
-          f"'KiCad says open, our grading says connected' (#659).")
+    # actually hit (#659): art that touches none of its net's other copper is
+    # an island KiCad's DRC demands a link to, and #337 makes it immutable, so
+    # no routing pass welds to it or deletes it. Measured over 31 recorded
+    # boards it was 36 of 51 KiCad-only open links on zone-less signal nets.
+    # Nobody should spend a retry on it.
+    print(f"         A net whose art touches none of its other copper stays "
+          f"UNCONNECTED in KiCad's DRC on every run: no routing pass welds "
+          f"to art, so joining it is a board-authoring fix, not a routing "
+          f"failure (#659).")
     return len(tagged)
 
 
@@ -7203,6 +7225,52 @@ def zone_connection_settings(zone_header: str):
     b = re.search(r'\(thermal_bridge_width\s+([\d.]+)\)', zone_header)
     return (pad_connection, float(g.group(1)) if g else None,
             float(b.group(1)) if b else None)
+
+
+#: KiCad's ZONE_CONNECTION enum as a pad or footprint `(zone_connect N)` writes
+#: it, spelled like Zone.pad_connection. INHERITED (-1) is never written.
+ZONE_CONNECT_NAMES = {0: 'none', 1: 'thermal', 2: 'solid', 3: 'thru_hole_only'}
+
+_ZONE_CONNECT_RE = re.compile(r'\(zone_connect\s+(-?\d+)\)')
+
+
+def zone_connect_from_text(text: str) -> Optional[str]:
+    """The `(zone_connect N)` override in a pad block or a footprint header,
+    spelled like Zone.pad_connection; None = not set (inherit)."""
+    m = _ZONE_CONNECT_RE.search(text)
+    return ZONE_CONNECT_NAMES.get(int(m.group(1))) if m else None
+
+
+def zone_connect_from_pcbnew(item) -> Optional[str]:
+    """The pcbnew twin of zone_connect_from_text, for a PAD or a FOOTPRINT:
+    its OWN override (GetLocalZoneConnection), never an inherited one."""
+    try:
+        return ZONE_CONNECT_NAMES.get(int(item.GetLocalZoneConnection()))
+    except Exception:
+        return None
+
+
+def pad_zone_connection(pad, zone) -> str:
+    """How `zone` connects to `pad`: 'none', 'thermal' or 'solid' -- KiCad's
+    resolution (DRC_ENGINE::EvalZoneConnection): the pad's own override, else
+    its footprint's (both already folded into Pad.zone_connection), else the
+    zone's connect_pads (thermal when the zone does not say). Thermal-for-PTH
+    ('thru_hole_only') gives a plated through-hole pad a thermal relief and
+    every other pad a solid joint. A `zone_connection` custom rule in the
+    .kicad_dru (which KiCad ranks between the pad's and the footprint's
+    override) is not read."""
+    mode = (getattr(pad, 'zone_connection', None)
+            or getattr(zone, 'pad_connection', None) or 'thermal')
+    if mode == 'thru_hole_only':
+        return 'thermal' if getattr(pad, 'pad_type', '') == 'thru_hole' else 'solid'
+    return mode
+
+
+def pad_joins_zone(pad, zone) -> bool:
+    """False when KiCad keeps `zone`'s fill off this pad of its own net
+    (connection 'none'): the pour then pulls back by its clearance, and the
+    pad reaches the net only through a track, a via or another pad."""
+    return pad_zone_connection(pad, zone) != 'none'
 
 
 def extract_keepouts(content: str) -> List[dict]:
@@ -8710,6 +8778,8 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
         # header read. pcbnew 10 returns None when unset (probed), else IU / a
         # ratio.
         fp_paste_margin, fp_paste_ratio = _pcbnew_paste_overrides(fp, to_mm)
+        # Footprint-level zone connection override, parity with the text read.
+        fp_zone_connection = zone_connect_from_pcbnew(fp)
 
         # Net-tie pad groups — parity with the text parser (Kelvin shunts /
         # net-tie parts; KiCad exempts the grouped pads' mutual clearance).
@@ -8841,6 +8911,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             ref_label=fp_ref_label,
             paste_margin=fp_paste_margin,
             paste_margin_ratio=fp_paste_ratio,
+            zone_connection=fp_zone_connection,
             parsed_pose=(fp_x, fp_y, fp_rotation, fp_layer),
             attrs=fp_attrs,
             has_model=fp_has_model,
@@ -9132,6 +9203,8 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                 die_length=_pad_die[0],
                 die_delay=_pad_die[1],
                 copper_box=copper_box,
+                zone_connection=(zone_connect_from_pcbnew(pad)
+                                 or fp_zone_connection),
             )
 
             footprint.pads.append(pad_obj)
@@ -9182,7 +9255,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
     segments.extend(pcbnew_graphic_copper(board, _live_fps, _live_keys,
                                           get_layer_name, to_mm))
 
-    # Parity with parse_kicad_pcb: net-tagged graphics never conduct (#513).
+    # Parity with parse_kicad_pcb: the same net-tagged graphics notice.
     warn_net_tagged_graphics(segments,
                              {n.name: nid for nid, n in nets.items()})
 
@@ -10274,6 +10347,10 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
         bfc = getattr(bf, 'clearance', 0.0); ffc = getattr(ff, 'clearance', 0.0)
         if not close(bfc, ffc):
             diffs.append(f"Footprint {ref} clearance: board={bfc:.3f} file={ffc:.3f}")
+        # Footprint-level zone connection: inherited by every pad without its own.
+        bzc = getattr(bf, 'zone_connection', None); fzc = getattr(ff, 'zone_connection', None)
+        if bzc != fzc:
+            diffs.append(f"Footprint {ref} zone_connection: board={bzc} file={fzc}")
         # #1211: the schematic sheet, which `place_pose replicate` resolves a
         # channel by (name) and maps its parts by (path). A pcbnew accessor
         # that moved would hand the GUI a board with no sheets.
@@ -10375,6 +10452,12 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
                 bc = getattr(bp, 'local_clearance', 0.0); fc = getattr(fp, 'local_clearance', 0.0)
                 if not close(bc, fc):
                     diffs.append(f"Pad {ref}:{bp.pad_number} local_clearance: board={bc:.3f} file={fc:.3f}")
+                # Zone connection override: 'none' keeps the pour off the pad,
+                # so a path that dropped it would credit pour contact KiCad
+                # never makes.
+                bzc = getattr(bp, 'zone_connection', None); fzc = getattr(fp, 'zone_connection', None)
+                if bzc != fzc:
+                    diffs.append(f"Pad {ref}:{bp.pad_number} zone_connection: board={bzc} file={fzc}")
                 # Roundrect corner ratio - only consumed (and only meaningful) for
                 # roundrect pads; pcbnew returns a default ratio on every pad shape,
                 # so comparing it on circle/rect pads is pure noise.

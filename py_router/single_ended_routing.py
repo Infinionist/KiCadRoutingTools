@@ -879,6 +879,21 @@ def _unblock_via_refit(pcb_data, net_id, x, y, rec, config):
     return None
 
 
+def _emit_via_site(pcb_data, gx, gy, x, y):
+    """Where route conversion drills a via the path places at cell (gx, gy):
+    the exact site a #189/#535 unblock validated for that cell, else the cell
+    centre (x, y). The unblock places its via on a 0.05 mm fine pass and the
+    claim it leaves is a grid cell, so the centre can be up to half a cell
+    from the site that was checked: a GND tap edge into U1.4 placed its
+    escape via legally at (147.65, 111.35), dropped it with the edge, and the
+    orphan fallback that changed layer on the cell drilled at (147.6, 111.4),
+    8.5 um inside U1.5's clearance. The track ends stay at the centre, inside
+    the barrel."""
+    sites = getattr(pcb_data, '_unblock_via_sites', None)
+    site = sites.get((gx, gy)) if sites is not None else None
+    return site if site is not None else (x, y)
+
+
 def _emit_via_size(pcb_data, gx, gy, config, net_id=None, x=None, y=None):
     """(size, drill) for a via the route conversion emits at cell (gx, gy). If a #189
     via-in-pad unblock placed a DRC-legal shrunk via here, return THAT size so the
@@ -1885,6 +1900,38 @@ def _augment_all_blocked_pad_side(cells, pad, config, obstacles):
     return cells
 
 
+def oracle_link_end_layers(pcb_data: PCBData, net_id: int, x: float, y: float,
+                           layer, routing_layers) -> List[str]:
+    """The routing layers one forced-link end (#572) is copper on.
+
+    A named layer in the stack is the answer. KiCad anchors a VIA or a plated
+    barrel with no layer (kicad-cli's "Via ... on F.Cu - B.Cu" parses to None)
+    and the exact source spells a through-hole pad '*.Cu': such an end is
+    copper on every layer it spans, so it is resolved against the net's own
+    via or plated pad at that point -- the via's span (blind/buried included),
+    the pad's expanded layers. Nothing of the net there: [] (the end is not
+    routable here). Measured: an FPGA pin's link to a drop via was refused
+    outright as 'layer not in the routing stack (F.Cu / None)'."""
+    if layer in routing_layers:
+        return [layer]
+    if layer is not None and '*' not in str(layer) and '&' not in str(layer):
+        return []
+    from geometry_utils import via_on_layer
+    from net_queries import expand_pad_layers
+    for v in pcb_data.vias:
+        if v.net_id == net_id and \
+                math.hypot(v.x - x, v.y - y) <= v.size / 2.0 + 1e-3:
+            return [l for l in routing_layers if via_on_layer(v, l)]
+    for p in pcb_data.pads_by_net.get(net_id, []):
+        if not pad_is_plated_through(p):
+            continue
+        if math.hypot(p.global_x - x, p.global_y - y) \
+                <= max(p.size_x, p.size_y) / 2.0 + 1e-3:
+            cu = set(expand_pad_layers(p.layers, list(routing_layers)))
+            return [l for l in routing_layers if l in cu]
+    return []
+
+
 def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
                        obstacles: GridObstacleMap, links,
                        attraction_path=None) -> Optional[dict]:
@@ -1911,9 +1958,11 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
     merged = None
     for link in links:
         (ax, ay, al, _ak), (bx, by, bl, _bk) = link
-        la = layer_idx.get(al)
-        lb = layer_idx.get(bl)
-        if la is None or lb is None:
+        las = oracle_link_end_layers(pcb_data, net_id, ax, ay, al,
+                                     config.layers)
+        lbs = oracle_link_end_layers(pcb_data, net_id, bx, by, bl,
+                                     config.layers)
+        if not las or not lbs:
             print(f"    forced link endpoint layer not in the routing stack "
                   f"({al} / {bl}) -- link unroutable here")
             uncommit_dropped_result(pcb_data, merged)
@@ -1921,13 +1970,13 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
                     'failed_link': ((ax, ay), (bx, by))}
         gax, gay = coord.to_grid(ax, ay)
         gbx, gby = coord.to_grid(bx, by)
-        print(f"    forced oracle link: ({ax:.3f},{ay:.3f})[{al}] <-> "
-              f"({bx:.3f},{by:.3f})[{bl}]")
+        print(f"    forced oracle link: ({ax:.3f},{ay:.3f})"
+              f"[{'/'.join(las)}] <-> ({bx:.3f},{by:.3f})[{'/'.join(lbs)}]")
         result = route_net_with_obstacles(
             pcb_data, net_id, config, obstacles,
             attraction_path=attraction_path,
-            sources_override=[(gax, gay, la, ax, ay)],
-            targets_override=[(gbx, gby, lb, bx, by)])
+            sources_override=[(gax, gay, layer_idx[l], ax, ay) for l in las],
+            targets_override=[(gbx, gby, layer_idx[l], bx, by) for l in lbs])
         if not result or result.get('failed'):
             if merged and merged.get('new_segments'):
                 print(f"    ({len(merged['new_segments'])} segment(s) from "
@@ -2331,10 +2380,11 @@ def _route_net_with_obstacles_impl(pcb_data: PCBData, net_id: int, config: GridR
             if ((gx1, gy1) not in through_hole_positions
                     and not {layer_names[layer1], layer_names[layer2]}
                     <= partial_spans.get((gx1, gy1), frozenset())):
+                _vx, _vy = _emit_via_site(pcb_data, gx1, gy1, x1, y1)
                 _vsz, _vdr = _emit_via_size(pcb_data, gx1, gy1, config,
-                                            net_id=net_id, x=x1, y=y1)
+                                            net_id=net_id, x=_vx, y=_vy)
                 via = Via(
-                    x=x1, y=y1,
+                    x=_vx, y=_vy,
                     size=_vsz,
                     drill=_vdr,
                     layers=["F.Cu", "B.Cu"],  # Always through-hole
@@ -2962,23 +3012,28 @@ def _place_shrunk_via_in_pad_impl(pad_obj, obstacles, config, pcb_data, net_id, 
     via = Via(x=v['x'], y=v['y'], size=v['size'], drill=v['drill'],
               layers=v.get('layers', ['F.Cu', 'B.Cu']), net_id=net_id)
     vgx, vgy = coord.to_grid(v['x'], v['y'])
-    # Record this cell's DRC-legal shrunk via size so route conversion emits THAT
-    # size (not the full config.via_size) if the path later changes layer here
-    # through the registered free via. The free via is what lets the boxed pad
-    # connect; a full via at the cell grazes a neighbouring foreign pad (only the
-    # shrunk via fits) -- issue #212, glasgow_revC Z5 via vs RN4.6.
+    # Record this cell's DRC-legal shrunk via size, and the site it was checked
+    # at, so route conversion drills THAT via THERE (not the full
+    # config.via_size at the cell centre) if a path later changes layer on the
+    # cell through the free via _register_unblock_via leaves; a full via at the
+    # cell grazes a neighbouring foreign pad (only the shrunk via fits) --
+    # issue #212, a via beside a resistor network's pad.
     # #589 probe hygiene: plan probes route on a throwaway map and emit no
     # copper, but this registry lives on pcb_data and steers the REAL run's
     # via emission -- seq probes place ~10x more unblock vias than blind
     # ones and the leak measurably changed routing (oc null-control 37 vs
     # 33 with the plan off). Probes keep the unblock via for their own
-    # path; they just must not leave a persistent size registration.
+    # path; they just must not leave a persistent size or site registration.
     if not getattr(config, 'plan_probe', False):
         sizes = getattr(pcb_data, '_unblock_via_sizes', None)
         if sizes is None:
             sizes = {}
             pcb_data._unblock_via_sizes = sizes
         sizes[(vgx, vgy)] = (v['size'], v['drill'])
+        sites = getattr(pcb_data, '_unblock_via_sites', None)
+        if sites is None:
+            sites = pcb_data._unblock_via_sites = {}
+        sites[(vgx, vgy)] = (v['x'], v['y'])    # _emit_via_site drills here
     # Off-pad rung: the tap's pad->via trace is the escape stub -- it ships
     # with the via (both kept or both dropped by the caller's used-via check).
     stub_segments = []
@@ -3086,13 +3141,63 @@ def _net_pads_near(pcb_data, net_id, cells, coord):
 # an unblock via registered DURING the edge stays for that edge's retry.
 
 
-def _register_unblock_via(obstacles, vgx, vgy, layer_names):
-    """Expose a placed via cell on every layer and let the router transit/place a
-    free via there (so the retry A* can reach the pad through it)."""
+def _register_unblock_via(obstacles, vgx, vgy, layer_names, via=None,
+                          net_id=None, config=None, coord=None, rings=None):
+    """Expose a placed via cell on every layer as a retry endpoint (the
+    caller adds the cell on every layer to its sources or targets), so the
+    retry A* reaches the pad through the via.
+
+    It also registers a FREE VIA there: the search may change layer on the
+    cell at zero cost and through the via-blocked veto (router.rs), and the
+    claim outlives a via the route drops. That is how a later search reaches
+    a boxed pad through the shrunk via an earlier, failed retry found legal
+    (#212): an orphan fallback into the same pad routes through the cell.
+    Conversion drills such a via at the site the unblock checked, not at the
+    cell centre (_emit_via_site).
+
+    With ``via`` (and net_id/config/coord) it also holds the retry searches
+    hole-to-hole off the via's drill: the via is in neither pcb_data nor
+    any via map until its route commits, so nothing else keeps the retry's
+    OWN layer-change vias away from it. Measured: SJ1.1 is walled
+    in by its own tied bridge, the in-pad unblock drops a 0.25/0.15 via at
+    the pad corner, and the retry A* came up beside it with a 0.45/0.3 via
+    0.18 mm away -- drills overlapping against a 0.25 hole-to-hole rule.
+    The ring is the one a tap edge's in-progress via gets
+    (inprogress_via_ring_cells: the via's own cell stays open, so the retry
+    can still end there), stamped ref-counted into the via map and every
+    populated rung, and appended to ``rings`` for
+    _release_unblock_via_rings, which the caller runs on every exit."""
     obstacles.add_free_via(vgx, vgy)
     for li in range(len(layer_names)):
         obstacles.add_source_target_cell(vgx, vgy, li)
     obstacles.add_allowed_rect(vgx - 5, vgy - 5, vgx + 5, vgy + 5)   # #800
+    if via is None or rings is None:
+        return
+    cells = inprogress_via_ring_cells(via, net_id, config, coord)
+    if not cells:
+        return
+    arr = np.array(cells, dtype=np.int32)
+    try:
+        from obstacle_map import populated_via_rungs
+        rungs = tuple(populated_via_rungs(obstacles))
+    except ImportError:
+        rungs = ()
+    obstacles.add_blocked_vias_batch(arr)
+    for r in rungs:
+        obstacles.add_blocked_vias_rung_batch(r, arr)
+    rings.append((arr, rungs))
+
+
+def _release_unblock_via_rings(obstacles, rings) -> None:
+    """Take the rings _register_unblock_via stamped back off `obstacles`,
+    from exactly the rungs each was stamped into. A via the route keeps gets
+    its lasting keep-out from its caller (a tap edge's in-progress ring, or
+    the net's same-net ring once it is in pcb_data)."""
+    while rings:
+        arr, rungs = rings.pop()
+        obstacles.remove_blocked_vias_batch(arr)
+        for r in rungs:
+            obstacles.remove_blocked_vias_rung_batch(r, arr)
 
 
 def _pending_now(pending_vias, placed):
@@ -3173,164 +3278,176 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
                                              own_rung=getattr(config, 'via_rung', 0))
                 return _r1 + ([], [])
 
-    _dbg = _unblock_debug()
-    placed = []  # (via, vgx, vgy, pad_layer_idx)
-    new_sources, new_targets = sources, targets
-    # backward probe (from targets) exhausted -> the TARGET pad is boxed
-    if bwd_i and bwd_i < lim:
-        pad = _net_pad_near(pcb_data, net_id, targets, coord)
-        if _dbg:
-            print(f"      UNBLOCK: bwd stuck ({bwd_i}<{lim}), target pad="
-                  f"{pad.component_ref}.{pad.pad_number}" if pad else
-                  f"      UNBLOCK: bwd stuck ({bwd_i}<{lim}), NO pad at targets")
-        r = (_place_shrunk_via_in_pad(pad, obstacles, config, pcb_data, net_id, coord, layer_names,
-                                      pending_vias=_pending_now(pending_vias, placed))
-             if pad is not None else None)
-        if _dbg and pad is not None:
-            print(f"      UNBLOCK: placement {'OK ' + str(r[0]) if r else 'DECLINED'}")
-        if r is not None:
-            via, (vgx, vgy), pli, stub_segs = r
-            _register_unblock_via(obstacles, vgx, vgy, layer_names)
-            new_targets = list(targets) + [(vgx, vgy, li) for li in range(len(layer_names))]
-            placed.append((via, vgx, vgy, pli, pad, stub_segs))
-    # forward probe (from sources) exhausted -> the SOURCE pad is boxed
-    if fwd_i and fwd_i < lim:
-        pad = _net_pad_near(pcb_data, net_id, sources, coord)
-        r = (_place_shrunk_via_in_pad(pad, obstacles, config, pcb_data, net_id, coord, layer_names,
-                                      pending_vias=_pending_now(pending_vias, placed))
-             if pad is not None else None)
-        if r is not None:
-            via, (vgx, vgy), pli, stub_segs = r
-            _register_unblock_via(obstacles, vgx, vgy, layer_names)
-            new_sources = list(sources) + [(vgx, vgy, li) for li in range(len(layer_names))]
-            placed.append((via, vgx, vgy, pli, pad, stub_segs))
-    if not placed:
-        return res + ([], [])
+    # Each placed unblock via holds the retry searches hole-to-hole off its
+    # drill (_register_unblock_via); the rings come off on every exit.
+    rings = []
+    try:
+        _dbg = _unblock_debug()
+        placed = []  # (via, vgx, vgy, pad_layer_idx)
+        new_sources, new_targets = sources, targets
+        # backward probe (from targets) exhausted -> the TARGET pad is boxed
+        if bwd_i and bwd_i < lim:
+            pad = _net_pad_near(pcb_data, net_id, targets, coord)
+            if _dbg:
+                print(f"      UNBLOCK: bwd stuck ({bwd_i}<{lim}), target pad="
+                      f"{pad.component_ref}.{pad.pad_number}" if pad else
+                      f"      UNBLOCK: bwd stuck ({bwd_i}<{lim}), NO pad at targets")
+            r = (_place_shrunk_via_in_pad(pad, obstacles, config, pcb_data, net_id, coord, layer_names,
+                                          pending_vias=_pending_now(pending_vias, placed))
+                 if pad is not None else None)
+            if _dbg and pad is not None:
+                print(f"      UNBLOCK: placement {'OK ' + str(r[0]) if r else 'DECLINED'}")
+            if r is not None:
+                via, (vgx, vgy), pli, stub_segs = r
+                _register_unblock_via(obstacles, vgx, vgy, layer_names, via,
+                                      net_id, config, coord, rings)
+                new_targets = list(targets) + [(vgx, vgy, li) for li in range(len(layer_names))]
+                placed.append((via, vgx, vgy, pli, pad, stub_segs))
+        # forward probe (from sources) exhausted -> the SOURCE pad is boxed
+        if fwd_i and fwd_i < lim:
+            pad = _net_pad_near(pcb_data, net_id, sources, coord)
+            r = (_place_shrunk_via_in_pad(pad, obstacles, config, pcb_data, net_id, coord, layer_names,
+                                          pending_vias=_pending_now(pending_vias, placed))
+                 if pad is not None else None)
+            if r is not None:
+                via, (vgx, vgy), pli, stub_segs = r
+                _register_unblock_via(obstacles, vgx, vgy, layer_names, via,
+                                      net_id, config, coord, rings)
+                new_sources = list(sources) + [(vgx, vgy, li) for li in range(len(layer_names))]
+                placed.append((via, vgx, vgy, pli, pad, stub_segs))
+        if not placed:
+            return res + ([], [])
 
-    # Cap the retry's full A* at the same budget as the stuck threshold we trigger
-    # on (max_probe_iterations): if dropping the via opened the pad, the inner
-    # layer beside it is clear and the route is found within the probe budget;
-    # if it isn't, grinding to the full max_iterations (1e6 at grid 0.05) just to
-    # fail again is wasted -- fail fast and report the pad honestly.
-    if _dbg:
-        for (via, vgx, vgy, pli, pad, _ss) in placed:
-            for li in range(len(layer_names)):
-                nb = sum(1 for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx or dy)
-                         and obstacles.is_blocked(vgx + dx, vgy + dy, li))
-                print(f"      UNBLOCK map: via@({vgx},{vgy}) {layer_names[li]}: "
-                      f"cell_blocked={obstacles.is_blocked(vgx, vgy, li)} neighbors_blocked={nb}/8")
-    retry_config = replace(config, max_iterations=config.max_probe_iterations)
-    res2 = _route_main_connection(router, obstacles, retry_config, new_sources, new_targets, track_margin,
-                                  pcb_data, net_id, print_prefix, direction_labels,
-                                  single_direction, waypoints)
-    if res2[0] is None:
-        # Second rung: the stuck side got its via but the retry still failed --
-        # the OTHER side often needs layer access too. Its probe burns the full
-        # budget wandering the walled outer layer ("forward=5000", not stuck),
-        # so it never qualifies above; if it terminates on an SMD pad, via it
-        # as well and retry once at a doubled budget. ottercast Net-(C61-Pad1):
-        # the hand-routed fix is exactly a via in C69.1 AND U6.20 joined on an
-        # inner layer -- one-ended unblock can never find that route.
-        second = []
-        if new_sources is sources:  # source side never got a via
-            side_cells, is_source = sources, True
-        elif new_targets is targets:  # target side never got a via
-            side_cells, is_source = targets, False
-        else:
-            side_cells = None
-        if side_cells is not None:
-            for pad2 in _net_pads_near(pcb_data, net_id, side_cells, coord):
-                r2 = _place_shrunk_via_in_pad(pad2, obstacles, config, pcb_data,
-                                              net_id, coord, layer_names,
-                                              pending_vias=_pending_now(pending_vias, placed))
-                if _dbg:
-                    print(f"      UNBLOCK rung2: {'source' if is_source else 'target'} "
-                          f"pad {pad2.component_ref}.{pad2.pad_number} -> "
-                          f"{'OK' if r2 else 'DECLINED'}")
-                if r2 is None:
-                    continue
-                via2, (vgx2, vgy2), pli2, stub_segs2 = r2
-                _register_unblock_via(obstacles, vgx2, vgy2, layer_names)
-                ext = [(vgx2, vgy2, li) for li in range(len(layer_names))]
-                if is_source:
-                    new_sources = list(side_cells) + ext
-                else:
-                    new_targets = list(side_cells) + ext
-                placed.append((via2, vgx2, vgy2, pli2, pad2, stub_segs2))
-                second.append(via2)
-                break
-        if second:
-            retry_config = replace(config, max_iterations=2 * config.max_probe_iterations)
-            res2 = _route_main_connection(router, obstacles, retry_config, new_sources, new_targets,
-                                          track_margin, pcb_data, net_id, print_prefix,
-                                          direction_labels, single_direction, waypoints)
-    if res2[0] is None:
-        # The via placed but didn't rescue the route. Memoise the pad as failed so
-        # route_multipoint_taps' next rip-reroute pass doesn't redo the expensive
-        # placement + retry for it -- without this the unblock is re-attempted
-        # every pass for a pad it can't help (the cap above makes that more likely).
-        cache = pcb_data._via_unblock_failed
-        for (_v, _gx, _gy, _pli, pad, _ss) in placed:
-            cache.add((net_id, round(pad.global_x, 3), round(pad.global_y, 3)))
-        return res + ([], [])  # unblock didn't help; report the original failure
-    # Keep only the vias the retry actually used: the new path must terminate on
-    # the via cell at a NON-pad layer (it reached the pad through the via). Drop
-    # any the route didn't need, so no floating copper is added.
-    p2 = res2[0]
-    ends = (p2[0], p2[-1])
-    used, used_stub_segs, n_offpad = [], [], 0
-    for (via, vgx, vgy, pli, pad, stub_segs) in placed:
-        if any(e[0] == vgx and e[1] == vgy and (e[2] != pli or stub_segs)
-               for e in ends):
-            used.append(via)
-            used_stub_segs.extend(stub_segs)
-            if stub_segs:
-                n_offpad += 1
-    # #803: COMMIT the kept unblock copper to pcb_data now.
-    #
-    # _register_unblock_via is purely permissive (free-via + a source/target
-    # override on every layer + an 11x11 allowed block) and the via was not in
-    # pcb_data, because a multipoint tap result is deferred. Until that result
-    # commits the barrel therefore blocks NOBODY. Measured on glasgow_revC at
-    # the moment a phase-3 ripped net re-routes:
-    #     in_pcb_data=0  via_blocked=True  cells=T,F,F,F   (only the PAD blocks)
-    #     in_pcb_data=1  via_blocked=True  cells=T,T,T,T   (committed)
-    # so a foreign track routes straight through it on an inner/back layer --
-    # /RD over /~{ALERT}'s 0.30/0.15 via, 0.100mm centre-to-axis against 0.250mm
-    # to touch, four contact violations.
-    #
-    # Commit rather than STAMP. A raw add_vias_list_as_obstacles stamp is not
-    # net-aware: the obstacle map cannot tell the via's owner from a stranger,
-    # so the stamp blocks the net that placed it (its own later MST edges), and
-    # it double-counts when the caller's commit recomputes the net's cache --
-    # measured, +10588 blocked_cells unaccounted and a broken net. #309's
-    # in-progress rings say the same thing in their docstring: the rings are
-    # per-route scaffolding because "the committed route's vias get their real
-    # keep-outs from the net's recomputed obstacle cache". The cache IS the
-    # net-aware channel -- prepare_obstacles_inplace lifts the owner's own
-    # copper and leaves it for everyone else -- so put the via where the cache
-    # will find it.
-    #
-    # Safe against double-add: add_route_to_pcb_data dedupes by id() (#195), so
-    # the caller's later commit skips objects already present.
-    if used and not getattr(config, 'plan_probe', False):
-        # plan_probe: probes route on a throwaway map and must emit no copper
-        # (the same rule the _unblock_via_sizes registry above obeys -- a leak
-        # there measurably changed routing, oc null-control 37 vs 33).
-        _have_v = {id(v) for v in pcb_data.vias}
-        for _v in used:
-            if id(_v) not in _have_v:
-                pcb_data.vias.append(_v)
-        _have_s = {id(sg) for sg in pcb_data.segments}
-        for _sg in used_stub_segs:
-            if id(_sg) not in _have_s:
-                pcb_data.segments.append(_sg)
-        pcb_data._copper_epoch = getattr(pcb_data, '_copper_epoch', 0) + 1
-    if used:
-        _off = (f" ({n_offpad} off-pad escape stub(s), #535)" if n_offpad else "")
-        print(f"{print_prefix}{GREEN}Via-in-pad unblock: dropped {len(used)} fab-floor "
-              f"via(s) to reach a boxed endpoint{_off}{RESET}")
-    return res2 + (used, used_stub_segs)
+        # Cap the retry's full A* at the same budget as the stuck threshold we trigger
+        # on (max_probe_iterations): if dropping the via opened the pad, the inner
+        # layer beside it is clear and the route is found within the probe budget;
+        # if it isn't, grinding to the full max_iterations (1e6 at grid 0.05) just to
+        # fail again is wasted -- fail fast and report the pad honestly.
+        if _dbg:
+            for (via, vgx, vgy, pli, pad, _ss) in placed:
+                for li in range(len(layer_names)):
+                    nb = sum(1 for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx or dy)
+                             and obstacles.is_blocked(vgx + dx, vgy + dy, li))
+                    print(f"      UNBLOCK map: via@({vgx},{vgy}) {layer_names[li]}: "
+                          f"cell_blocked={obstacles.is_blocked(vgx, vgy, li)} neighbors_blocked={nb}/8")
+        retry_config = replace(config, max_iterations=config.max_probe_iterations)
+        res2 = _route_main_connection(router, obstacles, retry_config, new_sources, new_targets, track_margin,
+                                      pcb_data, net_id, print_prefix, direction_labels,
+                                      single_direction, waypoints)
+        if res2[0] is None:
+            # Second rung: the stuck side got its via but the retry still failed --
+            # the OTHER side often needs layer access too. Its probe burns the full
+            # budget wandering the walled outer layer ("forward=5000", not stuck),
+            # so it never qualifies above; if it terminates on an SMD pad, via it
+            # as well and retry once at a doubled budget. On Net-(C61-Pad1):
+            # the hand-routed fix is exactly a via in C69.1 AND U6.20 joined on an
+            # inner layer -- one-ended unblock can never find that route.
+            second = []
+            if new_sources is sources:  # source side never got a via
+                side_cells, is_source = sources, True
+            elif new_targets is targets:  # target side never got a via
+                side_cells, is_source = targets, False
+            else:
+                side_cells = None
+            if side_cells is not None:
+                for pad2 in _net_pads_near(pcb_data, net_id, side_cells, coord):
+                    r2 = _place_shrunk_via_in_pad(pad2, obstacles, config, pcb_data,
+                                                  net_id, coord, layer_names,
+                                                  pending_vias=_pending_now(pending_vias, placed))
+                    if _dbg:
+                        print(f"      UNBLOCK rung2: {'source' if is_source else 'target'} "
+                              f"pad {pad2.component_ref}.{pad2.pad_number} -> "
+                              f"{'OK' if r2 else 'DECLINED'}")
+                    if r2 is None:
+                        continue
+                    via2, (vgx2, vgy2), pli2, stub_segs2 = r2
+                    _register_unblock_via(obstacles, vgx2, vgy2, layer_names,
+                                          via2, net_id, config, coord, rings)
+                    ext = [(vgx2, vgy2, li) for li in range(len(layer_names))]
+                    if is_source:
+                        new_sources = list(side_cells) + ext
+                    else:
+                        new_targets = list(side_cells) + ext
+                    placed.append((via2, vgx2, vgy2, pli2, pad2, stub_segs2))
+                    second.append(via2)
+                    break
+            if second:
+                retry_config = replace(config, max_iterations=2 * config.max_probe_iterations)
+                res2 = _route_main_connection(router, obstacles, retry_config, new_sources, new_targets,
+                                              track_margin, pcb_data, net_id, print_prefix,
+                                              direction_labels, single_direction, waypoints)
+        if res2[0] is None:
+            # The via placed but didn't rescue the route. Memoise the pad as failed so
+            # route_multipoint_taps' next rip-reroute pass doesn't redo the expensive
+            # placement + retry for it -- without this the unblock is re-attempted
+            # every pass for a pad it can't help (the cap above makes that more likely).
+            cache = pcb_data._via_unblock_failed
+            for (_v, _gx, _gy, _pli, pad, _ss) in placed:
+                cache.add((net_id, round(pad.global_x, 3), round(pad.global_y, 3)))
+            return res + ([], [])  # unblock didn't help; report the original failure
+        # Keep only the vias the retry actually used: the new path must terminate on
+        # the via cell at a NON-pad layer (it reached the pad through the via). Drop
+        # any the route didn't need, so no floating copper is added.
+        p2 = res2[0]
+        ends = (p2[0], p2[-1])
+        used, used_stub_segs, n_offpad = [], [], 0
+        for (via, vgx, vgy, pli, pad, stub_segs) in placed:
+            if any(e[0] == vgx and e[1] == vgy and (e[2] != pli or stub_segs)
+                   for e in ends):
+                used.append(via)
+                used_stub_segs.extend(stub_segs)
+                if stub_segs:
+                    n_offpad += 1
+        # #803: COMMIT the kept unblock copper to pcb_data now.
+        #
+        # _register_unblock_via's map entries are permissive (a free via, a
+        # source/target override on every layer + an 11x11 allowed block; its
+        # hole-to-hole ring holds only the retry's own vias, and comes off on
+        # return) and
+        # the via was not in pcb_data, because a multipoint tap result is
+        # deferred. Until that result commits the barrel therefore blocks
+        # NOBODY. Measured on one board at
+        # the moment a phase-3 ripped net re-routes:
+        #     in_pcb_data=0  via_blocked=True  cells=T,F,F,F   (only the PAD blocks)
+        #     in_pcb_data=1  via_blocked=True  cells=T,T,T,T   (committed)
+        # so a foreign track routes straight through it on an inner/back layer --
+        # /RD over /~{ALERT}'s 0.30/0.15 via, 0.100mm centre-to-axis against 0.250mm
+        # to touch, four contact violations.
+        #
+        # Commit rather than STAMP. A raw add_vias_list_as_obstacles stamp is not
+        # net-aware: the obstacle map cannot tell the via's owner from a stranger,
+        # so the stamp blocks the net that placed it (its own later MST edges), and
+        # it double-counts when the caller's commit recomputes the net's cache --
+        # measured, +10588 blocked_cells unaccounted and a broken net. #309's
+        # in-progress rings say the same thing in their docstring: the rings are
+        # per-route scaffolding because "the committed route's vias get their real
+        # keep-outs from the net's recomputed obstacle cache". The cache IS the
+        # net-aware channel -- prepare_obstacles_inplace lifts the owner's own
+        # copper and leaves it for everyone else -- so put the via where the cache
+        # will find it.
+        #
+        # Safe against double-add: add_route_to_pcb_data dedupes by id() (#195), so
+        # the caller's later commit skips objects already present.
+        if used and not getattr(config, 'plan_probe', False):
+            # plan_probe: probes route on a throwaway map and must emit no copper
+            # (the same rule the _unblock_via_sizes registry above obeys -- a leak
+            # there measurably changed routing, oc null-control 37 vs 33).
+            _have_v = {id(v) for v in pcb_data.vias}
+            for _v in used:
+                if id(_v) not in _have_v:
+                    pcb_data.vias.append(_v)
+            _have_s = {id(sg) for sg in pcb_data.segments}
+            for _sg in used_stub_segs:
+                if id(_sg) not in _have_s:
+                    pcb_data.segments.append(_sg)
+            pcb_data._copper_epoch = getattr(pcb_data, '_copper_epoch', 0) + 1
+        if used:
+            _off = (f" ({n_offpad} off-pad escape stub(s), #535)" if n_offpad else "")
+            print(f"{print_prefix}{GREEN}Via-in-pad unblock: dropped {len(used)} fab-floor "
+                  f"via(s) to reach a boxed endpoint{_off}{RESET}")
+        return res2 + (used, used_stub_segs)
+    finally:
+        _release_unblock_via_rings(obstacles, rings)
 
 
 def _uncommit_unblock_copper(pcb_data, vias, segments) -> None:
@@ -4941,11 +5058,11 @@ def route_multipoint_taps(
         removed exactly, cell by cell. They matter most on the PERSISTENT
         working map (reroute_loop's in-place mode), where
         restore_obstacles_inplace removes only its own same-net-via cells;
-      * free vias -- every in-progress via and every #189 unblock via. A free
-        via is a zero-cost layer change that also overrides the via-blocked
-        veto (router.rs), so one left where no barrel is lets a later search
-        drill there through any keep-out. The set is put back to what it held
-        on entry;
+      * free vias -- every in-progress via (a kept #189 unblock via among
+        them). A free via is a zero-cost layer change that also overrides the
+        via-blocked veto (router.rs), so one left where no barrel is lets a
+        later search drill there through any keep-out. The set is put back to
+        what it held on entry;
       * the source/target overrides, the terminal allowed-cell rects (#800)
         and the endpoint exemption: per-route scaffolding that no map builder
         adds (prepare/restore_obstacles_inplace empty them on the working map),
@@ -4962,7 +5079,8 @@ def route_multipoint_taps(
     the same either way. Measured on glasgow_revC's release chain: 5 of 399
     calls took the copy, each a reroute whose main route had run the #189
     via-in-pad unblock on the same map (an unblock via registered there and
-    not committed to pcb_data is a free via no probe here can name)."""
+    not committed to pcb_data was a free via no probe here could name;
+    _register_unblock_via registers none any more)."""
     ring_cells: list = []
     # Ledger-only (KICAD_OBSTACLE_LEDGER=1): checks the contract above on
     # whatever map this is, which the ref-count ledger cannot (it books only
@@ -5490,14 +5608,22 @@ def _route_multipoint_taps_impl(
                               f"conflict cell(s) fed to rip attribution")
                 if _r189 is not None:
                     _via189, (_vgx, _vgy), _pli, _stub189 = _r189
-                    _register_unblock_via(obstacles, _vgx, _vgy, layer_names)
+                    _rings189 = []
+                    _register_unblock_via(obstacles, _vgx, _vgy, layer_names,
+                                          _via189, net_id, config, coord,
+                                          _rings189)
                     _retry_cfg = replace(config, max_iterations=config.max_probe_iterations)
                     _tgts2 = list(targets) + [(_vgx, _vgy, li)
                                               for li in range(len(layer_names))]
-                    (path, _it2, _fb2, _bb2, reversed_tap_path, _, _,
-                     necked_down, uniform_width) = _route_main_connection(
-                        router, obstacles, _retry_cfg, sources, _tgts2, track_margin,
-                        pcb_data, net_id, print_prefix="      ")
+                    try:
+                        (path, _it2, _fb2, _bb2, reversed_tap_path, _, _,
+                         necked_down, uniform_width) = _route_main_connection(
+                            router, obstacles, _retry_cfg, sources, _tgts2,
+                            track_margin, pcb_data, net_id, print_prefix="      ")
+                    finally:
+                        # A kept via gets its lasting ring as this edge's
+                        # in-progress via (_register_inprogress_via below).
+                        _release_unblock_via_rings(obstacles, _rings189)
                     total_iterations += _it2
                     if path is not None:
                         unblock_vias = list(unblock_vias) + [_via189]
@@ -5617,9 +5743,10 @@ def _route_multipoint_taps_impl(
             # with it: it is already in pcb_data (#803) and no result will
             # carry it. Left there, the orphan fallback below landed on it as
             # the pad's own via and reported the pad connected while the file
-            # had no via there (found reviewing #1273). Its free-via
-            # registration stays: a later edge that changes layer on that cell
-            # emits its own via, refit-checked (#339).
+            # had no via there (found reviewing #1273). It leaves no free via
+            # behind either (_register_unblock_via registers none): a later
+            # edge changes layer on that cell only where the via map allows a
+            # via, never through the veto a barrel that is gone would lift.
             _uncommit_unblock_copper(pcb_data, unblock_vias, unblock_segments)
             edge_key = (min(src_idx, tgt_idx), max(src_idx, tgt_idx))
             failed_edges.add(edge_key)
@@ -6015,7 +6142,9 @@ def _path_to_segments_vias(
                     partial_spans.get((gx1, gy1), frozenset()):
                 pass    # a blind/micro via of the net spans both layers
             else:
-                vx, vy = coord.to_float(gx1, gy1)  # via stays on the grid cell
+                # the grid cell, or the site an unblock checked for it
+                vx, vy = _emit_via_site(pcb_data, gx1, gy1,
+                                        *coord.to_float(gx1, gy1))
                 _vsz, _vdr = _emit_via_size(pcb_data, gx1, gy1, config,
                                             net_id=net_id, x=vx, y=vy)
                 # #671: ride an existing same-net barrel rather than drilling a

@@ -83,9 +83,20 @@ KICAD_CLI = (_find_kicad_cli(warn=False)
 # kicad violation types that correspond to copper-clearance/short classes
 # check_drc grades. Everything else (annular_width, courtyard, silk, thermal,
 # malformed, zone fill, footprint/lib checks, text...) is out of scope.
+#
+# The drill-pair class -- check_drc's `via-drill-hole` and
+# `pad-drill-via-drill[-same-net]` -- is `hole_to_hole` in KiCad 10, and
+# `holes_co_located` when the two centres coincide (read from KiCad 10.0.0's
+# own DRC item table, in _pcbnew.kiface). The list named only `hole_near_hole`,
+# the older spelling, so every drill pair check_drc reported read
+# checkdrc_only and was never matched: two Net-(C1-Pad1) vias 0.18 mm
+# apart, which kicad-cli reports as hole_to_hole. `hole_near_hole`
+# stays for reports from older KiCad. Being listed here also stages both new
+# types at error in _staged_copy, as every copper class is (#526).
 KICAD_COPPER_TYPES = {
     "clearance", "shorting_items", "tracks_crossing",
-    "hole_clearance", "hole_near_hole", "drilled_holes_too_close",
+    "hole_clearance", "hole_to_hole", "holes_co_located",
+    "hole_near_hole", "drilled_holes_too_close",
     "drilled_holes_colliding", "via_hole_larger_than_pad",
     "copper_edge_clearance",
 }
@@ -293,6 +304,19 @@ def run_check_drc(board: str, clearance: float = None, netclasses: bool = False,
         edge = read_project_edge_clearance(board)
         if edge:
             kw["board_edge_clearance"] = edge
+    except Exception:
+        pass
+    # Staging leaves the board's min_hole_to_hole alone, so kicad-cli grades
+    # drill pairs at it, and the check_drc CLI pins its floor up to it (#439).
+    # Graded here at the 0.20 default, a pair between the two read kicad_only
+    # (a GND/RAM_D3 pair 0.2308 mm apart under a board's 0.25).
+    try:
+        from list_nets import read_design_rules
+        import routing_defaults
+        h2h = float(read_design_rules(board).get("constraints", {})
+                    .get("min_hole_to_hole") or 0.0)
+        if h2h > routing_defaults.HOLE_TO_HOLE_CLEARANCE:
+            kw["hole_to_hole_clearance"] = h2h
     except Exception:
         pass
     if netclasses:

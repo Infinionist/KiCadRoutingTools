@@ -290,13 +290,14 @@ def merge_summaries(summaries: List[Dict], aborted: bool = False,
                 merged['pad_pairs_connected'] = first.get('pad_pairs_connected', 0)
                 if 'pad_pairs_open' in first:
                     merged['pad_pairs_open'] = first['pad_pairs_open']
-        # `blockers` and `boxed_in` are both first-pass attribution: the
-        # reconcile sub-run re-routes a SUBSET and its summary carries neither,
-        # so without this a merged summary loses the evidence for nets that are
-        # still failing. Filtered to the nets that ARE still failing, so a net
-        # the reconcile fixed does not carry a stale accusation.
+        # `blockers`, `boxed_in` and `unroutable_as_designed` are first-pass
+        # attribution: the reconcile sub-run re-routes a SUBSET and its
+        # summary may carry none of them, so without this a merged summary
+        # loses the evidence for nets that are still failing. Filtered to the
+        # nets that ARE still failing, so a net the reconcile fixed does not
+        # carry a stale accusation.
         _failed = None
-        for _k in ('blockers', 'boxed_in'):
+        for _k in ('blockers', 'boxed_in', 'unroutable_as_designed'):
             if _k in first and _k not in merged:
                 if _failed is None:
                     _failed = set(merged.get('failed_single') or [])
@@ -773,6 +774,12 @@ def summary_min(merged: Dict, name_cap: int = 20) -> Dict:
     if merged.get('finalize_excluded_nets'):
         out['finalize_excluded_nets'] = _names(
             merged['finalize_excluded_nets'])
+    if merged.get('unroutable_as_designed'):
+        # Open nets whose pad is shorted to another net as drawn: no retry
+        # fixes them, so the agent reading only this line must see them.
+        out['unroutable_as_designed'] = _names(sorted(
+            {r.get('net') for r in merged['unroutable_as_designed']
+             if r.get('net')}))
     # #1069: how many nets the final-board re-grade read. Absent when the
     # tally rests on the summaries alone (no re-grade ran).
     if isinstance(merged.get('regrade'), dict):
