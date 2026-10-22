@@ -11,8 +11,6 @@ THIS ARM CARRIES THE WHOLE REGRESSION. `wk/` is gitignored (`.gitignore:66`;
 committable and is not committed. Every bucketing rule, every total and every
 formatting rule is pinned here against two small TRACKED fixtures, so this file
 passes in full on a fresh clone with no `wk/` tree at all.
-`tests/test_887_run24_regression.py` corroborates it against the real ledger
-when one happens to be present, and self-skips when it is not.
 
 RUN_ALL_FAST_OK because it shells out only for the CLI and the no-Pillow probe;
 there is no board and no routing here.

@@ -373,12 +373,9 @@ Validate routed boards against the *real* spec, with the right checker — most
     a NEW BASELINE ERA that voids cross-wave numeric comparisons -- a reason
     that does NOT apply to the pass/fail suite, which compares no numbers
     across runs.
-    **Two other kinds of `run_all` self-skip are NOT about KiCad at all**:
-    `test_887_run24_regression` and `test_1031_keepout_run32_repro` want
-    recorded artifacts under `wk/`, which is gitignored (0 files tracked), so
-    they self-skip on ANY clean clone -- verified locally WITH KiCad present;
-    and the `test_622_*` tests that plan with CP-SAT skip without `ortools`,
-    which `requirements.txt` does not list. No image change moves either.
+    **One other kind of `run_all` self-skip is NOT about KiCad at all**: the
+    `test_622_*` tests that plan with CP-SAT skip without `ortools`, which
+    `requirements.txt` does not list. No image change moves it.
     `tests/README.md` keeps the full list.
   - The image is a clean checkout of HEAD, so it is reproducible and you can
     keep editing while it runs; `KICAD_SWEEP_DIRTY=1` ships the working tree

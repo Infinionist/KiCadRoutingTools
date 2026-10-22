@@ -7,9 +7,7 @@ real thing. They exist because **`wk/` is gitignored** — `git ls-files | grep 
 regression cannot depend on it.
 
 `tests/test_887_cmd_timing_reader.py` reads only these files and **carries the
-whole regression on a fresh clone**. `tests/test_887_run24_regression.py`
-corroborates the same reader against the real ledger when a machine happens to
-have one, and self-skips (exit 77) when it does not.
+whole regression on a fresh clone**.
 
 Every row's `t_start` is `1787200000.0 + <offset>`; `iso_start` is that instant
 in UTC. Nothing reads the absolute epoch — only the differences matter.
@@ -68,8 +66,8 @@ the defensive code is still pinned.
 | `A-first` | +0 | +1 | Written **third**, but is first in time — so `load_rows` must sort. |
 | `E-last` | +600 | +602 | Last by `t_start`, **not** last by `t_end`. |
 
-Span is therefore **700 s**, not 602. These rows also overlap, which is why the
-disjointness assertion lives in the run-24 arm and not here.
+Span is therefore **700 s**, not 602. These rows also overlap, so nothing here
+asserts that rows are disjoint.
 
 ## Extending them
 

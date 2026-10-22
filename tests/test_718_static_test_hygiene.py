@@ -62,15 +62,6 @@ _WK_DEPENDENT = {
     # synthetic origin/control arms run on a clean clone, so absent the asset
     # the repro is skipped and the file still exits 0.
     'test_1038_hole_clearance_origin.py': ['wk/run32/routed_c3.kicad_pcb'],
-    # #1031's run-32 repro only (exit 77 without it). The synthetic
-    # test_1031_keepout_legality.py covers every invariant on a clean clone.
-    'test_1031_keepout_run32_repro.py': ['wk/run32/placed_v2.kicad_pcb'],
-    # #887 CORROBORATION only. The regression lives in
-    # test_887_cmd_timing_reader.py, against two small tracked fixtures, and
-    # passes in full on a clean clone. This arm re-derives run 24's published
-    # audit from the one real 153-row ledger when a machine happens to have
-    # one, and self-skips at exit 77 when it does not.
-    'test_887_run24_regression.py': ['wk/run24/esp_prog/cmd_timing.jsonl'],
     'test_outline_prefilter.py': ['wk/run19/urchin/base.kicad_pcb'],
     'test_placement_pad_legality.py':
         ['../wk/b2/tigard__swap/d0/perturbed.kicad_pcb'],

@@ -112,10 +112,6 @@ Three things to know before you trust its output:
     `test_engine_kwarg_parity_launch`.
   - **No `ortools`.** The `test_622_*` tests that plan with CP-SAT skip
     without it, and `requirements.txt` does not list it.
-  - **No recorded run.** `test_887_run24_regression` and
-    `test_1031_keepout_run32_repro` want artifacts under `wk/` -- gitignored,
-    0 files tracked -- so they self-skip on ANY clean clone, with or without
-    KiCad.
 
 The image is a clean checkout of HEAD (reproducible, and you can keep editing
 while it runs); `KICAD_SWEEP_DIRTY=1` ships the working tree instead and stamps
