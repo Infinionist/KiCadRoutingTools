@@ -23,6 +23,10 @@ import os
 from route_movie import CHUNKS, RIP_HOLD, _board_copper, _skey, _trace_rows, _vkey
 
 
+#: inner-layer track colours (In1, In2, ...): bright yellow, sky, pink, white,
+#: orange -- they are seen through the semi-transparent board
+INNER_3D = ((255, 226, 80), (110, 220, 255), (255, 140, 235), (240, 240, 240), (255, 165, 70))
+
 class Copper:
     """The film's copper: every item with its birth and death tick."""
 
@@ -227,6 +231,10 @@ def film_routes(rec, work, judged, scores, best, full, filmed, budget=0):
     th = render_theme.theme('dark', strict=False)
     layers = list(rec.pcb.board_info.copper_layers)
     pal = render_theme.layer_palette(layers, th)
+    # an inner layer's tracks are seen through the board: bright, and never
+    # the theme's green, which vanished against the green board
+    inner = iter(INNER_3D * len(layers))
+    track = {n: (c if n in ('F.Cu', 'B.Cu') else next(inner)) for n, c in pal.items()}
     cop = Copper(layers, rec.scene['outline'], rec.scene['cutouts'])
     rec.cop = cop
     hold = rec.hold
@@ -306,7 +314,8 @@ def film_routes(rec, work, judged, scores, best, full, filmed, budget=0):
     rec.copper_shot(f"full route, seed {best}: {_score_text(full)}", times=3 * hold)
     rec.scene['copper'] = cop.json()
     rec.scene['colors'].update(
-        layers=[list(pal.get(n, (200, 120, 60))) for n in layers], via=list(th.rgb('via')),
+        layers=[list(track.get(n, (200, 120, 60))) for n in layers],
+        pour_layers=[list(pal.get(n, (200, 120, 60))) for n in layers], via=list(th.rgb('via')),
         # a rip is magenta, not the 2D movie's red: F.Cu is red here, and a
         # red rip on it read as nothing happening
         new=list(th.rgb('event_new')), rip=[235, 70, 235],

@@ -378,7 +378,7 @@ function pourMesh(z, C, d, n) {
   g.rotateX(Math.PI / 2);
   g.translate(0, z.layer === 0 ? d + 0.01 : (z.layer === n - 1 ? -0.01 : layerY(z.layer, n, d)), 0);
   const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
-    color: rgb(C.board).lerp(rgb(C.layers[z.layer] || C.pad), 0.5), transparent: true, opacity: 0.5,
+    color: rgb(C.board).lerp(rgb((C.pour_layers || C.layers)[z.layer] || C.pad), 0.5), transparent: true, opacity: 0.5,
     side: THREE.DoubleSide, depthWrite: false }));
   sided(m, 1, z.layer === 0 ? 1 : (z.layer === n - 1 ? -1 : 0));
   return m;
