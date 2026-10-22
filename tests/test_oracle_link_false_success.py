@@ -290,13 +290,64 @@ def test_the_exact_tier_reads_an_anchor_on_its_own_layer():
     print(f'  PASS: strap {pa} -> {pb} on F.Cu (was the shared outline)')
 
 
+def test_the_strap_escalation_routes_the_exact_seeds():
+    """The scoped rescue the oracle escalates to derived each side of the gap
+    from the net's tracks, pads and vias near it -- layer-blind, and blind to
+    fill, which is what a plane link must reach. Given the exact clusters'
+    seeds it routes them to each other on their own layers. Fixture: the
+    seeds are fill points (no copper of the net within 20 mm), one on F.Cu
+    and one on B.Cu: the derivation has nothing to route, the seeds route
+    with a via and the weld reaches both."""
+    import ast
+    import net_rescue
+    from kicad_parser import parse_kicad_pcb
+    from kicad_oracle import _weld_joins_seeds
+    from routing_config import GridRouteConfig
+    with tempfile.TemporaryDirectory() as td:
+        b = os.path.join(td, 'b.kicad_pcb')
+        _v10_board(b, pads=[('R1', 30, 30, 'A'), ('R2', 31, 31, 'A'),
+                            ('R3', 33, 33, 'B')])
+        pcb = parse_kicad_pcb(b)
+        nid = {n.name: i for i, n in pcb.nets.items()}['A']
+        cfg = GridRouteConfig(clearance=0.2, track_width=0.2, via_size=0.6,
+                              via_drill=0.3, layers=['F.Cu', 'B.Cu'],
+                              grid_step=0.1)
+        src, tgt = [(5.0, 5.0, 'F.Cu')], [(8.0, 5.0, 'B.Cu')]
+        gap = (3.0, 5.0, 5.0, 8.0, 5.0)
+        log = io.StringIO()
+        with contextlib.redirect_stdout(log):
+            derived, _c = net_rescue._attempt_edge(
+                pcb, nid, gap, cfg, None, strict_endpoints=True)
+            seeded, _c = net_rescue._attempt_edge(
+                pcb, nid, gap, cfg, None, strict_endpoints=True,
+                endpoints=(src, tgt))
+    assert derived is None, 'control: the derivation cannot see fill seeds'
+    assert seeded and not seeded.get('failed'), log.getvalue()[-2000:]
+    segs, vias = seeded['new_segments'], seeded['new_vias']
+    assert vias, 'F.Cu to B.Cu must take a via'
+    assert _weld_joins_seeds(segs, vias, src, tgt)
+    assert not _weld_joins_seeds(segs, vias, src, [(8.0, 5.0, 'In1.Cu')]), \
+        'a seed on another layer is not reached'
+    # Every escalation in the oracle that HAS the exact seeds hands them over
+    with open(os.path.join(ROOT, 'py_router', 'kicad_oracle.py'),
+              encoding='utf-8') as fh:
+        tree = ast.parse(fh.read())
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and getattr(n.func, 'id', None) == '_attempt_edge']
+    assert len(calls) == 2, len(calls)
+    assert all(any(k.arg == 'endpoints' for k in c.keywords) for c in calls)
+    print(f"  PASS: seeded escalation laid {len(segs)} seg(s) + {len(vias)} "
+          f"via(s) between fill seeds the derivation could not see")
+
+
 TESTS = [test_a_via_or_barrel_end_resolves_to_its_span,
          test_a_forced_link_to_a_via_routes_on_its_span,
          test_the_rescue_routes_the_forced_links,
          test_the_stub_swap_leaves_a_stub_carrying_a_link_end,
          test_a_path_that_lays_no_copper_is_not_a_weld,
          test_the_weld_reach_test_is_layer_aware,
-         test_the_exact_tier_reads_an_anchor_on_its_own_layer]
+         test_the_exact_tier_reads_an_anchor_on_its_own_layer,
+         test_the_strap_escalation_routes_the_exact_seeds]
 
 
 if __name__ == '__main__':

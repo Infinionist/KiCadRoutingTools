@@ -1707,6 +1707,38 @@ def _copper_in_corridor(segs, vias, x0, y0, x1, y1, pad: float = 3.0) -> bool:
     return True
 
 
+def _weld_joins_seeds(segs, vias, src, tgt, tol: float = 0.06) -> bool:
+    """True when a weld routed BETWEEN two seed sets (the oracle's exact-fill
+    clusters, `(x, y[, layer])`) reaches a seed of each side on that seed's
+    layer. The seeded escalation's copper starts and ends on seeds by
+    construction; this is the check that it did, where the anchor-distance
+    test (_weld_touches_endpoints) does not apply -- a seeded route may meet
+    an island anywhere along its facing edge, not only at the nearest-
+    approach anchors."""
+    from geometry_utils import point_to_segment_distance as _p2s, via_on_layer
+
+    def _any(lay):
+        return lay is None or '*' in str(lay)
+
+    def _reaches(pts):
+        for p in pts or ():
+            x, y = p[0], p[1]
+            lay = p[2] if len(p) > 2 else None
+            for s in segs:
+                if not _any(lay) and s.layer != lay:
+                    continue
+                if _p2s(x, y, s.start_x, s.start_y, s.end_x, s.end_y) \
+                        <= s.width / 2.0 + tol:
+                    return True
+            for v in vias:
+                if not _any(lay) and not via_on_layer(v, lay):
+                    continue
+                if math.hypot(v.x - x, v.y - y) <= v.size / 2.0 + tol:
+                    return True
+        return False
+    return bool(segs or vias) and _reaches(src) and _reaches(tgt)
+
+
 def _via_drill_radius(via, fallback: float) -> float:
     """Half the drill of an EXISTING via, for the hole-to-hole gates (#754).
 
@@ -2575,10 +2607,16 @@ def oracle_reconnect(board_file: str, net_names, config,
                     # #1137: the round's re-keyed class map (None when there
                     # is none), so the escalation's own obstacle map prices
                     # foreign nets at their class too
+                    # Seeded (#572 follow-up): route the exact clusters'
+                    # own seeds to each other, on their layers. The gap
+                    # derivation saw only the net's tracks/pads/vias near
+                    # the gap -- never the fill a plane link must reach --
+                    # and joined whatever lay there on any layer (butterstick
+                    # GND: 17 B.Cu segments for an F.Cu ball island).
                     _esc2, _esc2_cfg = _attempt_edge(
                         pcb_data, net_id, _gap2, config,
                         config.net_clearances or None,
-                        strict_endpoints=True)
+                        strict_endpoints=True, endpoints=(_esrc, _etgt))
                 except Exception:
                     _esc2 = None
                 if _esc2 and not _esc2.get('failed'):
@@ -2593,19 +2631,12 @@ def oracle_reconnect(board_file: str, net_names, config,
                               f"net, #658)")
                         _esc2 = None
                 if _esc2 and not _esc2.get('failed') \
-                        and (not _copper_in_corridor(
+                        and not _weld_joins_seeds(
                             _esc2.get('new_segments') or [],
-                            _esc2.get('new_vias') or [],
-                            _pa[0], _pa[1], _pb[0], _pb[1])
-                            or not _weld_touches_endpoints(
-                            _esc2.get('new_segments') or [],
-                            _esc2.get('new_vias') or [],
-                            _pa[0], _pa[1], _pb[0], _pb[1],
-                            layers=(_pa[2] if len(_pa) > 2 else None,
-                                    _pb[2] if len(_pb) > 2 else None))):
+                            _esc2.get('new_vias') or [], _esrc, _etgt):
                     print(f"    {net_name}: exact-fill strap REJECTED "
-                          f"(emitted copper outside the link corridor -- "
-                          f"#570/#648 false-claim guard)")
+                          f"(its copper does not reach both exact clusters "
+                          f"on their layers -- #570/#648 false-claim guard)")
                     _esc2 = None
                 if _esc2 and not _esc2.get('failed'):
                     _e2segs = _esc2.get('new_segments') or []
@@ -2911,15 +2942,26 @@ def oracle_reconnect(board_file: str, net_names, config,
                     from net_rescue import _attempt_edge
                     _gap = (math.hypot(bx - ax, by - ay), ax, ay, bx, by)
                     # #1137: the round's re-keyed class map (see above)
+                    # Cluster mode already holds the exact clusters' seeds:
+                    # route them to each other (see the exact tier).
                     _esc, _esc_cfg = _attempt_edge(
                         pcb_data, net_id, _gap, config,
                         config.net_clearances or None,
-                        strict_endpoints=True)
+                        strict_endpoints=True,
+                        endpoints=(src, tgt) if _cluster_link else None)
                 except Exception as _ee:
                     if verbose:
                         print(f"    (weld escalation unavailable: {_ee})")
                     _esc = None
-                if _esc and not _esc.get('failed') \
+                if _cluster_link and _esc and not _esc.get('failed') \
+                        and not _weld_joins_seeds(
+                            _esc.get('new_segments') or [],
+                            _esc.get('new_vias') or [], src, tgt):
+                    print(f"    {net_name}: weld escalation REJECTED "
+                          f"(its copper does not reach both exact clusters "
+                          f"on their layers -- #570/#648 false-claim guard)")
+                    _esc = None
+                if not _cluster_link and _esc and not _esc.get('failed') \
                         and not _copper_in_corridor(
                             _esc.get('new_segments') or [],
                             _esc.get('new_vias') or [], ax, ay, bx, by):
@@ -2927,7 +2969,7 @@ def oracle_reconnect(board_file: str, net_names, config,
                           f"(emitted copper outside the link corridor -- "
                           f"#570 false-claim guard)")
                     _esc = None
-                if _esc and not _esc.get('failed') \
+                if not _cluster_link and _esc and not _esc.get('failed') \
                         and not _weld_touches_endpoints(
                             _esc.get('new_segments') or [],
                             _esc.get('new_vias') or [], ax, ay, bx, by,
