@@ -1675,9 +1675,14 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data,
     moves, so coupling and connectivity are untouched. P is necked against N
     first, then N against P's (possibly necked) widths -- one side clearing the
     mutual gap is enough, so this settles in one pass. Returns segments necked.
+
+    A segment whose edge gap EQUALS the pair clearance is not a graze and keeps
+    its width; a neck of a pair the hard gate passes is recorded in the
+    design-rules ledger (site 'pair partner neck').
     """
-    from single_ended_routing import _fab_track_floor
+    from single_ended_routing import _fab_track_floor, NECK_GRAZE_TOL
     from pcb_modification import _seg_seg_min_dist
+    from fab_tiers import note_narrowing
     floor = _fab_track_floor(pcb_data)
     necked = 0
 
@@ -1685,8 +1690,8 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data,
     # value on the layer they meet on (#1134, `config.pair_clearance`):
     # max(clearance, class P, class N), then the .kicad_dru layer rule. The
     # coupled run is built at a gap raised to that value (#1145), so on a
-    # ruled layer only the attach regions and a diagonal's nanometre
-    # rounding neck. This used to price the obstacle STAMP value,
+    # ruled layer only the attach regions neck. This used to price the
+    # obstacle STAMP value,
     # max(obstacle_clearance(P), obstacle_clearance(N)), which sees no layer
     # rule and is floored at the widest class routed anywhere in the call
     # (#1136). On a board that declares no class and no rule both are
@@ -1705,6 +1710,10 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data,
 
     _via_copper = _vias_as_layer_copper
 
+    # Segments necked here and the width each was asked for, disclosed once
+    # the hard gate below has passed (a pair it refuses ships nothing).
+    requested = {}
+
     def neck_side(own, partner, partner_vias):
         nonlocal necked
         for s in own:
@@ -1713,13 +1722,22 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data,
                     continue
                 d = _seg_seg_min_dist(s.start_x, s.start_y, s.end_x, s.end_y,
                                       o.start_x, o.start_y, o.end_x, o.end_y)
-                allowed_half = (d - o.width / 2.0
-                                - _pair_clearance(s.net_id, o.net_id, s.layer) - 2e-4)
-                if allowed_half < s.width / 2.0 - 1e-9:
-                    new_w = max(floor, 2.0 * allowed_half)
-                    if new_w < s.width - 1e-9:
-                        s.width = round(new_w, 4)
-                        necked += 1
+                clr = _pair_clearance(s.net_id, o.net_id, s.layer)
+                # A graze is an edge gap BELOW the pair clearance (#1159's
+                # rule, here against the partner): copper AT it is legal. The
+                # 2e-4 margin sat in this trigger and necked every coupled run
+                # built at a gap equal to the clearance -- which is every run
+                # whose requested gap was at or below it, since the gap is
+                # raised to exactly the clearance -- by 0.4 um: a 0.2 pair
+                # shipped P at 0.1996 and the project's track floor followed
+                # it down. The margin belongs to the neck TARGET only.
+                if clr - (d - o.width / 2.0 - s.width / 2.0) <= NECK_GRAZE_TOL:
+                    continue
+                new_w = max(floor, 2.0 * (d - o.width / 2.0 - clr - 2e-4))
+                if new_w < s.width - 1e-9:
+                    requested.setdefault(id(s), (s, s.width))
+                    s.width = round(new_w, 4)
+                    necked += 1
 
     neck_side(p_segs, n_segs, n_vias)
     neck_side(n_segs, p_segs, p_vias)
@@ -1761,6 +1779,13 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data,
                   or {l for v in list(p_vias) + list(n_vias) for l in (v.layers or ())})
         for lyr in set(_stack):
             _hard(_via_copper(p_vias, lyr), _via_copper(n_vias, lyr))
+    if not hard:
+        # A neck is a narrowing like any other (#857): into the design-rules
+        # ledger, so JSON_SUMMARY.design_rules, the Design rules line and
+        # --strict-sizes see it.
+        for s, asked in requested.values():
+            note_narrowing(s.net_id, 'track_width', asked, s.width,
+                           'pair partner neck')
     return necked, hard
 
 

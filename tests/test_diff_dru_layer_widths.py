@@ -99,6 +99,10 @@ def _route(td, dru, label=None, pro=None, layer_costs=None):
         drc = run_drc(out, clearance=0.25, quiet=True, print_summary=False,
                       check_sizes=False, clearance_margin=0.0)
         conn = run_connectivity_check(out, net_patterns=['DPA_*', 'DPB_*'], quiet=True)
+    # Margin 0 past the writer's 1 nm coordinate rounding: a pair coupled
+    # exactly at the rule reads up to sqrt(2) nm inside it in the file.
+    from kicad_writer import EDGE_ROUNDING_MM
+    drc = [v for v in drc if v.get('overlap_mm', 1.0) > EDGE_ROUNDING_MM]
     return log.getvalue(), pcb, drc, conn
 
 

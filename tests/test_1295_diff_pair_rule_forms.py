@@ -155,9 +155,15 @@ def coupled_gaps(path):
 
 
 def drc(path, clearance=0.15, sizes=False):
+    """check_drc at margin 0, past the writer's 1 nm coordinate rounding
+    (kicad_writer.EDGE_ROUNDING_MM): a diagonal coupled exactly at the rule
+    reads up to sqrt(2) nm inside it in the file."""
     from check_drc import run_drc
-    return quiet(run_drc, path, clearance=clearance, quiet=True, print_summary=False,
-                 check_sizes=sizes, clearance_margin=0.0)
+    from kicad_writer import EDGE_ROUNDING_MM
+    return [v for v in quiet(run_drc, path, clearance=clearance, quiet=True,
+                             print_summary=False, check_sizes=sizes,
+                             clearance_margin=0.0)
+            if v.get('overlap_mm', 1.0) > EDGE_ROUNDING_MM]
 
 
 def kicad_drc(path):

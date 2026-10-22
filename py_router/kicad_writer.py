@@ -323,6 +323,15 @@ def move_copper_graphics_to_silkscreen(content: str) -> str:
     return content
 
 
+#: Coordinates are written on KiCad's 1 nm grid (``:.6f`` mm). Rounding moves a
+#: written line by at most half a nanometre along each axis, so two facing
+#: edges laid exactly at a rule can read up to sqrt(2) nm inside it in the file
+#: -- a diagonal diff pair coupled at its clearance does. KiCad grades
+#: clearance with a 0.5 um epsilon and never sees it; a margin-0 check_drc
+#: grade does.
+EDGE_ROUNDING_MM = 2 ** 0.5 * 1e-6
+
+
 def generate_segment_sexpr(start: Tuple[float, float], end: Tuple[float, float],
                            width: float, layer: str, net_id: int,
                            net_name: str = None) -> str:

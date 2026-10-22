@@ -249,6 +249,11 @@ def test_wide_layer_run_keeps_clear_of_its_neighbour():
             drc = run_drc(out, clearance=0.25, quiet=True, print_summary=False,
                           check_sizes=False, clearance_margin=0.0)
             conn = run_connectivity_check(out, net_patterns=['DPA_*'], quiet=True)
+    # Margin 0 past the writer's 1 nm coordinate rounding: the pair is coupled
+    # exactly at the rule at an off-grid pitch, which the file can read up to
+    # sqrt(2) nm inside it.
+    from kicad_writer import EDGE_ROUNDING_MM
+    drc = [v for v in drc if v.get('overlap_mm', 1.0) > EDGE_ROUNDING_MM]
     names = {n.net_id: n.name for n in pcb.nets.values()}
     widths = sorted({round(s.width, 3) for s in pcb.segments
                      if names.get(s.net_id, '').startswith('DPA')})
