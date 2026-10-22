@@ -133,8 +133,8 @@ def main():
     pad_list = list(pcb.pads_by_net[gnd])
     zones = [zone]
 
-    def open_pads(segs, **kw):
-        r = check_net_connectivity(gnd, segs, [], pad_list, zones, **kw)
+    def open_pads(segs, plist=None, zlist=None, **kw):
+        r = check_net_connectivity(gnd, segs, [], plist or pad_list, zlist or zones, **kw)
         hits = set()
         for (x, y, _l, ref) in (r.get('disconnected_pads') or []):
             for (cref, num), p in pads.items():
@@ -142,10 +142,20 @@ def main():
                     hits.add((cref, num))
         return hits
 
-    for label, kw in (('fill model', {'pcb_data': pcb}), ('outline credit', {})):
-        got = open_pads([], **kw)
-        check(got == {('J1', '1'), ('J2', '1')},
-              '%s: exactly the two opted-out pads are open' % label, repr(sorted(got)))
+    # Outline credit FIRST, on a fresh parse: no fill model has been built for
+    # those zone objects, so lookup_zone_model finds none and the legacy
+    # outline credit answers (the removal passes' path without pcb_data).
+    import plane_fill_model
+    bare = parse_kicad_pcb(path)
+    bare_zones = [z for z in bare.zones if z.net_id == gnd]
+    check(all(plane_fill_model.lookup_zone_model(z) is None for z in bare_zones),
+          'witness: no fill model is registered for the fresh parse')
+    got = open_pads([], plist=list(bare.pads_by_net[gnd]), zlist=bare_zones)
+    check(got == {('J1', '1'), ('J2', '1')},
+          'outline credit: exactly the two opted-out pads are open', repr(sorted(got)))
+    got = open_pads([], pcb_data=pcb)
+    check(got == {('J1', '1'), ('J2', '1')},
+          'fill model: exactly the two opted-out pads are open', repr(sorted(got)))
     # The opt-out, not the geometry, decides: lift it and the pad is served.
     # A fresh parse, because fill models are cached on the board object.
     lifted = parse_kicad_pcb(path)
