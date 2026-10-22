@@ -159,6 +159,21 @@ python3 -X utf8 py_tools/check_floorplan.py wk/<run>/fixed.kicad_pcb --emit-inte
 - `place_simple` reads the intent's `proximity` claims, keep-outs, zones,
   declared faces, `fixed_poses`, the edges of `edge_connectors[]` and the
   decap limits it grades at error.
+- **Waive the locked parts' own overlaps**, right after the intent exists:
+
+  ```bash
+  python3 -X utf8 .claude/skills/plan-pcb-placement/scripts/waive_locked_overlaps.py \
+      wk/<run>/fixed.kicad_pcb wk/<run>/intent.json
+  ```
+
+  Two parts locked at the input's poses whose courtyards or drawn bodies
+  overlap are the designer's (two footprints offered for one site, a part
+  drawn over another), and neither moves, yet `check_assembly` gates them:
+  every seed then reads NOT BUILDABLE on a pair no move can change. The
+  script names each such pair in `overlap_waivers[]`, with its reason. A pad
+  or hole conflict between two locked parts is printed as a WARNING and not
+  waived, because no waiver covers pads or holes: ask the user which part
+  to move.
 
 ### 3.3 Group the parts (your judgement)
 
