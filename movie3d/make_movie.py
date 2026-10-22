@@ -4,7 +4,7 @@
     python3 -X utf8 movie3d/make_movie.py BOARD OUT.kicad_pcb \\
         --groups groups.json --intent intent.json --seed 0 [--movie OUT_3d.mp4]
     python3 -X utf8 movie3d/make_movie.py BOARD OUT.kicad_pcb \\
-        --groups groups.json --intent intent.json --route ch32v003_usb:6
+        --groups groups.json --intent intent.json --route NAME:SET
 
 BOARD and OUT come first; every argument but this tool's own is
 place_simple.py's. Three steps, each printed with its time:
@@ -55,7 +55,7 @@ def flow(a, rest):
     import place_movie
     from route3d import film_routes
     if ':' not in a.route:
-        sys.exit('make_movie: --route BOARD:SET, e.g. ch32v003_usb:6')
+        sys.exit('make_movie: --route NAME:SET, a stress-corpus board and its set number')
     board, out = rest[0], rest[1]
     work = os.path.abspath(a.route_work or os.path.splitext(os.path.abspath(out))[0] + '_work')
     opts = place_movie._strip(rest[2:], '--seed', '--json', '--seeds', '--jobs', '--clustered-seeds',
@@ -101,7 +101,7 @@ def main(argv=None):
     from place_simple import ANCHORED_SEEDS, CLUSTERED_SEEDS, JUDGED_SEEDS, SCATTERED_SEEDS
     ap.add_argument('--route', metavar='BOARD:SET',
                     help="run and film place_movie's placement flow, routing with this "
-                         "stress-corpus board's recorded chain (e.g. ch32v003_usb:6)")
+                         "stress-corpus board's recorded chain (NAME:SET: the board and its set number)")
     ap.add_argument('--scattered', type=int, default=SCATTERED_SEEDS,
                     help=f'with --route, the seeds started scattered (default {SCATTERED_SEEDS})')
     ap.add_argument('--clustered', type=int, default=CLUSTERED_SEEDS,

@@ -104,7 +104,8 @@ def _not_assembled(fp):
     a solder jumper) -- stage3d's rule (#1098) -- or a DNP part, model or
     not (#1350): the GLB is exported with `--no-dnp`, so it never gets its
     model, and the box it got instead drew a part the board will not carry
-    (imx6ulz_4l: 23 DNP 0402s drawn as boxes, reported as model fallbacks)."""
+    (a board with 23 DNP 0402s had them drawn as boxes, reported as model
+    fallbacks)."""
     if getattr(fp, 'dnp', False):
         return True
     return (not getattr(fp, 'has_model', False)

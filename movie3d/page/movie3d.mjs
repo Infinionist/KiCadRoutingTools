@@ -104,8 +104,14 @@ function rectLoop(r, y, mat) {
 
 function buildParts(sc, root) {
   const d = sc.thickness, C = sc.colors;
-  const padMat = new THREE.MeshStandardMaterial({ color: rgb(C.pad), roughness: 0.3, metalness: 0.75 });
-  const holeMat = new THREE.MeshBasicMaterial({ color: rgb(C.hole) });
+  // a part's model sits on its pads with its leads and exposed pad microns
+  // from the pad copper drawn here, too close for the depth buffer: seen
+  // from below through the board they fought, speckling under a QFN's exposed
+  // pad as the camera moved. The copper wins the tie, as on a board, where
+  // it lies between the board and the part.
+  const tie = { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 };
+  const padMat = new THREE.MeshStandardMaterial({ color: rgb(C.pad), roughness: 0.3, metalness: 0.75, ...tie });
+  const holeMat = new THREE.MeshBasicMaterial({ color: rgb(C.hole), ...tie });
   const soft = sc.soft ?? 0.4;     // how far a box, plate or outline's colour goes toward neutral
   const grey = rgb([120, 120, 126]), board = rgb(C.board);
   S.parts = [];
@@ -264,7 +270,8 @@ async function loadModels(url, sc) {
       if (part.P.fixed) {
         // a ghost is dozens of overlapping see-through meshes, which three
         // sorts by their origins every frame: as the camera orbits, two at
-        // nearly one depth swap places and the blend flashes (tigard's J1).
+        // nearly one depth swap places and the blend flashes (a USB-C ghost's
+        // pin rows lit and dimmed frame to frame).
         // Its depth drawn first, unseen, lets only its front surface blend:
         // one shell, the same every frame
         const front = clone.clone(true);

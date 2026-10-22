@@ -172,8 +172,8 @@ view across the board's long side wins a near tie.
   every call through, so the placement is place_simple's own. It decides what
   is shot when, and calls a renderer's primitives (`setup`, `shot`, `view_of`,
   `set_view`). The 2D renderer is place_movie's `Film`; its output is
-  unchanged by the move: the same frames, hash for hash, on ch32 seed 0, both
-  with and without `--route`.
+  unchanged by the move: the same frames, hash for hash, on a test board's
+  seed 0, both with and without `--route`.
 - `record.py`'s `Recorder` is the 3D renderer. Each shot becomes a timeline
   row, and the 3D beats are overrides: arcs, the table, the staggered scatter,
   the tweened anneal, the glide back to the best placement. It runs
@@ -225,16 +225,15 @@ Blender path was not carried over, and the turn over is this page's own.
 - The seed grid shows each judged seed's fast route as it ended, not played.
   Only the filmed seed's and the best seed's routes play.
 - A part whose model is missing from the installed library, and not found
-  on the web, is a box with a guessed height. On ch32, U3's `QFN-20-1EP_3x3mm_P0.45mm` is not in KiCad
-  10's library. The occlusion measure uses the guessed heights even for parts
+  on the web, is a box with a guessed height. The occlusion measure uses the guessed heights even for parts
   drawn from models. A custom pad is drawn as its bounding box. No silkscreen
   is drawn, and in a flow a pour is drawn by its zone outline, not its fill.
-- Models make rendering slower: 110 ms per frame on ch32, against 72 ms with
-  boxes.
+- Models make rendering slower: 110 ms per frame on a 25-part board, against
+  72 ms with boxes.
 - A part the intent puts on the other face, or at a declared pose, is drawn
   there from the first frame. The 2D movie shows it moving there.
 - Early in the anneal one step covers about a hundred moves, so a tween is a
   straight slide from one snapshot to the next, not the path the part took.
 - Airwires are 1 px lines, because WebGL draws lines 1 px wide.
 - The occlusion measure uses the guessed box heights and part centres only.
-- Tested on two boards: a 25-part one (with `--route` too) and tigard.
+- Tested on two boards: a 25-part one (with `--route` too) and an 89-part one.

@@ -9,8 +9,8 @@ Invocation: `/make-3d-movie <board.kicad_pcb> [--route BOARD:SET] [--seed N]
 [groups.json] [intent.json]`.
 - `--route` films the whole flow: the seeds placed, the judged ones
   fast-routed, the best one routed in full. BOARD:SET names the
-  stress-corpus board whose recorded chain routes it (e.g.
-  `ch32v003_usb:6`).
+  stress-corpus board whose recorded chain routes it, as its name and
+  set number.
 - `--seed` picks the seed of a placement-only movie (default 0).
 - A given groups or intent file is used in place of writing one.
 

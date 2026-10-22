@@ -4,10 +4,10 @@ parts whose model did not resolve.
 
 movie3d exports the board's GLB with `--no-dnp`, so a Do-Not-Populate part
 never gets its model; it was then drawn as a box and reported as having
-"fell back to a box" (imx6ulz_4l: 28 of the 102 boxes were DNP 0402s).
+"fell back to a box" (on one board, 28 of its 102 boxes were DNP 0402s).
 main's stage3d took the same fix; this is the branch's 3D movie.
 
-Checks, on esp_prog's footprints with one marked DNP:
+Checks, on an in-repo board's footprints with one marked DNP:
   1. `part_scene` gives the DNP part no body (pads only) and marks it `dnp`;
      the same part not DNP keeps its body.
   2. `attach_models`, with the GLB export stubbed to match every populated
