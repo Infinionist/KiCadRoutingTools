@@ -161,6 +161,19 @@ the routing pipeline applies both so the model and the output file agree.
 > vertex a locked segment touches, and the #284 stale-input strip and
 > `remove_route_from_pcb_data`'s signature fallback never take a locked item.
 
+> **The graze prune keeps a fill island's only link.** `prune_grazing_segments`
+> grades each removal on a zoned net twice: under the real-fill validator
+> (`check_connected.make_real_fill_validator`, no pour credit within 0.25 mm
+> of foreign copper) and under the grading model (the same
+> `check_net_connectivity` without it, which `check_connected` and route.py's
+> #209 gate read); the removal must leave both no worse. The validator's
+> denial is conservative for the pad it would over-credit and the opposite
+> for the copper being removed: a tap ending in a narrow fill island (an F.Cu
+> pocket between a BGA's fanout tracks) loses its end's credit, reads as a
+> dead end, the island's pad reads as already open, and the removal looks
+> free. orangecrab's U3.B3 (csBGA 0.5 mm) lost its 0.33 mm tail that way in
+> every route step. `tests/test_graze_prune_fill_island.py` pins it.
+
 > **#1227 -- a dead-end prune never splits copper.** Every gated dead-end pass
 > (`add_route_to_pcb_data`'s per-commit prune, `sweep_dead_ends`,
 > `trim_net_stub_debris`, `cleanup_plane_taps_grazing`) removes through
