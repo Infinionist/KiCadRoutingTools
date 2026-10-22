@@ -218,9 +218,33 @@ def part2(tmp):
        {k: (old or {}).get(k) for k in ('kicad', 'check_drc', 'matched', 'checkdrc_only')})
 
 
+def part1b(tmp):
+    """The in-process grade prices drill pairs at the board's min_hole_to_hole,
+    as staging leaves it for kicad-cli and as the check_drc CLI pins it."""
+    pcb = os.path.join(tmp, 'gap.kicad_pcb')
+    with open(pcb, 'w', encoding='utf-8') as f:
+        f.write(board_text(far=True).replace(
+            '(at 13.1 10.15)', '(at 10.0 10.53)').replace(
+            '(size 0.25)\n\t\t(drill 0.15)', '(size 0.45)\n\t\t(drill 0.3)'))
+    write_pro(pcb)
+    pairs = [v for v in kdc.run_check_drc(evidence(pcb, 'gap board'), 0.2)
+             if v['type'] == 'via-drill-hole']
+    ok("a pair 0.23 mm apart under the board's 0.25 is graded",
+       len(pairs) == 1 and pairs[0]['nets'] == frozenset({NET}), pairs)
+    pro = pcb[:-len('.kicad_pcb')] + '.kicad_pro'
+    with open(pro, encoding='utf-8') as f:
+        doc = json.load(f)
+    del doc['board']['design_settings']['rules']['min_hole_to_hole']
+    with open(pro, 'w', encoding='utf-8') as f:
+        json.dump(doc, f)
+    ok('control: with no board floor the same pair clears the 0.20 default',
+       not [v for v in kdc.run_check_drc(pcb, 0.2) if v['type'] == 'via-drill-hole'])
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         part1(tmp)
+        part1b(tmp)
         part2(tmp)
     if fails:
         print(f'{len(fails)} FAILURE(S): {fails}')

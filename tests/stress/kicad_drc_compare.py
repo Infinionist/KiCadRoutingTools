@@ -306,6 +306,19 @@ def run_check_drc(board: str, clearance: float = None, netclasses: bool = False,
             kw["board_edge_clearance"] = edge
     except Exception:
         pass
+    # Staging leaves the board's min_hole_to_hole alone, so kicad-cli grades
+    # drill pairs at it, and the check_drc CLI pins its floor up to it (#439).
+    # Graded here at the 0.20 default, a pair between the two read kicad_only
+    # (orangecrab GND/RAM_D3 0.2308 mm apart under its 0.25).
+    try:
+        from list_nets import read_design_rules
+        import routing_defaults
+        h2h = float(read_design_rules(board).get("constraints", {})
+                    .get("min_hole_to_hole") or 0.0)
+        if h2h > routing_defaults.HOLE_TO_HOLE_CLEARANCE:
+            kw["hole_to_hole_clearance"] = h2h
+    except Exception:
+        pass
     if netclasses:
         try:
             from list_nets import read_design_rules, net_clearance_map
