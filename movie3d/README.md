@@ -75,7 +75,8 @@ beyond the repo's `requirements.txt`.
 library), found through `--kicad-cli`, then `$KICAD_CLI`, then the repo's
 `kicad_oracle` resolver, then `/Applications/KiCad/KiCad.app`, then PATH.
 Without it, every part is drawn as a box. **A model the library lacks** is
-found on the web by the skill and recorded with `find_models.py` in
+found on the web by the skill -- and so is one for a part whose footprint
+names no model at all -- and recorded with `find_models.py` in
 `movie3d/cache/found/` (gitignored): its download is kept only when it is a
 STEP or VRML model (https only, at most 40 MB, a zip read in memory).
 make_movie runs no agent: it draws whatever has been recorded, names the

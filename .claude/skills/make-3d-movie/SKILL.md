@@ -71,7 +71,9 @@ It prints JSON:
 - `board`: what identifies the project (file name, title, company,
   comments, footprint library nicknames).
 - `library_root`: where KiCad's 3D library is installed.
-- `missing`: one entry per model. Each has:
+- `missing`: one entry per model. A part whose footprint names no model
+  at all is listed too, keyed `fp-` and its footprint's name: find a model
+  of that part the same way. Each entry has:
   - its `key`;
   - the path(s) the footprint names (`referenced_as`);
   - the parts that use it (reference, value, footprint, description, pad

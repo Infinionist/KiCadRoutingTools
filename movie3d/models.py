@@ -158,15 +158,30 @@ def _hidden(fp_text, at):
     return bool(re.search(r'\(model\s+"[^"]*"\s+hide\b|\(hide\s+yes\)', fp_text[at:i]))
 
 
+def _assembled(fp_text):
+    """Whether a footprint block is a part the board carries: a copper pad,
+    and not DNP, board-only or left out of the position files (a test pad, a
+    solder jumper, a logo) -- record._not_assembled's rule, read off the
+    text."""
+    if not re.search(r'\(pad\s+"[^"]*"\s+(smd|thru_hole)\b', fp_text):
+        return False
+    if re.search(r'\(attr\b[^)]*\b(board_only|exclude_from_pos_files|dnp)\b', fp_text):
+        return False
+    return not re.search(r'\(dnp\s+yes\)', fp_text)
+
+
 def stage_models(board_text, dirs, board_dir, found=None):
     """Every model reference made absolute, a missing `.wrl` pointed at an
     existing `.step` twin, and a reference still missing found by its file
     name in the library dirs -- else, with `found` (find_models' index),
     the model an AI agent found for it, one per footprint (an exact match
     before an equivalent: a footprint naming two models that are both
-    missing must not get both). Returns (text, counts {'twin', 'named',
-    'found'}, missing: the shown references nothing resolves, found_refs:
-    the parts drawn from a found model)."""
+    missing must not get both). A part whose footprint names no model at all
+    takes the one recorded for its footprint's name (`find_models.
+    footprint_key`), placed at the footprint's origin. Returns (text, counts
+    {'twin', 'named', 'found'}, missing: the shown references nothing
+    resolves, and `find_models.NO_MODEL` + the footprint name of each part
+    that names none, found_refs: the parts drawn from a found model)."""
     from kicad_parser import iter_footprint_blocks
     import find_models
     counts = {'twin': 0, 'named': 0, 'found': 0}
@@ -197,12 +212,29 @@ def stage_models(board_text, dirs, board_dir, found=None):
             found_refs.append(key)
         elif not subs:
             missing += [m.group(2) for m in pending]
+        # a part whose footprint names no model at all is missing one too
+        add = None
+        if not _MODEL_RE.search(fp) and _assembled(fp):
+            name = re.match(r'\(footprint\s+"([^"]+)"', fp).group(1)
+            f = (find_models.found_file(find_models.footprint_key(name), index=found)
+                 if found is not None else None)
+            if f:
+                add = f
+                counts['found'] += 1
+                found_refs.append(key)
+            else:
+                missing.append(find_models.NO_MODEL + name)
         out.append(board_text[last:start])
         pos = 0
         for m, real in sorted(subs, key=lambda s: s[0].start()):
             out.append(fp[pos:m.start()] + m.group(1) + real.replace('\\', '/') + m.group(3))
             pos = m.end()
-        out.append(fp[pos:])
+        tail = fp[pos:]
+        if add:     # the found model, at the footprint's origin, in its own block
+            tail = (tail[:-1].rstrip() + f'\n\t\t(model "{add}"\n\t\t\t(offset\n\t\t\t\t(xyz 0 0 0)\n'
+                    '\t\t\t)\n\t\t\t(scale\n\t\t\t\t(xyz 1 1 1)\n\t\t\t)\n\t\t\t(rotate\n'
+                    '\t\t\t\t(xyz 0 0 0)\n\t\t\t)\n\t\t)\n\t)')
+        out.append(tail)
         last = end
     out.append(board_text[last:])
     return ''.join(out), counts, missing, found_refs

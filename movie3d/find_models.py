@@ -34,7 +34,10 @@ movie itself never runs an agent.
         the recorded answers.
 
 KEY is the model's file name without its extension, in lower case (the
-`key` `missing` prints), so two boards naming one file share the answer.
+`key` `missing` prints), so two boards naming one file share the answer. A
+part whose footprint names no model at all is listed too, keyed `fp-` and
+its footprint's name; the model recorded for it is placed at the
+footprint's origin.
 The answers and the files live in movie3d/cache/found/ (gitignored). The
 page checks that a found model sits on its footprint and keeps the box when
 it does not (page/movie3d.mjs `loadModels`); make_movie names those parts.
@@ -64,6 +67,23 @@ _MODEL_RE = re.compile(r'\(model\s+"([^"]+)"')
 def model_key(path):
     """A model's key: its file name without extension, lower case."""
     return os.path.splitext(os.path.basename(path.replace('\\', '/')))[0].lower()
+
+
+#: how models.stage_models names a part whose footprint names no model at
+#: all: this prefix and the footprint's library name
+NO_MODEL = 'no model: '
+
+
+def footprint_key(name):
+    """The key of the model for a footprint that names none: `fp-` and its
+    name without the library nickname, lower case."""
+    return 'fp-' + name.split(':')[-1].lower()
+
+
+def _key_of(entry):
+    """The key of one `missing` entry: a model path, or NO_MODEL + a
+    footprint name."""
+    return footprint_key(entry[len(NO_MODEL):]) if entry.startswith(NO_MODEL) else model_key(entry)
 
 
 def _index_path(cache):
@@ -110,14 +130,19 @@ def describe_missing(board_text, missing):
     from kicad_parser import iter_footprint_blocks
     want = {}
     for p in missing:
-        w = want.setdefault(model_key(p), {'key': model_key(p), 'referenced_as': [], 'parts': []})
-        if p not in w['referenced_as']:
-            w['referenced_as'].append(p)
+        k = _key_of(p)
+        w = want.setdefault(k, {'key': k, 'referenced_as': [], 'parts': []})
+        shown = '(its footprint names no model)' if p.startswith(NO_MODEL) else p
+        if shown not in w['referenced_as']:
+            w['referenced_as'].append(shown)
     for _s, _e, text, raw, key in iter_footprint_blocks(board_text):
-        keys = {model_key(p) for p in _MODEL_RE.findall(text)} & set(want)
+        fp = re.match(r'\(footprint\s+"([^"]+)"', text)
+        keys = {model_key(p) for p in _MODEL_RE.findall(text)}
+        if fp and not keys:
+            keys = {footprint_key(fp.group(1))}
+        keys &= set(want)
         if not keys:
             continue
-        fp = re.match(r'\(footprint\s+"([^"]+)"', text)
         layer = re.search(r'\(layer\s+"([^"]+)"', text)
         descr = _prop(text, 'Description')
         if not descr:
@@ -162,7 +187,9 @@ _GENERIC = {'smd', 'tht', 'mm', 'vertical', 'horizontal', 'metric', 'handsolder'
             'value', 'and', 'the', 'with', 'for'}
 #: a footprint's spelling -> the library folders' spelling
 _ALIASES = {'sw': 'switch', 'pinheader': 'pinheader', 'pinsocket': 'pinsocket', 'led': 'led',
-            'xtal': 'crystal', 'osc': 'oscillator', 'jst': 'jst', 'ic': 'package'}
+            'xtal': 'crystal', 'osc': 'oscillator', 'jst': 'jst', 'ic': 'package',
+            'vqfn': 'qfn', 'wqfn': 'qfn', 'uqfn': 'qfn', 'tqfn': 'qfn', 'vson': 'son', 'wson': 'son',
+            'tssop': 'so', 'msop': 'so', 'soic': 'so', 'ssop': 'so'}
 
 
 def _words(s):
@@ -212,7 +239,8 @@ def missing_report(board, kicad_cli=None, retry=False):
         if e and e.get('status') == 'none' and not retry:
             skipped.append({'key': k, 'note': e.get('note', '')})
             continue
-        out.append(dict(w, library_near=near_names(k, lib), library_folders=library_folders(w, root),
+        near = near_names(k[3:] if k.startswith('fp-') else k, lib)
+        out.append(dict(w, library_near=near, library_folders=library_folders(w, root),
                         **({'previously': e.get('note', '')} if e else {})))
     return {'board': board_hints(text, board), 'library_root': root, 'missing': out,
             'not_found_before': skipped}
