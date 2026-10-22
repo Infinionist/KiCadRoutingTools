@@ -28,6 +28,9 @@ const PAD_T = 0.04;
 // frame it goes before the board or after it by which face the camera sees
 // (orderBySide), which turns over when the board does.
 const BOARD_ORDER = 6, NEAR = 10;
+// a fixed part's ghost, its depth only: drawn just before the ghost itself
+// (loadModels), and see-through so it is drawn in the board's pass, not before it
+const GHOST_DEPTH = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: true, transparent: true });
 function sided(o, order, side) {
   o.renderOrder = order + (side > 0 ? NEAR : 0);     // seen from above (a seed grid's clones keep it)
   S.sided.push([o, order, side]);
@@ -257,6 +260,22 @@ async function loadModels(url, sc) {
         part.grp.remove(clone);
         misfit.push(part.P.ref);
         return;
+      }
+      if (part.P.fixed) {
+        // a ghost is dozens of overlapping see-through meshes, which three
+        // sorts by their origins every frame: as the camera orbits, two at
+        // nearly one depth swap places and the blend flashes (tigard's J1).
+        // Its depth drawn first, unseen, lets only its front surface blend:
+        // one shell, the same every frame
+        const front = clone.clone(true);
+        front.traverse((c) => {
+          if (!c.isMesh) return;
+          c.material = GHOST_DEPTH;
+          c.castShadow = false;
+          c.receiveShadow = false;
+          sided(c, 2.5, part.up);
+        });
+        part.grp.add(front);
       }
       if (part.boxed) part.grp.remove(part.boxed);
       n += 1;
