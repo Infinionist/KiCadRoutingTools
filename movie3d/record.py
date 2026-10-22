@@ -65,6 +65,13 @@ DRAWN_THICKNESS = 0.8
 SWEEP = 20.0        # the camera orbits this far either side of its base azimuth over the movie
 ELEV = 46.0         # camera elevation, deg
 TALL = 0.9          # mm: a body this tall or taller can hide the parts behind it
+#: The board's opacity, all film: see-through, so the back's parts, their
+#: airwires and the back's copper show through it.
+BOARD_ALPHA = 0.55
+RISE_S = 0.6        # seconds the board takes to rise off the table before it turns over (and to settle)
+TURN_S = 1.6        # seconds each half turn takes
+BOTTOM_S = 2.0      # seconds the board holds with its bottom up
+SETTLE_S = 1.0      # seconds on the board's top again, at the end
 
 #: Body heights (mm) by footprint name, then by reference prefix. A stand-in:
 #: the board file carries no heights the parser reads.
@@ -240,7 +247,7 @@ class Recorder(Story):
         self.scene = {
             'thickness': round(self.d, 4), 'real_thickness': round(real, 4), 'table': TABLE, 'bounds': [bx0, by0, bx1, by1],
             'outline': outline, 'cutouts': cutouts, 'parts': parts, 'nets': nets, 'key': key,
-            'glb': None,
+            'glb': None, 'board_alpha': BOARD_ALPHA,
             # the poses the models are exported at: the page re-poses each by
             # F(now) F(export)^-1
             'export_poses': {r: [pcb.footprints[r].x, pcb.footprints[r].y,
@@ -332,13 +339,34 @@ class Recorder(Story):
                **self.extra, **extra}
         self.frames.extend([rec] * times)
 
-    def copper_shot(self, label, times=1, alpha=None, **extra):
+    def copper_shot(self, label, times=1, **extra):
         """A frame of a flow movie's routing half (route3d.py): the placed
-        board, its copper at the current tick, no airwires, the board
-        see-through."""
-        from route3d import ROUTE_ALPHA
+        board, its copper at the current tick, no airwires."""
         self.shot(label, times=times, poses=getattr(self, 'route_poses', None), tick=self.cop.tick,
-                  air=False, alpha=ROUTE_ALPHA if alpha is None else round(alpha, 4), **extra)
+                  air=False, **extra)
+
+    def turn_over(self, shot=None):
+        """The film's end: the board rises off the table, turns over about
+        the screen's horizontal, holds with its bottom up, turns on round to
+        its top and settles. `shot` makes each frame (a flow movie's is
+        copper_shot). A row's `flip` is [the turn, deg; how far the board
+        has risen, 0-1]; finish() adds the axis (the camera's azimuth as the
+        turn starts) and the page does the geometry -- how high the board
+        must rise to clear the table, and a view that holds the whole turn."""
+        shot = shot or self.shot
+        last = self.frames[-1]['label'] if self.frames else ''
+        n = lambda s: max(1, int(round(s * self.a.fps)))  # noqa: E731
+        rise, turn = n(RISE_S), n(TURN_S)
+        for i in range(1, rise + 1):
+            shot("turning the board over", flip=[0.0, round(_ease(i / rise), 4)])
+        for i in range(1, turn + 1):
+            shot("turning the board over", flip=[round(180.0 * _ease(i / turn), 3), 1.0])
+        shot("the bottom of the board", times=n(BOTTOM_S), flip=[180.0, 1.0])
+        for i in range(1, turn + 1):
+            shot("back to the top", flip=[round(180.0 + 180.0 * _ease(i / turn), 3), 1.0])
+        for i in range(1, rise + 1):
+            shot("back to the top", flip=[0.0, round(1.0 - _ease(i / rise), 4)])
+        shot(last, times=n(SETTLE_S))
 
     # -- the run's hooks, the 3D way ---------------------------------------------
     def on_scatter(self, seed, clustered=False, anchored=False):
@@ -433,6 +461,8 @@ class Recorder(Story):
         cost = 0.0
         for k in range(getattr(self, 'anneal_from', None) or 0, n, step):
             f = self.frames[k]
+            if 'flip' in f:         # the board turning over: the camera looks up at whatever faces it
+                continue
             az = math.radians(base + SWEEP * (2.0 * k / max(1, n - 1) - 1.0))
             ux, uy = math.sin(az), math.cos(az)        # board plane, toward the camera
             p = f['p']
@@ -544,11 +574,16 @@ class Recorder(Story):
         if grid:
             at = next(i for i, f in enumerate(self.frames) if 'gv' in f)
             boxes = self._lay_grid(grid, az[at])
+        # the board turns over about the screen's horizontal as the turn
+        # starts, held for the whole turn while the camera orbits on
+        turn_az = next((az[i] for i, f in enumerate(self.frames) if 'flip' in f), None)
         out = []
         for i, f in enumerate(self.frames):
             g = dict(f)
             g['az'] = az[i]
             g['el'] = ELEV
+            if 'flip' in g:
+                g['flip'] = list(g['flip']) + [turn_az]
             if 'gv' in g:       # a grid frame's view: the zoom out to the seeds, or back in
                 kind, t = g.pop('gv')
                 a, b = ((boxes['filmed'], boxes['grid']) if kind == 'out' else
@@ -653,6 +688,7 @@ def record(a, rest):
     if rec.scene is None:
         return rc, None
     rec.placed(rc, max(1, int(round(END_S * a.fps))))
+    rec.turn_over()
     return rc, write(a, rec)
 
 

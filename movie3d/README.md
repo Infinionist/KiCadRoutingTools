@@ -52,8 +52,9 @@ python3 -X utf8 movie3d/make_movie.py BOARD OUT.kicad_pcb \
 BOARD and OUT come first. Every argument other than make_movie's own is passed
 to `place_simple.py`. OUT is place_simple's placed board, the same placement
 place_simple gives for that seed. The movie is written to OUT's name +
-`_3d.mp4`, or to `--movie`. Three stills go beside it: `_start.png`,
-`_anneal.png` (mid-anneal) and `_final.png`. The JSON and the frames go to
+`_3d.mp4`, or to `--movie`. Four stills go beside it: `_start.png`,
+`_anneal.png` (mid-anneal), `_bottom.png` (the board turned over) and
+`_final.png`. The JSON and the frames go to
 OUT's name + `_movie3d/` (or `--work`).
 
 With place_movie's flow and routing (a stress-corpus board whose recorded
@@ -92,10 +93,10 @@ python3 -X utf8 movie3d/make_movie.py kicad_files/tigard.kicad_pcb movie3d/out/t
     --groups docs/examples/tigard.groups.json --intent movie3d/out/tigard.intent.json --seed 0
 ```
 
-On an M-series Mac this takes about 65 s: record 16 s (place_simple's own
-anneal 12 s, the model export 4 s the first time), render 48 s (218 frames at
-216 ms each, SwiftShader), encode 1 s. The result is 18 s of movie at 12 fps,
-4.6 MB. 78 of the 89 parts are drawn from their KiCad models; the console
+On an M-series Mac this takes about 90 s: record 17 s (place_simple's own
+anneal 13 s, the model export 4 s the first time), render 70 s (306 frames at
+225 ms each, SwiftShader), encode 1 s. The result is 25.5 s of movie at 12 fps,
+4.4 MB. 78 of the 89 parts are drawn from their KiCad models; the console
 names the rest.
 
 Own options: `--movie`, `--fps` (12), `--width`/`--height` (1000x560),
@@ -109,7 +110,9 @@ far each model's colours go toward its group's colour, 0.4), `--work`,
 
 - **The board**: its outline extruded, standing above a table. It is drawn at
   most 0.8 mm thick (`DRAWN_THICKNESS`): at its real 1.6 mm the slab looked
-  like a block next to 0402 parts.
+  like a block next to 0402 parts. It is see-through (55% opaque,
+  `BOARD_ALPHA`), so the back's parts, their airwires and the back's copper
+  show through it, dimmed.
 - **Each part**:
   - its pads, with dark drills;
   - its courtyard, as a plate lightly tinted in its group's colour;
@@ -145,6 +148,10 @@ The steps, in order:
    moves read as motion rather than cuts.
 6. The best placement: the parts go back to the best placement the anneal saw.
 7. Placed, held for 3 s.
+8. Turned over: the board rises off the table, turns over about the screen's
+   horizontal, holds 2 s with its bottom up, turns on round to its top and
+   settles. The camera closes in on the board face up and face down, and
+   steps back while it turns.
 
 Over the whole movie the camera orbits slowly, 20 degrees either side of a
 base azimuth, at 46 degrees of elevation. Each frame is fitted to the board,
@@ -153,23 +160,22 @@ or to the board and the piles.
 With `--route`, the placed seed's routes follow, as place_movie's 2D flow
 plays them:
 
-1. The board turns see-through (55% opaque), so the back's copper shows
-   through it.
-2. The fast route plays: one router event per frame. New copper is lit white
+1. The fast route plays: one router event per frame. New copper is lit white
    (cyan when the router restored it). A ripped track turns magenta, then
    goes; the 2D movie uses red, but F.Cu is red here. Whatever else a step
    changed (a pour, the fanout, a step with no trace) then lands net by net.
-3. The camera pulls back to every judged seed's board side by side, each at
+2. The camera pulls back to every judged seed's board side by side, each at
    its placement with its fast route and labelled with its score (blocking |
    vias | mm). The grid lies along the camera's screen axes, in the
    columns x rows that fill the frame best (`record.Recorder._lay_grid`).
-4. The best seed is framed in gold, blinking as the 2D movie's box does, and
+3. The best seed is framed in gold, blinking as the 2D movie's box does, and
    its label says BEST.
-5. While the camera is pulled back, the live board becomes the best seed's,
+4. While the camera is pulled back, the live board becomes the best seed's,
    unseen, because its copy in the grid looks the same. The camera flies in
    to it, and the other seeds' boards go.
-6. Its fast route is cleared, net by net.
-7. Its full route plays the same way.
+5. Its fast route is cleared, net by net.
+6. Its full route plays the same way.
+7. The board turns over, as at the end of a placement movie.
 
 Copper is drawn per layer in the theme's layer colours, vias as barrels,
 pours as tinted flats clipped to the board.
@@ -235,14 +241,12 @@ view across the board's long side wins a near tie.
 
 Also reused: stage3d's kicad-cli GLB model export and its re-pose,
 `F(now) · F(export)⁻¹`, and its copper-lifetime idea and track quads. Its
-Blender path and its board flip were not carried over.
+Blender path was not carried over, and the turn over is this page's own.
 
 ## Limits
 
 - The seed grid shows each judged seed's fast route as it ended, not played.
   Only the filmed seed's and the best seed's routes play.
-- Back-side copper shows only through the see-through board, and faintly. The
-  board does not turn over, as stage3d's did.
 - A part whose model is missing from the installed library is a box with a
   guessed height. On ch32, U3's `QFN-20-1EP_3x3mm_P0.45mm` is not in KiCad
   10's library. The occlusion measure uses the guessed heights even for parts

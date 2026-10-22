@@ -86,6 +86,7 @@ def flow(a, rest):
         return rc or 2, None
     rec.placed(rc, rec.hold)
     film_routes(rec, work, judged, scores, best, full, filmed, budget=a.route_frames)
+    rec.turn_over(rec.copper_shot)
     subprocess.run([sys.executable, os.path.join(record.REPO, 'py_router', 'copy_board.py'),
                     os.path.join(work, f's{best}.kicad_pcb'), out], check=False, capture_output=True)
     print(f"make_movie: {out} = seed {best}; its full route in {os.path.join(work, f'full_s{best}', 'out')}")
@@ -212,6 +213,9 @@ def main(argv=None):
         seeds = [i for i, lab in enumerate(labels) if lab.startswith('the best: seed')]
         if seeds:
             stills['seeds'] = seeds[0]
+    bottom = [i for i, lab in enumerate(labels) if lab == 'the bottom of the board']
+    if bottom:
+        stills['bottom'] = bottom[len(bottom) // 2]
     stills['final'] = len(labels) - 1
     base = os.path.splitext(movie)[0]
     for name, i in stills.items():

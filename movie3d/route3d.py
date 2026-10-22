@@ -209,11 +209,7 @@ def play_chain(rec, cop, boards, first=None, *, prefix='', first_label='input', 
                             + ', '.join(names[:3]) + (f" +{len(names) - 3}" if len(names) > 3 else ''))
 
 
-FADE = 6            # frames the board takes to turn see-through for the copper
-ROUTE_ALPHA = 0.55  # the board's opacity while the copper plays: the back's copper shows through
-
-
-ZOOM = 14           # frames of the camera pulling back to the seeds, and flying back in
+ZOOM = 14          # frames of the camera pulling back to the seeds, and flying back in
 
 
 def film_routes(rec, work, judged, scores, best, full, filmed, budget=0):
@@ -234,10 +230,7 @@ def film_routes(rec, work, judged, scores, best, full, filmed, budget=0):
     cop = Copper(layers, rec.scene['outline'], rec.scene['cutouts'])
     rec.cop = cop
     hold = rec.hold
-    # the board turns see-through, so the copper on its back will show
-    for i in range(1, FADE + 1):
-        rec.copper_shot(f"seed {filmed} placed: routing it",
-                        alpha=1.0 - (1.0 - ROUTE_ALPHA) * _ease(i / FADE))
+    rec.copper_shot(f"seed {filmed} placed: routing it", times=hold)
     first, boards = _chain(work, f'fast_s{filmed}')
     play_chain(rec, cop, boards, first, prefix='fast route | ',
                first_label=f'placed, seed {filmed}', budget=budget)

@@ -19,6 +19,20 @@ const rgb = (c) => new THREE.Color().setRGB(c[0] / 255, c[1] / 255, c[2] / 255, 
 const css = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
 const PAD_T = 0.04;
 
+// The board is see-through (scene `board_alpha`, or a frame's `alpha`), and
+// it dims exactly what lies behind it: the opaque scene is drawn first, then
+// whatever is see-through behind the board, then the board, then whatever
+// is see-through in front of it. Each see-through thing that writes no depth
+// (a courtyard plate, a fixed part's ghost, a pour) is in S.sided with its
+// draw order and the face it lies on (+1 top, -1 bottom, 0 inside); every
+// frame it goes before the board or after it by which face the camera sees
+// (orderBySide), which turns over when the board does.
+const BOARD_ORDER = 6, NEAR = 10;
+function sided(o, order, side) {
+  o.renderOrder = order + (side > 0 ? NEAR : 0);     // seen from above (a seed grid's clones keep it)
+  S.sided.push([o, order, side]);
+}
+
 // ---------------------------------------------------------------- board
 function buildBoard(sc) {
   const d = sc.thickness, C = sc.colors;
@@ -27,11 +41,10 @@ function buildBoard(sc) {
   const geo = new THREE.ExtrudeGeometry(shape, { depth: d, bevelEnabled: false, curveSegments: 24 });
   geo.rotateX(Math.PI / 2);           // shape (x, y) -> three (x, z); depth -> -y
   geo.translate(0, d, 0);             // y in [0, d]
-  // see-through while the copper is played (a frame's `alpha`), so the
-  // back's copper shows through it; always `transparent` so a frame only
-  // changes its opacity
+  // see-through, so the back's parts, airwires and copper show through it
   const board = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: rgb(C.board), roughness: 0.85,
                                                                      metalness: 0.0, transparent: true }));
+  board.renderOrder = BOARD_ORDER;
   S.boardMat = board.material;
   S.boardMesh = board;
   board.receiveShadow = true;
@@ -133,7 +146,7 @@ function buildParts(sc, root) {
     const pm = new THREE.Mesh(plate, new THREE.MeshBasicMaterial({
       color: col, transparent: true, opacity: P.fixed ? 0.1 : (sc.plate ?? 0.2), depthWrite: false }));
     pm.position.set((cx0 + cx1) / 2, up * 0.006, (cy0 + cy1) / 2);
-    pm.renderOrder = 1;
+    sided(pm, 1, up);
     grp.add(pm);
     const line = rectLoop(P.court, up * 0.012,
                           new THREE.LineBasicMaterial({ color: col.clone().lerp(board, soft) }));
@@ -147,7 +160,7 @@ function buildParts(sc, root) {
       const body = new THREE.Mesh(bg, new THREE.MeshStandardMaterial({
         color: P.fixed ? rgb([150, 150, 156]) : col.clone().lerp(grey, soft), roughness: 0.55, metalness: 0.05,
         transparent: P.fixed, opacity: P.fixed ? 0.32 : 1.0, depthWrite: !P.fixed }));
-      if (P.fixed) body.renderOrder = 3;
+      if (P.fixed) sided(body, 3, up);
       body.position.set((x0 + x1) / 2, up * (h / 2 + PAD_T * 0.5), (y0 + y1) / 2);
       body.castShadow = true;
       body.receiveShadow = true;
@@ -233,7 +246,7 @@ async function loadModels(url, sc) {
         c.material = Array.isArray(c.material) ? mats : mats[0];
         c.castShadow = true;
         c.receiveShadow = !part.P.fixed;
-        if (part.P.fixed) c.renderOrder = 3;
+        if (part.P.fixed) sided(c, 3, part.up);
       });
       part.grp.add(clone);
       if (part.boxed) part.grp.remove(part.boxed);
@@ -309,7 +322,7 @@ function pourMesh(z, C, d, n) {
   const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
     color: rgb(C.board).lerp(rgb(C.layers[z.layer] || C.pad), 0.5), transparent: true, opacity: 0.5,
     side: THREE.DoubleSide, depthWrite: false }));
-  m.renderOrder = 1;
+  sided(m, 1, z.layer === 0 ? 1 : (z.layer === n - 1 ? -1 : 0));
   return m;
 }
 
@@ -527,6 +540,29 @@ function setAir(fr) {
 
 // ---------------------------------------------------------------- camera
 const FOV = 30;
+
+// the camera that fits `corners` from direction `dir`, from a first guess:
+// centre what is shown, then scale it to fill the frame with a margin
+function fitTo(corners, target, dist, dir) {
+  const cam = S.cam, tanh = Math.tan(rad(FOV / 2));
+  for (let k = 0; k < 8; k++) {
+    cam.position.copy(target).addScaledVector(dir, dist);
+    cam.lookAt(target);
+    cam.updateMatrixWorld(true);
+    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+    for (const c of corners) {
+      const p = c.clone().project(cam);
+      mnx = Math.min(mnx, p.x); mxx = Math.max(mxx, p.x); mny = Math.min(mny, p.y); mxy = Math.max(mxy, p.y);
+    }
+    const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
+    const upv = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
+    const hh = dist * tanh, hw = hh * cam.aspect;
+    target.addScaledVector(right, (mnx + mxx) / 2 * hw).addScaledVector(upv, (mny + mxy) / 2 * hh);
+    dist *= Math.max((mxx - mnx) / 2 / 0.92, (mxy - mny) / 2 / 0.86);
+  }
+  return { target, dist };
+}
+
 function fitCamera(fr) {
   const [x0, y0, x1, y1, lo, hi] = fr.view;
   const cam = S.cam, d = S.sc.thickness;
@@ -537,24 +573,20 @@ function fitCamera(fr) {
   const corners = [];
   const ground = fr.pts || [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
   for (const [x, z] of ground) for (const y of [lo, hi]) corners.push(new THREE.Vector3(x, y, z));
-  const target = new THREE.Vector3((x0 + x1) / 2, d / 2, (y0 + y1) / 2);
-  let dist = 2 * Math.hypot(x1 - x0, y1 - y0);
-  const tanh = Math.tan(rad(FOV / 2));
-  for (let k = 0; k < 8; k++) {
-    cam.position.copy(target).addScaledVector(dir, dist);
-    cam.lookAt(target);
-    cam.updateMatrixWorld(true);
-    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
-    for (const c of corners) {
-      const p = c.clone().project(cam);
-      mnx = Math.min(mnx, p.x); mxx = Math.max(mxx, p.x); mny = Math.min(mny, p.y); mxy = Math.max(mxy, p.y);
-    }
-    // centre what is shown, then scale it to fill the frame with a margin
-    const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
-    const upv = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
-    const hh = dist * tanh, hw = hh * cam.aspect;
-    target.addScaledVector(right, (mnx + mxx) / 2 * hw).addScaledVector(upv, (mny + mxy) / 2 * hh);
-    dist *= Math.max((mxx - mnx) / 2 / 0.92, (mxy - mny) / 2 / 0.86);
+  let { target, dist } = fitTo(corners, new THREE.Vector3((x0 + x1) / 2, d / 2, (y0 + y1) / 2),
+                               2 * Math.hypot(x1 - x0, y1 - y0), dir);
+  let r = 0.6 * Math.hypot(x1 - x0, y1 - y0) + 4;
+  if (S.flip) {
+    // turning over: the board as it is posed, face up or face down; mid
+    // turn, a view that holds the whole turn (the camera steps back to turn
+    // it); from the frame's own view as the board rises
+    const F = S.flip, b = fitTo(F.pts, F.centre.clone(), dist, dir);
+    const n = fitTo(F.now, F.nowCentre.clone(), dist, dir);
+    b.target.lerp(n.target, F.w);
+    b.dist *= Math.pow(n.dist / b.dist, F.w);
+    target.lerp(b.target, F.rise);
+    dist *= Math.pow(b.dist / dist, F.rise);
+    r = Math.max(r, F.reach + F.lift + 4);
   }
   cam.position.copy(target).addScaledVector(dir, dist);
   cam.lookAt(target);
@@ -563,9 +595,65 @@ function fitCamera(fr) {
   S.sun.position.copy(target).add(new THREE.Vector3(-0.45, 1.0, 0.35).multiplyScalar(4 * dist));
   S.sun.target.position.copy(target);
   S.sun.target.updateMatrixWorld();
-  const sh = S.sun.shadow.camera, r = 0.6 * Math.hypot(x1 - x0, y1 - y0) + 4;
+  const sh = S.sun.shadow.camera;
   sh.left = -r; sh.right = r; sh.top = r; sh.bottom = -r; sh.near = 0.1; sh.far = 12 * dist;
   sh.updateProjectionMatrix();
+}
+
+// ---------------------------------------------------------------- turning over
+// A frame's `flip` [deg, rise, az]: the board, and everything on it, turned
+// `deg` about the screen's horizontal at azimuth `az`, through the board's
+// centre, after rising `rise` (0-1) of the way it must to turn clear of the
+// table. The turn's view holds the whole turn, so the camera does not breathe.
+function setFlip(fr) {
+  S.root.quaternion.identity();
+  S.flip = null;
+  if (!fr.flip) return;
+  const [deg, rise, az] = fr.flip;
+  const sc = S.sc, d = sc.thickness, [bx0, by0, bx1, by1] = sc.bounds;
+  const off = S.root.position.clone();               // the grid cell it stands in
+  const c = new THREE.Vector3((bx0 + bx1) / 2, d / 2, (by0 + by1) / 2);
+  const axis = new THREE.Vector3(Math.cos(rad(az)), 0, -Math.sin(rad(az)));
+  // what turns: the board and the parts standing on it, as this frame poses them
+  S.root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(S.boardMesh);
+  S.parts.forEach((part, i) => {
+    const h = fr.p[i][3];
+    if (Math.abs(h - (part.up > 0 ? d : 0)) < 1e-3) box.expandByObject(part.grp);
+  });
+  box.translate(off.clone().negate());
+  const corners = [];
+  for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y])
+    for (const z of [box.min.z, box.max.z]) corners.push(new THREE.Vector3(x, y, z).sub(c));
+  // a corner turns in the vertical plane across the axis, at its distance from it
+  let reach = 0;
+  for (const q of corners) reach = Math.max(reach, q.clone().addScaledVector(axis, -q.dot(axis)).length());
+  const lift = Math.max(0, reach - d / 2 + sc.table + 0.5);
+  const q = new THREE.Quaternion().setFromAxisAngle(axis, rad(deg));
+  S.root.quaternion.copy(q);
+  const up = new THREE.Vector3(0, lift, 0);
+  S.root.position.copy(off).add(c).sub(c.clone().applyQuaternion(q)).addScaledVector(up, rise);
+  // the turn's view: every corner at every 15 degrees, fully risen; and the
+  // corners as this frame poses them
+  const pts = [], at = off.clone().add(c).add(up), t = new THREE.Quaternion();
+  for (let a = 0; a < 360; a += 15) {
+    t.setFromAxisAngle(axis, rad(a));
+    for (const k of corners) pts.push(k.clone().applyQuaternion(t).add(at));
+  }
+  const nowCentre = off.clone().add(c).addScaledVector(up, rise);
+  const now = corners.map((k) => k.clone().applyQuaternion(q).add(nowCentre));
+  // the posed view face up or face down, the turn's view on edge
+  const w = Math.cos(rad(deg)) ** 2;
+  S.flip = { pts, centre: at, now, nowCentre, w, rise, lift, reach };
+}
+
+function orderBySide() {
+  // which face the camera sees: the board's top, as this frame turns it
+  const n = new THREE.Vector3(0, 1, 0).applyQuaternion(S.root.quaternion);
+  const [bx0, by0, bx1, by1] = S.sc.bounds;
+  const c = S.root.localToWorld(new THREE.Vector3((bx0 + bx1) / 2, S.sc.thickness / 2, (by0 + by1) / 2));
+  const top = n.dot(S.cam.position.clone().sub(c)) > 0;
+  for (const [o, order, side] of S.sided) o.renderOrder = order + (side !== 0 && (side > 0) === top ? NEAR : 0);
 }
 
 // ---------------------------------------------------------------- key
@@ -589,6 +677,7 @@ window.m3dInit = async function (o) {
   const sc = await (await fetch(o.sceneUrl)).json();
   const tl = await (await fetch(o.timelineUrl)).json();
   S.sc = sc; S.tl = tl;
+  S.sided = [];
   document.body.style.background = css(sc.colors.ground);
   const W = o.width, H = o.height;
   const kh = buildKey(sc);
@@ -636,8 +725,10 @@ window.m3dFrame = function (i) {
   setAir(fr);
   setCopper(fr);
   setGrid(fr);
-  S.boardMat.opacity = fr.alpha ?? 1.0;
+  setFlip(fr);
+  S.boardMat.opacity = fr.alpha ?? S.sc.board_alpha ?? 1.0;
   fitCamera(fr);
+  orderBySide();
   document.getElementById('cap').textContent = fr.label;
   S.renderer.render(S.world, S.cam);
   return true;
