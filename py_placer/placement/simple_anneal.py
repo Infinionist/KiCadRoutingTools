@@ -395,27 +395,43 @@ class Annealer:
         return fix
 
     def _pins(self, mine):
-        """Courtyard over a pin frame's drilled holes (mm2), the holes
-        check_assembly's pin_in_courtyard tests (`QuenchState.
-        pin_hole_boxes`), on either face: each (frame, part) pair with a part
-        in `mine` once -- a frame in `mine` with every part, any other frame
-        with the parts in `mine`."""
+        """A pin frame's pins (mm2): courtyard over its drilled holes, the
+        holes check_assembly's pin_in_courtyard tests (`QuenchState.
+        pin_hole_boxes`), on either face; and pad copper over its pads' copper
+        grown by the clearance (`QuenchState.pin_copper_boxes`), on a face
+        both have copper on, the pad clearance the legality pass after the
+        anneal enforces. Each (frame, part) pair with a part in `mine` once --
+        a frame in `mine` with every part, any other frame with the parts in
+        `mine`."""
         P, tot, mset = self.st.parts, 0.0, set(mine)
         for f in self.frames:
             holes = self.st.pin_hole_boxes(f)
-            if not holes:
+            pads = self.st.pin_copper_boxes(f)
+            if not holes and not pads:
                 continue
-            H = (min(h[0] for h in holes), min(h[1] for h in holes),
-                 max(h[2] for h in holes), max(h[3] for h in holes))
+            every = list(holes) + [q[:4] for q in pads]
+            H = (min(h[0] for h in every), min(h[1] for h in every),
+                 max(h[2] for h in every), max(h[3] for h in every))
             for b in (self.names if f in mset else mine):
                 if b in self.containers:
                     continue
-                c = P[b].rect()
+                pb = P[b]
+                c = pb.rect()
                 if c[2] <= H[0] or H[2] <= c[0] or c[3] <= H[1] or H[3] <= c[1]:
                     continue
                 for h in holes:
                     ox = min(c[2], h[2]) - max(c[0], h[0])
                     oy = min(c[3], h[3]) - max(c[1], h[1])
+                    if ox > 0 and oy > 0:
+                        tot += ox * oy
+                k = pb.padbox()
+                if k is None:
+                    continue
+                for q in pads:
+                    if not (q[4] & pb.sides):
+                        continue
+                    ox = min(k[2], q[2]) - max(k[0], q[0])
+                    oy = min(k[3], q[3]) - max(k[1], q[1])
                     if ox > 0 and oy > 0:
                         tot += ox * oy
         return tot

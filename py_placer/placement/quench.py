@@ -1413,6 +1413,7 @@ class QuenchState:
         self.pin_frame_refs = {r for r, k in self.container_kinds.items()
                                if k == 'pin_frame'}
         self._pin_census_obj = None
+        self._pin_copper = {}
         if self.container_refs:
             print(f"  container footprint(s) (>= {CONTAINER_RATIO:.0%} of "
                   f"the board, a pin frame or an outline -- frame, not "
@@ -1675,6 +1676,41 @@ class QuenchState:
         p = self.parts[frame]
         return [hb for _n, _s, hb, _k in
                 self._pin_census_obj._frame_holes(frame, (p.x, p.y, p.rot))]
+
+    def pin_copper_boxes(self, frame) -> list:
+        """[(x0, y0, x1, y1, sides)] of pin frame `frame`'s copper pads at
+        its current pose, each grown by the clearance: what place_simple's
+        anneal keeps a part's pad copper off, beside the holes
+        (`pin_hole_boxes`). A castellated pin's copper reaches well past its
+        hole -- a 2.07 x 1.6 mm edge pad and a 1.6 mm ring around 1.1 mm
+        drills -- so pricing the holes alone let a capacitor's pads settle on
+        a pin's copper with the hole clear, and the legality pass after the
+        anneal found the capacitor no legal pose in a crowded corner."""
+        p = self.parts[frame]
+        key = (frame, p.x, p.y, p.rot)
+        hit = self._pin_copper.get(key)
+        if hit is not None:
+            return hit
+        c = self.clearance
+        out = []
+        for q in legality.pads_at_pose(self.pcb_data.footprints[frame],
+                                       (p.x, p.y, p.rot)):
+            if q.pad_type == 'np_thru_hole':
+                continue                    # a hole, priced by pin_hole_boxes
+            if q.pad_type == 'thru_hole':
+                sides = legality.BOTH_SIDES
+            else:
+                lay = [str(x) for x in (q.layers or ())]
+                sides = frozenset(s for s in ('F', 'B')
+                                  if f'{s}.Cu' in lay or '*.Cu' in lay)
+            if not sides:
+                continue
+            cx, cy, hx, hy = legality.pad_copper_box(q)
+            out.append((cx - hx - c, cy - hy - c, cx + hx + c, cy + hy + c, sides))
+        if len(self._pin_copper) > 64:
+            self._pin_copper = {}
+        self._pin_copper[key] = out
+        return out
 
     def _pin_hits_at(self, ref, x, y, rot, poses=None) -> list:
         """Every GATING pin_in_courtyard pair `ref` makes at this pose.
