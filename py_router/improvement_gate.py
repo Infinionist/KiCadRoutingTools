@@ -295,6 +295,37 @@ def gate_verdict(cmp: Dict) -> str:
     return 'accept'
 
 
+def verified_pour_compare(before: Dict[int, Tuple[bool, int]],
+                          after: Dict[int, Tuple[bool, int]],
+                          net_name: callable,
+                          kicad_before: Dict[int, Tuple[bool, int]],
+                          kicad_after: Dict[int, Tuple[bool, int]],
+                          zone_net_ids) -> Tuple[Dict, str]:
+    """(cmp, verdict) for route.py's verified-pour re-audit: the board the
+    in-run finalize's oracle VERIFIED (`before`, its connectivity map)
+    against the board after the final reconciliation and the re-audit's own
+    weld (`after`).
+
+    The pours KiCad graded (`kicad_before` / `kicad_after`, {net id:
+    (connected, disconnected pads)}) take KiCad's word over the raster's: a
+    raster map can join fill islands KiCad's refill splits (eit_mux GND,
+    ulx3s +3V3, nrfmicro GND), so its "connected" is not evidence for a
+    pour. A pour KiCad graded on one side only is left out of both -- its
+    change is unknown. Everything else is the improvement gate's own grade,
+    and the verdict is gate_verdict's, pour-trade tie rule included: a
+    reconciliation that connected one signal by cutting a pour the weld
+    could not mend is refused."""
+    b = dict(before)
+    a = dict(after)
+    b.update(kicad_before)
+    a.update(kicad_after)
+    for nid in set(kicad_before) ^ set(kicad_after):
+        b.pop(nid, None)
+        a.pop(nid, None)
+    cmp = compare_connectivity(b, a, net_name, zone_net_ids=zone_net_ids)
+    return cmp, gate_verdict(cmp)
+
+
 def excluded_plane_attribution(before: Dict[int, Tuple[bool, int]],
                                after: Dict[int, Tuple[bool, int]],
                                net_name: callable,
