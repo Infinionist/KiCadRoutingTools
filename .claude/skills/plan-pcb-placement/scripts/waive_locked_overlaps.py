@@ -30,7 +30,7 @@ import subprocess
 import sys
 import tempfile
 
-KRT_TOOL = {'scope': ['placement', 'combined'], 'kind': 'actor'}
+KRT_TOOL = {'scope': ['placement', 'combined'], 'kind': 'instrument'}   # writes the intent, never the board
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
