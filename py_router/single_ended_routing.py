@@ -6,6 +6,7 @@ Routes individual nets using A* pathfinding on a grid obstacle map.
 from __future__ import annotations
 
 import env_knobs
+import itertools
 import math
 import time
 import numpy as np
@@ -3706,7 +3707,13 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
     # layers join the key because they change the weld points, and Phase 3's
     # per-net power config can forbid a layer Phase 1 allowed.
     _forbid = _track_forbidden_layers(config, layer_names)
-    _mk = (net_id, id(pad_components), len(pad_info), _forbid)
+    # A weld point is where the converter ENDS a track off the grid, so it
+    # must clear the board edge as a grid cell would (track_edge_point_test);
+    # the width joins both memo keys, since a per-net power config changes it.
+    from obstacle_map import track_edge_point_test
+    _edge_ok = track_edge_point_test(pcb_data, config)
+    _edge_need = round(_edge_ok.need, 6) if _edge_ok else None
+    _mk = (net_id, id(pad_components), len(pad_info), _forbid, _edge_need)
     _memo = getattr(pcb_data, '_pour_launch_memo', None)
     # The memo HOLDS pad_components (id() alone is unsafe: a freed dict's id
     # can be reused by a different grouping -- the memo's strong ref pins it).
@@ -3748,7 +3755,7 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
                    tuple(pad_components.get(_j, _j)
                          for _j in range(len(pad_info))),
                    tuple((id(z), id(m)) for z, m in _models),
-                   _forbid)
+                   _forbid, _edge_need)
             _lru = getattr(pcb_data, '_pour_launch_lru', None)
             _hit = _lru.get(_ck) if _lru is not None else None
             if _hit is not None:
@@ -3794,6 +3801,7 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
                 _depth_cache = {}
                 for _sx, _sy in _stragglers:
                     _found = []
+                    _kept = []
                     for _r in _RUNGS:
                         for _fx, _fy, _fl in _copper:
                             _d2 = (_fx - _sx) ** 2 + (_fy - _sy) ** 2
@@ -3823,10 +3831,16 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
                                 _found.append(
                                     (_d2 ** 0.5 + _FRAG_MM * _frag,
                                      _fx, _fy, _li))
-                        if _found:
+                        # A rung counts once a candidate's weld clears the
+                        # edge; tested best-first, only as far as needed.
+                        _found.sort()
+                        _kept = list(itertools.islice(
+                            (_c for _c in _found
+                             if _c[3] in _forbid or _edge_ok is None
+                             or _edge_ok(_c[1], _c[2])), _NBEST))
+                        if _kept:
                             break
-                    _found.sort()
-                    for _sc, _fx, _fy, _fl in _found[:_NBEST]:
+                    for _sc, _fx, _fy, _fl in _kept:
                         _g = coord.to_grid(_fx, _fy)
                         _k = (_g[0], _g[1], _fl)
                         if _k not in _cells_out:
@@ -3908,6 +3922,13 @@ def _pour_launch_pair_anchors(pcb_data, net_id, sources, targets,
         return [], []
     _net_pads = pcb_data.pads_by_net.get(net_id, [])
     _forbid = _track_forbidden_layers(config, layer_names)
+    # A weld ends a track off the grid: it clears the edge as a cell would
+    # (see _pour_launch_region_cells).
+    from obstacle_map import track_edge_point_test
+    _edge_ok = track_edge_point_test(pcb_data, config)
+
+    def _weld_ok(c):
+        return c[3] in _forbid or _edge_ok is None or _edge_ok(c[1], c[2])
 
     def _probe_size(fx, fy):
         for _p in _net_pads:
@@ -3963,11 +3984,14 @@ def _pour_launch_pair_anchors(pcb_data, net_id, sources, targets,
                     _frag = max(0.0, 1.0 - _dmm / _DEEP_MM)
                     _found.append((_d2 ** 0.5 + _FRAG_MM * _frag,
                                    _fx, _fy, _li))
-            if _found:
+            _found.sort()
+            if any(_weld_ok(_c) for _c in _found):
                 break
-        _found.sort()
         _out = []
-        for _sc, _fx, _fy, _li in _found:
+        for _c in _found:
+            if not _weld_ok(_c):
+                continue
+            _sc, _fx, _fy, _li = _c
             _g = coord.to_grid(_fx, _fy)
             _k = (_g[0], _g[1], _li)
             if _k in taken:

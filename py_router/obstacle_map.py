@@ -1426,6 +1426,49 @@ def add_board_edge_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
                                         track_edge_clearance, via_edge_clearance)
 
 
+def track_edge_point_test(pcb_data: PCBData, config: GridRouteConfig,
+                          track_width: Optional[float] = None):
+    """`ok(x, y)`: may a track of `track_width` END at the float point (x, y)?
+
+    The same keep-out `add_board_edge_obstacles` stamps -- board edge
+    clearance (else the track clearance) plus half the track width, off every
+    boundary it stamps: the outer outline(s), else the bounds rectangle, the
+    cut-outs and the milled inner contours -- measured exactly at the point
+    rather than at a grid cell. For a sub-cell weld the router draws from a
+    grid point it reached to a float it did not search: a pour-launch weld on
+    fill copper at the zone's edge clearance ends a track half its width
+    nearer the edge than the A* grid would ever let it go (smartknob GND
+    0.042 mm into the 0.5 mm band). None when the board has no outline."""
+    bi = pcb_data.board_info
+    rings = [o for o in (getattr(bi, 'board_outlines', None) or []) if len(o) >= 3]
+    if not rings and bi.board_outline and len(bi.board_outline) >= 3:
+        rings = [bi.board_outline]
+    if not rings and bi.board_bounds:
+        x0, y0, x1, y1 = bi.board_bounds
+        rings = [[(x0, y0), (x1, y0), (x1, y1), (x0, y1)]]
+    rings += [c for c in (bi.board_cutouts or []) if len(c) >= 3]
+    rings += [c for c in (getattr(bi, 'board_edge_contours', None) or []) if len(c) >= 3]
+    if not rings:
+        return None
+    a = np.array([p for r in rings for p in r], dtype=float)
+    b = np.array([p for r in rings for p in (list(r[1:]) + [r[0]])], dtype=float)
+    d = b - a
+    ll = np.maximum((d * d).sum(axis=1), 1e-18)
+    edge_clearance = (config.board_edge_clearance if config.board_edge_clearance > 0
+                      else config.clearance)
+    need = edge_clearance + (track_width if track_width is not None
+                             else config.track_width) / 2
+
+    def ok(x: float, y: float) -> bool:
+        t = np.clip(((x - a[:, 0]) * d[:, 0] + (y - a[:, 1]) * d[:, 1]) / ll, 0.0, 1.0)
+        dx = a[:, 0] + t * d[:, 0] - x
+        dy = a[:, 1] + t * d[:, 1] - y
+        return float(np.min(dx * dx + dy * dy)) >= (need - 1e-6) ** 2
+
+    ok.need = need
+    return ok
+
+
 def _edge_band_pad_layer_exemption(pcb_data, coord: GridCoord, edge_clearance: float,
                                    layer_list, board_outlines, bounds):
     """Per-layer cells of an in-band pad's OWN copper that lie ON the board --
