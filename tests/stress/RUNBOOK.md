@@ -1025,6 +1025,19 @@ keep serving the previous code.
    every replay ran the shipped default and burned the 3 h cap. Before trusting
    a recorded run as a baseline, grep its `transcript.jsonl` for `KICAD_`
    exports (the timing sidecar cannot tell you).
+9. **A net no step of the final lineage scopes is the CHAIN's, not the
+   engine's.** neo6502's recorded step5a routed GND alone and leaned on its
+   end-of-run reconciliation to enroll 35 other pad-deficit nets; #734 scoped
+   that reconciliation to the requested nets, so its replays then shipped 34
+   of them open with every step reporting success, while the recorded
+   baseline (made by the old engine) shows them connected. `ab_replay_grade` now
+   records `lineage_scope` per board (`unscoped`, `unscoped_input_copper`,
+   `pour_only`, `unmodelled`), prints a `LINEAGE SCOPE:` line when a board has
+   unscoped nets, and `--compare` names such boards. It reads each lineage
+   step's scope through the tool's own parser and net expansion; run it over
+   manifests alone with `python3 tests/stress/lineage_scope.py
+   runs_set*/*/redo_commands.sh` (parses, routes nothing). Fix such a board
+   by fixing its manifest, never by reading its open nets as an engine delta.
 
 ## Exact-fill timing census (#831)
 
