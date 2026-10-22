@@ -126,6 +126,11 @@ UNRESOLVED_OK = {
     'intra_pair_matching[].status': (
         "route_diff.py's JSON_SUMMARY key, not a board_score document",
         'py_router/route_diff.py', "'intra_pair_matching': intra_pair_reports"),
+    # #1361: the review skill's coupling line cites whether route_diff kept a
+    # pair protected, in the same paragraph.
+    'pair_reports[].protected': (
+        "route_diff.py's JSON_SUMMARY key, not a board_score document",
+        'py_router/route_diff.py', "'pair_reports': pair_reports"),
 }
 
 FAILURES = []
