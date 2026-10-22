@@ -284,6 +284,60 @@ def leg_electrically_short(term_a: Tuple[Pad, Pad], term_b: Tuple[Pad, Pad],
     return min(p_dist, n_dist) < threshold
 
 
+def member_run_mm(pcb_data: PCBData, net_id: int, pad_a: Pad, pad_b: Pad,
+                  config) -> float:
+    """The shortest run (mm) that can still join a pair member's two pads
+    while it keeps the copper it already has on them: that copper's length
+    plus the straight gap between the launch points the pair router uses (the
+    copper's free tips, get_net_endpoints use_stub_free_ends=True). Never
+    below the pad-to-pad distance, which it is when the member has no copper
+    on its pads. `config` needs only `layers` and `grid_step`."""
+    from connectivity import (get_net_endpoints, find_connected_groups,
+                              _pad_touches_copper_group, routable)
+    straight = math.hypot(pad_a.global_x - pad_b.global_x,
+                          pad_a.global_y - pad_b.global_y)
+    segs = routable(s for s in pcb_data.segments if s.net_id == net_id)
+    if not segs:
+        return straight
+    vias = routable(v for v in pcb_data.vias if v.net_id == net_id)
+    on_pads = 0.0
+    for group in find_connected_groups(segs, vias=vias):
+        if any(_pad_touches_copper_group(p, group, vias, config.layers)
+               for p in (pad_a, pad_b)):
+            on_pads += sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
+                           for s in group)
+    if on_pads <= 0.0:
+        return straight
+    srcs, tgts, err = get_net_endpoints(pcb_data, net_id, config,
+                                        use_stub_free_ends=True)
+    if err or not srcs or not tgts:
+        return straight
+    gap = min(math.hypot(s[3] - t[3], s[4] - t[4]) for s in srcs for t in tgts)
+    return max(straight, on_pads + gap)
+
+
+def pair_leg_electrically_short(pcb_data: PCBData, term_a: Tuple[Pad, Pad],
+                                term_b: Tuple[Pad, Pad], config) -> bool:
+    """leg_electrically_short for a 2-terminal pair as it sits on the board:
+    short pad to pad AND along the run each member's own copper commits it to
+    (member_run_mm), by the same shorter-member rule.
+
+    A fanout escape is part of the member's connection. Measured pad to pad,
+    ulx3s FPDI_D0 (U1.A16 -> C42, 3.94 mm) read short and was deferred,
+    though its escapes run 5.3 mm east of the balls while the caps sit north:
+    the single-ended fallback could only join one member through the ball
+    via and the other along its escape, 7.4 mm of skew, and routed coupled
+    from the escape tips the pair ships 6.3 mm coupled at 0.33 mm skew
+    (#1362). Copper only ever lengthens the run, so this can turn a short
+    verdict into a coupled attempt, never the reverse."""
+    if not leg_electrically_short(term_a, term_b, config):
+        return False
+    threshold = diff_pair_min_coupled_length(config)
+    runs = [member_run_mm(pcb_data, term_a[k].net_id, term_a[k], term_b[k],
+                          config) for k in (0, 1)]
+    return min(runs) < threshold
+
+
 def diff_pair_is_short(pcb_data: PCBData, p_net_id: int, n_net_id: int,
                        track_width: float, diff_pair_gap: float,
                        centerline_setback: float = None) -> bool:
@@ -293,8 +347,10 @@ def diff_pair_is_short(pcb_data: PCBData, p_net_id: int, n_net_id: int,
     single-ended pass). Used by the GUI to hide short pairs from the diff-pair
     list and to keep them visible on the single-ended list. Conservative for
     multi-point pairs (3+ terminals): those may still couple some legs, so they
-    are never reported short here. Reuses leg_electrically_short so the GUI and
-    the router agree on what counts as short.
+    are never reported short here. Reuses pair_leg_electrically_short so the
+    GUI and the router agree on what counts as short -- including a pair whose
+    own fanout escapes make it long (#1362), so the verdict depends on the
+    board's copper as well as on the parameters.
 
     centerline_setback is the run's setback exactly as the router reads it:
     None = auto (route_diff.py with no --diff-pair-centerline-setback), and a
@@ -302,13 +358,15 @@ def diff_pair_is_short(pcb_data: PCBData, p_net_id: int, n_net_id: int,
     read 0 as auto too, the GUI spin's old convention, so the short test and
     the router disagreed about an explicit 0.)"""
     from types import SimpleNamespace
+    from routing_defaults import GRID_STEP
     terminals = get_diff_pair_terminals(pcb_data, p_net_id, n_net_id)
     if len(terminals) != 2:
         return False
     cfg = SimpleNamespace(
         track_width=track_width, diff_pair_gap=diff_pair_gap,
-        diff_pair_centerline_setback=centerline_setback)
-    return leg_electrically_short(terminals[0], terminals[1], cfg)
+        diff_pair_centerline_setback=centerline_setback,
+        layers=list(pcb_data.board_info.copper_layers), grid_step=GRID_STEP)
+    return pair_leg_electrically_short(pcb_data, terminals[0], terminals[1], cfg)
 
 
 def classify_terminals(terminals: List[Tuple[Pad, Pad]], config: GridRouteConfig

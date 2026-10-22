@@ -14,8 +14,9 @@ Now:
   check_drc  grades a board's .kicad_dru `skew` (with `within_diff_pairs`)
              and `diff_pair_uncoupled` rules through #1313's length channel.
   route_diff a pair whose shipped copper is not coupled is 'uncoupled': out of
-             routed_diff_pairs and of the #521 protection; the intra-pair
-             status is re-read off the copper.
+             routed_diff_pairs and of the #521 protection unless its members
+             still run alongside (#1361, test_1361_loose_pair_protection);
+             the intra-pair status is re-read off the copper.
   board_score a `diff_pairs` component: every pair measured, graded against
              what the board's dru declares.
 
@@ -358,7 +359,8 @@ def custody_and_route_diff(pcb):
           lrep['outcome'] == 'partial' and lrep['no_coupled_trunk']
           and lrep['member_audit_mismatch'], str(lrep))
     kept = [n for n, _p in coupled_protection_pairs(pairs, copper)]
-    check('#521 protection skips the pairs whose copper is not coupled',
+    check('#521 protection skips the pairs whose copper is not coupled (no member '
+          'audit given: none is rescued as alongside, #1361)',
           kept == ['S', 'D'], str(kept))
 
 

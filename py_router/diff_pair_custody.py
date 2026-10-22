@@ -159,6 +159,19 @@ def audit_pair_members(pcb_data, diff_pairs_list, tolerance: float = 0.02) -> Di
 #: count those too under a rule that sets no maximum gap.
 COUPLED_GAP_FACTOR = 1.5
 
+#: #1361: a pair whose copper is not coupled at the routed gap still runs
+#: ALONGSIDE its partner where KiCad's coupling geometry finds P and N facing
+#: each other up to this gap (mm). It is the router's own radius for a member
+#: that has not split from its partner: the #444 seam re-ask counts copper
+#: farther than 1 mm from the partner as split (`_split_len`). A re-ask is one
+#: single-ended A* per net pulled toward its partner, so it runs a few times
+#: the routed gap apart -- ulx3s GPDI at 0.8 mm, set by the HDMI connector's
+#: pins (P and N 1 mm apart with a ground pin between). A pair split onto two
+#: layers (imx6ulz DQS0) runs alongside nowhere; two members routed to
+#: separate connectors (sata_sniffer GTX_RX3_AC, P and N 20 mm apart) face
+#: each other at no maximum gap, but not within this one.
+ALONGSIDE_GAP_MM = 1.0
+
 
 def coupled_floor_mm(track_width: float, gap: float) -> float:
     """#1303: the least coupled run that makes a pair's copper COUPLED: one
@@ -186,8 +199,14 @@ def measure_pair_copper(pcb_data, diff_pairs_list, routed_results,
     {pair_name: record} for every pair with a coupled-route result on both
     members: `net_queries.diff_pair_copper` measured with the gap window
     (none, COUPLED_GAP_FACTOR x gap), plus 'gap_mm', 'gap_window_mm',
-    'coupled_floor_mm' and 'coupled' (coupled_mm >= the floor)."""
-    from net_queries import diff_pair_copper, CopperIndex
+    'coupled_floor_mm' and 'coupled' (coupled_mm >= the floor).
+
+    #1361: a record that is not coupled also carries 'alongside_mm' (the same
+    KiCad measure with the window (none, ALONGSIDE_GAP_MM)),
+    'alongside_window_mm' and 'alongside' (alongside_mm >= the same floor).
+    It reports nothing -- the outcome stays 'uncoupled' -- it is what #521
+    protection reads (`route_diff.coupled_protection_pairs`)."""
+    from net_queries import diff_pair_copper, diff_pair_coupling, CopperIndex
     out: Dict[str, Dict] = {}
     index = None
     for pair_name, pair in diff_pairs_list:
@@ -215,6 +234,20 @@ def measure_pair_copper(pcb_data, diff_pairs_list, routed_results,
         rec.update(gap_mm=gap, gap_window_mm=[None, None if hi is None else round(hi, 4)],
                    coupled_floor_mm=round(floor, 4),
                    coupled=rec['coupled_mm'] >= floor - 1e-9)
+        if not rec['coupled']:
+            try:
+                along = diff_pair_coupling(pcb_data, pair.p_net_id, pair.n_net_id,
+                                           None, ALONGSIDE_GAP_MM,
+                                           index=index)['coupled_mm']
+            except Exception as exc:                         # noqa: BLE001
+                # Unmeasured is not alongside: the pair stays unprotected,
+                # as it was before #1361.
+                print(f"{RED}#1361: could not measure how far {pair_name} runs "
+                      f"alongside ({type(exc).__name__}: {exc}){RESET}")
+                along = 0.0
+            rec.update(alongside_mm=round(along, 4),
+                       alongside_window_mm=[None, ALONGSIDE_GAP_MM],
+                       alongside=along >= floor - 1e-9)
         out[pair_name] = rec
     return out
 

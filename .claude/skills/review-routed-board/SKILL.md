@@ -292,7 +292,9 @@ rec = diff_pair_copper(pcb, p_id, n_id)   # coupled_mm, uncoupled_mm, skew_mm, l
 - **Coupling**: a pair the plan routed coupled must show coupled copper. In a
   route_diff log, `JSON_SUMMARY.uncoupled_diff_pairs` (outcome `uncoupled`)
   lists pairs routed whose shipped copper is not coupled -- route_diff no longer
-  counts them routed or protects them, so the next step may reroute them.
+  counts them routed, and protects one only while its members still run
+  alongside within 1 mm and both connect (`pair_reports[].protected`, #1361),
+  so the next step may reroute the rest.
 - **Skew / uncoupled length against the spec**: a `.kicad_dru` `skew` rule
   (`(within_diff_pairs)` for P against N) or `diff_pair_uncoupled` rule is
   graded by `check_drc.py` (`SKEW-OUT-OF-RANGE`, `DIFF-PAIR-UNCOUPLED`, KiCad's

@@ -700,10 +700,17 @@ class DifferentialTab(wx.Panel):
 
     def _is_short_pair(self, p_net_id, n_net_id):
         """Whether this pair would be deferred to single-ended as electrically
-        short, given the current Pair Width / Gap / Centerline Setback. Cached
-        per (params, pair)."""
+        short, given the current Pair Width / Gap / Centerline Setback and the
+        board's copper (a pair's own fanout escapes count, #1362). Cached per
+        (params, pair) and dropped when the copper changes: a sync replaces
+        the copper lists and routing in place appends to them."""
         from diff_pair_multipoint import diff_pair_is_short
         width, gap, setback = self._short_params()
+        segs, vias = self.pcb_data.segments, self.pcb_data.vias
+        copper = (id(segs), len(segs), id(vias), len(vias))
+        if copper != getattr(self, '_short_cache_copper', None):
+            self._short_cache.clear()
+            self._short_cache_copper = copper
         key = ((round(width, 6), round(gap, 6),
                 None if setback is None else round(setback, 6)),
                p_net_id, n_net_id)
@@ -1251,9 +1258,15 @@ class DifferentialTab(wx.Panel):
         # (the engine measured it; the CLI prints the same "Not coupled" line).
         uncoupled_pairs = results_data.get('uncoupled_diff_pairs', [])
         if uncoupled_pairs:
+            # #1361: protected all the same while its members still run
+            # alongside (the engine's pair_reports[].protected).
+            _kept = sorted(r['pair'] for r in results_data.get('pair_reports') or []
+                           if r.get('outcome') == 'uncoupled' and r.get('protected'))
             msg += (f"Not coupled: {len(uncoupled_pairs)} "
                     f"(routed, but no coupled run on the board - not counted "
-                    f"as routed, not protected): {', '.join(uncoupled_pairs)}\n")
+                    f"as routed): {', '.join(uncoupled_pairs)}\n")
+            if _kept:
+                msg += (f"  still alongside, so protected: {', '.join(_kept)}\n")
         _intra_bad = [r['pair'] for r in results_data.get('intra_pair_matching', [])
                       if r.get('status') not in ('matched', 'within-tolerance', 'skipped')]
         if _intra_bad:
