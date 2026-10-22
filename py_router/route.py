@@ -5443,6 +5443,21 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             open_single.append(net_name)
             open_single_ids.append(net_id)
 
+    # Nets the BOARD makes unroutable: one of their pads is already shorted to
+    # another net as drawn (another net's pad on it, or another part's copper),
+    # so no copper can land there without that short. Named here rather than
+    # left in the open counts, because the fix is the board's, not a retry's.
+    unroutable_as_designed = []
+    try:
+        _open_ids = (set(failed_single_ids) | set(open_single_ids)
+                     | {m['net_id'] for m in failed_multipoint
+                        if m.get('net_id', -1) > 0})
+        if _open_ids:
+            from check_pads import pads_shorted_as_drawn
+            unroutable_as_designed = pads_shorted_as_drawn(pcb_data, _open_ids)
+    except Exception as _uad:                                  # noqa: BLE001
+        print(f"  (unroutable-as-designed check skipped: {_uad})")
+
     # Print human-readable summary
     print("\n" + "=" * 60)
     print("Routing complete")
@@ -5498,6 +5513,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             net_name = item['net_name']
             for pad in item['failed_pads']:
                 print(f"  {RED}{net_name}: {pad['component_ref']} pad {pad['pad_number']} at ({pad['x']:.2f}, {pad['y']:.2f}) not connected{RESET}")
+    if unroutable_as_designed:
+        print(f"\n{RED}Unroutable as designed: a pad is shorted to another net "
+              f"before any routing (fix the board, not the route):{RESET}")
+        for _r in unroutable_as_designed:
+            _what = ('pad ' + _r['foreign'] if _r['by'] == 'pad'
+                     else _r['foreign'] + "'s copper")
+            print(f"  {RED}{_r['net']}: pad {_r['pad']} overlaps {_what} "
+                  f"({', '.join(_r['foreign_nets'])}){RESET}")
 
     # Print history for all failed nets (helps debug why they failed) --
     # open nets included: their history shows which attempt left the stub.
@@ -5545,6 +5568,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # taps below the nominal). Grade/check_drc the board at this floor.
         'min_clearance_used': __import__('clearance_ledger').effective(clearance),
     }
+    if unroutable_as_designed:
+        # Open nets one of whose pads is shorted to another net as drawn
+        # (check_pads.pads_shorted_as_drawn); key absent otherwise.
+        summary['unroutable_as_designed'] = unroutable_as_designed
     # #1247: every length-match group this call formed, by member name, and
     # what `auto` left out and why -- the membership the meanders and the
     # #521 protected_nets record were built from.
