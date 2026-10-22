@@ -955,9 +955,10 @@ def _ship_via_protection962(pcb_data, output_file, return_results, results_data,
 
 
 def _strip_written_copper(output_file, segments, vias, name_of,
-                          match_width=False):
+                          match_width=False, unmatched_out=None):
     """Delete `segments` and `vias` from the written file, in place. Returns
-    the (segments, vias) counts actually deleted, which the caller reports.
+    the (segments, vias) counts actually deleted, which the caller reports;
+    `unmatched_out`, if given, receives the SEGMENTS no block matched.
 
     The name map rides whenever the file references nets by name
     (`board_uses_name_nets`, the writer's own test). remove_*_from_content
@@ -977,6 +978,7 @@ def _strip_written_copper(output_file, segments, vias, name_of,
     if segments:
         content, n_s = remove_segments_from_content(content, segments,
                                                     net_id_to_name=nmap,
+                                                    unmatched_out=unmatched_out,
                                                     match_width=match_width)
     if vias:
         content, n_v = remove_vias_from_content(content, vias,
@@ -1695,6 +1697,138 @@ def _late_stacked_dedup162(pcb_data, output_file, return_results, results_data,
         return n_s
     except Exception as _e:                                     # noqa: BLE001
         print(f"  (end-of-run stacked-copper dedup skipped: "
+              f"{type(_e).__name__}: {_e})")
+        return 0
+
+
+def _late_kicad_dangling_split1217(pcb_data, output_file, return_results,
+                                   results_data, write_model, input_signature,
+                                   scope_names, keep_input_copper):
+    """Clear the joints KiCad's DRC reports as track_dangling (#1217) on the
+    board this run SHIPS, by splitting the track each one lands on at the
+    joint (pcb_modification.split_kicad_dangling_hosts). Copper is unchanged:
+    the pieces cover the host's own capsule.
+
+    Such a joint is the one check_weird calls ``kicad-dangling``: a short
+    track with its T end on another track's centreline and its other end
+    within that track's copper. KiCad credits the host to the far end only,
+    so the T end reads as dangling -- check_complete's weird_copper gate
+    fails on it -- although the short track is the joint and no removal
+    pass may take it. More than one pass lays the shape: a re-placed
+    esp_prog's +3.3V got it from the octolinear smoother (a staircase
+    leaving the trunk at a T became a 0.25 mm diagonal plus a vertical
+    stopping 11.6 um outside the trunk's copper), and routed taps welded in
+    through a short T stub (#1291). So it runs on the shipped board after
+    every pass that lays copper, TWICE: before the strict collapse, which then
+    grades each piece (a host's stretch past its joint can be superseded
+    copper no whole-segment removal could take), and after the collapse, the
+    via sweep and the dedup, since KiCad's count reads the ENDPOINTS of the
+    tracks around a joint and any of those removals can take one.
+
+    Same plumbing and scope as _late_strict_collapse1063: the written file on
+    the CLI, the write model on the GUI; the run's nets. Input copper is told
+    from the run's by VALUE (input_signature) and --keep-input-copper makes it
+    read-only; locked and sense-held copper is never split. Returns the number
+    of tracks split.
+    """
+    import copy as _copy
+    from collections import Counter
+    from improvement_gate import copper_item_key
+    from pcb_modification import split_kicad_dangling_hosts
+    try:
+        rd = None
+        if return_results:
+            rd = results_data if results_data is not None else {}
+            board = _copy.copy(pcb_data)
+            if write_model is not None:
+                segs_by_net, vias_by_net = write_model(rd)
+                board.segments = [x for _l in segs_by_net.values() for x in _l]
+                board.vias = [x for _l in vias_by_net.values() for x in _l]
+            else:
+                board.segments = list(pcb_data.segments)
+                board.vias = list(pcb_data.vias)
+        elif output_file and os.path.isfile(output_file):
+            from kicad_parser import parse_kicad_pcb as _pk1217
+            board = _pk1217(output_file)
+        else:
+            return 0
+        name_of = {nid: n.name for nid, n in board.nets.items()}
+        readonly = set()
+        if keep_input_copper:
+            left = {n: Counter(c) for n, c in (input_signature or {}).items()}
+            for s in board.segments:
+                c = left.get(name_of.get(s.net_id))
+                k = copper_item_key(s)
+                if c and c[k] > 0:
+                    c[k] -= 1
+                    readonly.add(id(s))
+        scope = {nid for nid, nm in name_of.items() if nm in set(scope_names)}
+        if not scope:
+            return 0
+        _stats = {}
+        pairs = split_kicad_dangling_hosts(board, scope, readonly_ids=readonly,
+                                           stats=_stats)
+        if not pairs:
+            return 0
+        if return_results:
+            pieces = {id(h): ps for h, ps in pairs}
+
+            def _swap(lst):
+                return [p for x in lst for p in pieces.get(id(x), [x])]
+            owned = set()
+            for r in rd.get('results') or []:
+                if r.get('new_segments'):
+                    owned.update(id(x) for x in r['new_segments']
+                                 if id(x) in pieces)
+                    r['new_segments'] = _swap(r['new_segments'])
+            if rd.get('all_swap_segments'):
+                owned.update(id(x) for x in rd['all_swap_segments']
+                             if id(x) in pieces)
+                rd['all_swap_segments'] = _swap(rd['all_swap_segments'])
+            # A split INPUT track leaves through the removal channel and its
+            # pieces arrive as this run's copper.
+            inputs = [h for h, _ps in pairs if id(h) not in owned]
+            if inputs:
+                rd.setdefault('segments_to_remove', []).extend(inputs)
+                rd.setdefault('results', []).append({
+                    'new_segments': [p for h in inputs for p in pieces[id(h)]],
+                    'new_vias': [], 'cleanup': 'kicad_dangling_split'})
+            pcb_data.segments = _swap(pcb_data.segments)
+            bump_copper_epoch(pcb_data)
+            n = len(pairs)
+        else:
+            from kicad_parser import board_uses_name_nets
+            from kicad_writer import generate_segment_sexpr
+            unmatched = []
+            _strip_written_copper(output_file, [h for h, _ps in pairs], [],
+                                  name_of, match_width=True,
+                                  unmatched_out=unmatched)
+            # Only a host whose block left the file gets its pieces.
+            missed = {id(h) for h in unmatched}
+            with open(output_file, 'r', encoding='utf-8') as _f:
+                content = _f.read()
+            v10 = board_uses_name_nets(content)
+            sexprs = [generate_segment_sexpr(
+                (p.start_x, p.start_y), (p.end_x, p.end_y), p.width, p.layer,
+                p.net_id, name_of.get(p.net_id) if v10 else None)
+                for h, ps in pairs if id(h) not in missed for p in ps]
+            if sexprs:
+                lp = content.rfind(')')
+                content = content[:lp] + '\n'.join(sexprs) + '\n' + content[lp:]
+                with open(output_file, 'w', encoding='utf-8') as _f:
+                    _f.write(content)
+            n = len(pairs) - len(missed)
+            if missed:
+                print(f"  WARNING: KiCad-dangling split (#1217): chose "
+                      f"{len(pairs)} track(s), found {n} in the written file")
+        print(f"  KiCad-dangling joints (#1217, end of run): split {n} "
+              f"track(s) at the joint landing on them, on "
+              f"{_stats.get('nets', 0)} net(s); copper unchanged"
+              + (f" ({_stats['left']} joint(s) no split clears)"
+                 if _stats.get('left') else ""))
+        return n
+    except Exception as _e:                                     # noqa: BLE001
+        print(f"  (end-of-run KiCad-dangling split skipped: "
               f"{type(_e).__name__}: {_e})")
         return 0
 
@@ -8103,6 +8237,15 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # before the sweep, the #962 via stamp and the #1069 re-grade, so all of
     # them read the collapsed board. Outermost run only, both fronts.
     if final_reconcile and not skip_routing and not _ckpt_stop and quick < 2:
+        # #1217: split the tracks KiCad-dangling joints land on FIRST, so the
+        # collapse grades each piece: a host's stretch past its joint can be
+        # superseded copper that no whole-segment removal could take.
+        _late_kicad_dangling_split1217(
+            pcb_data, output_file, return_results, locals().get('results_data'),
+            _gui_write_model, _input_sig1069,
+            {pcb_data.nets[_n].name for _n in sweep_scope_ids
+             if _n in pcb_data.nets},
+            keep_input_copper)
         _late_strict_collapse1063(
             pcb_data, output_file, return_results, locals().get('results_data'),
             _gui_write_model, _input_sig1069,
@@ -8119,6 +8262,16 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # #162: exact same-net duplicates, which none of the above removes
         # on a zoned net and the finalize's pad repair lays.
         _late_stacked_dedup162(
+            pcb_data, output_file, return_results, locals().get('results_data'),
+            _gui_write_model, _input_sig1069,
+            {pcb_data.nets[_n].name for _n in sweep_scope_ids
+             if _n in pcb_data.nets},
+            keep_input_copper)
+        # #1217 again: KiCad's count reads the ENDPOINTS of the tracks around
+        # a joint, and each removal above can take one. (The orphan sweep
+        # below removes only copper no joint touches: an island touching a
+        # joint would be connected to it.)
+        _late_kicad_dangling_split1217(
             pcb_data, output_file, return_results, locals().get('results_data'),
             _gui_write_model, _input_sig1069,
             {pcb_data.nets[_n].name for _n in sweep_scope_ids

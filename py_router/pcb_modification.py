@@ -2947,6 +2947,228 @@ def collapse_strict_redundant(results, pcb_data: PCBData, scope_net_ids=None,
     return len(removed_ids), originals
 
 
+#: How far (mm) a KiCad-dangling joint may sit off its host track's centreline
+#: and still split the host exactly AT the joint: 1 nm, KiCad's internal unit
+#: (merge_collinear_segments' max_deviation), so the pieces cover the
+#: host's capsule and the split moves no copper. Measured on 60 routed corpus
+#: boards: every T-shaped finding sat 0-0.7 nm off its host's line.
+KICAD_DANGLING_SPLIT_ON_LINE = 1e-6
+#: No piece may be shorter than this (mm): the repo's endpoint keys round
+#: to 1 um, so a shorter piece would read as a point in every model.
+_KICAD_DANGLING_MIN_PIECE = 1e-3
+#: Spatial-index cell (mm) for the per-net toucher queries.
+_KICAD_DANGLING_CELL = 1.0
+
+
+def split_kicad_dangling_hosts(pcb_data: PCBData, scope_net_ids=None,
+                               readonly_ids=frozenset(),
+                               stats: Optional[dict] = None):
+    """Split the track a KiCad-dangling joint lands on, AT the joint (#1217).
+
+    check_weird's ``kicad-dangling`` (the shared predicate
+    ``check_weird.kicad_dangling_end``): a short track S with one end F on
+    another same-net track H's centreline, mid-body, while H's copper also
+    reaches S's other end P. KiCad's TestTrackEndpointDangling counts H once,
+    for the end of S nearer one of H's ENDPOINTS; when that is P, the T end F
+    is counted by nothing and KiCad's DRC reports track_dangling at F.
+
+    S is not redundant copper, it is the joint, so no removal pass may take it
+    (the strict collapse, rightly, keeps it). The shape route.py shipped on a
+    re-placed esp_prog's +3.3V: the octolinear smoother shortcut a staircase
+    that left the trunk at a T into a 0.25 mm diagonal plus a vertical, and
+    the vertical stops 0.174 mm off the 0.325 mm trunk's centreline -- 11.6 um
+    outside its copper -- so without the diagonal the vertical is unconnected
+    for KiCad as well. What KiCad lacks is an ENDPOINT at F: split H there and
+    each half ends at F, so each counts for F, while P keeps the neighbour
+    ending on it. The pieces cover exactly H's capsule (F is on H's line
+    within KICAD_DANGLING_SPLIT_ON_LINE), so the copper, its clearance and its
+    connectivity are unchanged; KiCad's own router splits a track the same
+    way when a track is drawn into its middle.
+
+    A split is KEPT only when S is no longer flagged and no track within H's
+    reach -- the pieces included -- is newly flagged (KiCad reads a toucher's
+    endpoints, so a cut can move another short track's count). When the cut
+    at F alone fails that, H is cut at every track end on its body instead,
+    so a second joint near F gets its own endpoint; when that fails too, H is
+    put back. A joint with no splittable host is left as it is: a dead tail
+    whose free end lies inside other copper (no host centreline through it)
+    is a different defect, not this one. Hosts that are graphic copper
+    (#337), locked or sense-held (is_immutable_copper, #1261/#1279), or in
+    ``readonly_ids`` (object ids) are never split.
+
+    Mutates ``pcb_data.segments`` in place (a split host is replaced by its
+    pieces at its own position). Returns ``[(host, pieces), ...]``: each
+    segment that left the board, with the segments that replaced it (a piece
+    split again is expanded, so ``pieces`` is what the board now holds).
+    ``stats``, if given, receives ``{'splits', 'nets', 'left'}`` -- ``left``
+    counting the flagged joints no split could clear.
+    """
+    import copy as _copy
+    from collections import defaultdict
+    from check_weird import kicad_dangling_end
+
+    on_line = KICAD_DANGLING_SPLIT_ON_LINE
+    cell = _KICAD_DANGLING_CELL
+    readonly = set(readonly_ids or ())
+    copper_layers = (getattr(getattr(pcb_data, 'board_info', None),
+                             'copper_layers', None) or ['F.Cu', 'B.Cu'])
+    segs_by_net = defaultdict(list)
+    for s in pcb_data.segments:
+        if s.net_id and (scope_net_ids is None or s.net_id in scope_net_ids):
+            segs_by_net[s.net_id].append(s)
+    vias_by_net = defaultdict(list)
+    for v in pcb_data.vias:
+        vias_by_net[v.net_id].append(v)
+    zones_by_net = defaultdict(list)
+    for z in (getattr(pcb_data, 'zones', None) or []):
+        zones_by_net[z.net_id].append(z)
+
+    repl = {}                      # id(host) -> the pieces replacing it
+    nets_split = 0
+    left = 0
+    for net_id in sorted(segs_by_net):
+        net = segs_by_net[net_id]
+        if len(net) < 2:
+            continue
+        net_vias = vias_by_net.get(net_id, [])
+        net_pads = pcb_data.pads_by_net.get(net_id, [])
+        net_zones = zones_by_net.get(net_id, [])
+
+        grid = defaultdict(dict)   # cell -> {id: segment}
+        live = {}
+
+        def _cells(s):
+            r = s.width / 2.0
+            x0 = math.floor((min(s.start_x, s.end_x) - r) / cell)
+            x1 = math.floor((max(s.start_x, s.end_x) + r) / cell)
+            y0 = math.floor((min(s.start_y, s.end_y) - r) / cell)
+            y1 = math.floor((max(s.start_y, s.end_y) + r) / cell)
+            return [(cx, cy) for cx in range(x0, x1 + 1)
+                    for cy in range(y0, y1 + 1)]
+
+        def _add(s):
+            live[id(s)] = s
+            for c in _cells(s):
+                grid[c][id(s)] = s
+
+        def _drop(s):
+            live.pop(id(s), None)
+            for c in _cells(s):
+                grid[c].pop(id(s), None)
+
+        def _near(s):
+            # A superset of every track within reach of s: two capsules in
+            # reach have intersecting width-inflated bounding boxes.
+            found = {}
+            for c in _cells(s):
+                found.update(grid.get(c, {}))
+            found.pop(id(s), None)
+            return list(found.values())
+
+        def _flagged(s):
+            return kicad_dangling_end(s, _near(s), net_vias, net_pads,
+                                      net_zones, copper_layers)
+
+        def _on_body(x, y, h):
+            # On h's centreline (within on_line), and not at either end.
+            return (_pt_seg_dist(x, y, h.start_x, h.start_y, h.end_x, h.end_y)
+                    <= on_line
+                    and min(math.hypot(x - h.start_x, y - h.start_y),
+                            math.hypot(x - h.end_x, y - h.end_y))
+                    >= _KICAD_DANGLING_MIN_PIECE)
+
+        def _cut(h, pts):
+            # h cut at pts (each on its body), as copies in order along h;
+            # points closer than _KICAD_DANGLING_MIN_PIECE are one cut.
+            dx, dy = h.end_x - h.start_x, h.end_y - h.start_y
+            ordered = sorted(pts, key=lambda q: (q[0] - h.start_x) * dx
+                             + (q[1] - h.start_y) * dy)
+            verts = [(h.start_x, h.start_y)]
+            for q in ordered:
+                if math.hypot(q[0] - verts[-1][0], q[1] - verts[-1][1]) \
+                        >= _KICAD_DANGLING_MIN_PIECE:
+                    verts.append(q)
+            verts.append((h.end_x, h.end_y))
+            out = []
+            for (ax, ay), (bx, by) in zip(verts, verts[1:]):
+                p = _copy.copy(h)
+                p.start_x, p.start_y, p.end_x, p.end_y = ax, ay, bx, by
+                p.uuid = ''
+                p.start_x_str = p.start_y_str = ''
+                p.end_x_str = p.end_y_str = ''
+                out.append(p)
+            return out
+
+        for s in net:
+            _add(s)
+        split_here = False
+        for s in list(net):
+            if id(s) not in live:
+                continue           # split as a host earlier in this pass
+            free = _flagged(s)
+            if free is None:
+                continue
+            hosts = sorted(
+                (h for h in _near(s)
+                 if h.layer == s.layer and not getattr(h, 'graphic', False)
+                 and not _locked(h) and id(h) not in readonly
+                 and _on_body(free[0], free[1], h)),
+                key=lambda h: (round(h.start_x, 6), round(h.start_y, 6),
+                               round(h.end_x, 6), round(h.end_y, 6),
+                               round(h.width, 6)))
+            done = False
+            for h in hosts:
+                area = _near(h)
+                before = {id(o) for o in area if _flagged(o) is not None}
+                # At the joint alone; else at EVERY track end on h's body
+                # (KiCad's own router keeps each T a vertex): a second joint
+                # near the first can read its count off the new endpoint.
+                tees = [free] + [e for o in area
+                                 if o.layer == h.layer
+                                 and not getattr(o, 'graphic', False)
+                                 for e in ((o.start_x, o.start_y),
+                                           (o.end_x, o.end_y))
+                                 if _on_body(e[0], e[1], h)]
+                trials = [_cut(h, [free])]
+                if len(_cut(h, tees)) > 2:
+                    trials.append(_cut(h, tees))
+                for pieces in trials:
+                    _drop(h)
+                    for p in pieces:
+                        _add(p)
+                    after = {id(o) for o in area + pieces
+                             if _flagged(o) is not None}
+                    if id(s) not in after and not (after - before):
+                        repl[id(h)] = tuple(pieces)
+                        i = next(k for k, o in enumerate(net) if o is h)
+                        net[i:i + 1] = pieces
+                        split_here = done = True
+                        break
+                    for p in pieces:
+                        _drop(p)
+                    _add(h)
+                if done:
+                    break
+            if not done:
+                left += 1
+        if split_here:
+            nets_split += 1
+
+    def _expand(s):
+        pieces = repl.get(id(s))
+        if pieces is None:
+            return [s]
+        return [q for p in pieces for q in _expand(p)]
+
+    pairs = [(s, _expand(s)) for s in pcb_data.segments if id(s) in repl]
+    if pairs:
+        pcb_data.segments[:] = [p for s in pcb_data.segments
+                                for p in _expand(s)]
+    if stats is not None:
+        stats.update({'splits': len(repl), 'nets': nets_split, 'left': left})
+    return pairs
+
+
 def remove_orphan_islands(results, pcb_data: PCBData, scope_net_ids=None,
                           keep_input_copper: bool = False
                           ) -> Tuple[int, int, List[Segment]]:
