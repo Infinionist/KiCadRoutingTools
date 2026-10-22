@@ -93,6 +93,27 @@ def flow(a, rest):
     return rc, record.write(a, rec)
 
 
+#: an installed Chrome that draws on the GPU through Metal (macOS)
+GPU_CHROMES = ('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+               '/Applications/Chromium.app/Contents/MacOS/Chromium')
+
+
+def gpu_browser(a):
+    """(browser executable or None, draw on the GPU?) for the render. The
+    software renderer draws a 306-model frame in about 0.4 s; Metal on an M3,
+    in 0.06 s. --gpu on with no installed Chrome falls back, and says so."""
+    if a.gpu == 'off' or sys.platform != 'darwin':
+        if a.gpu == 'on':
+            print('make_movie: --gpu on needs macOS; drawing in software', file=sys.stderr)
+        return a.browser, False
+    exe = a.browser or next((p for p in GPU_CHROMES if os.path.isfile(p)), None)
+    if exe is None:
+        if a.gpu == 'on':
+            print('make_movie: --gpu on found no installed Chrome; drawing in software',
+                  file=sys.stderr)
+        return a.browser, False
+    return exe, True
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0], allow_abbrev=False,
                                  epilog="BOARD and OUT come first; every other argument is "
@@ -122,6 +143,10 @@ def main(argv=None):
     ap.add_argument('--browser', default=os.environ.get('MOVIE3D_CHROMIUM'),
                     help='a Chromium executable (default: $MOVIE3D_CHROMIUM, else the headless '
                          'shell playwright-core finds in its own browser cache)')
+    ap.add_argument('--gpu', choices=('auto', 'on', 'off'), default='auto',
+                    help="draw the frames on the GPU, through an installed Chrome on Metal (macOS): "
+                         "auto (default) when one is installed, off = the software renderer "
+                         "(SwiftShader) in any case")
     ap.add_argument('--crf', type=int, default=20, help='x264 quality, lower is better (default 20)')
     a, rest = ap.parse_known_args(argv)
     if len(rest) < 2 or rest[0].startswith('-') or rest[1].startswith('-'):
@@ -155,7 +180,8 @@ def main(argv=None):
     shutil.rmtree(frames, ignore_errors=True)
     with open(sp, encoding='utf-8') as f:
         glb = (json.load(f).get('glb') or {}).get('path')
-    job = {'browser': a.browser, 'width': a.width, 'height': a.height, 'outDir': frames,
+    browser, gpu = gpu_browser(a)
+    job = {'browser': browser, 'gpu': gpu, 'width': a.width, 'height': a.height, 'outDir': frames,
            'scene': sp, 'timeline': tp, 'glb': glb}
     jp = os.path.join(a.work, 'job.json')
     with open(jp, 'w', encoding='utf-8') as f:

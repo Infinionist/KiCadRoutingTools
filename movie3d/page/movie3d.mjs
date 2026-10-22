@@ -11,6 +11,7 @@
 // part's mounting face (the board's face, the table, or mid-hop).
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const S = {};
 const rad = (d) => d * Math.PI / 180;
@@ -213,6 +214,46 @@ function poseParts(fr) {
 // so the group's pose carries it (stage3d's re-pose, #1081). Its colours are
 // tinted toward the group's (a fixed part's model is ghosted instead), and
 // the part's box gives way to it.
+// A part's model as one mesh per material, in the model node's own frame.
+// A part model is dozens to hundreds of small meshes (each pin, each face of
+// a body), and every one is a draw call in the main pass, the shadow pass and
+// a ghost's depth pass: on a 306-model board the frame's JavaScript, not the
+// drawing, was the slow half. Merged, the same triangles and materials are a
+// handful of calls. A mesh whose attributes do not match its material's
+// others, or that carries several materials, stays as it was.
+function mergedNode(o) {
+  const inv = o.matrixWorld.clone().invert();
+  const out = new THREE.Group();
+  out.name = o.name;
+  const byMat = new Map();
+  o.traverse((c) => {
+    if (!c.isMesh) return;
+    const rel = inv.clone().multiply(c.matrixWorld);
+    if (Array.isArray(c.material)) {
+      const m = new THREE.Mesh(c.geometry, c.material);
+      m.applyMatrix4(rel);
+      out.add(m);
+      return;
+    }
+    const g = c.geometry.index ? c.geometry.toNonIndexed() : c.geometry.clone();
+    g.applyMatrix4(rel);
+    for (const name of Object.keys(g.attributes)) if (name !== 'position' && name !== 'normal' && name !== 'color') g.deleteAttribute(name);
+    g.morphAttributes = {};
+    const key = c.material.uuid + '|' + Object.keys(g.attributes).sort().join(',');
+    if (!byMat.has(key)) byMat.set(key, { mat: c.material, geos: [] });
+    byMat.get(key).geos.push(g);
+  });
+  for (const { mat, geos } of byMat.values()) {
+    const g = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
+    if (g) {
+      out.add(new THREE.Mesh(g, mat));
+    } else {
+      for (const one of geos) out.add(new THREE.Mesh(one, mat));
+    }
+  }
+  return out;
+}
+
 async function loadModels(url, sc) {
   const buf = await (await fetch(url)).arrayBuffer();
   const gltf = await new GLTFLoader().parseAsync(buf, '');
@@ -249,9 +290,12 @@ async function loadModels(url, sc) {
       if (pose[3] === 'B') F.multiply(flip);
       F.setPosition(pose[0], world.elements[13], pose[1]);   // on the face the export put it on
       const rest = F.clone().invert().multiply(world);
-      const clone = o.clone(true);
+      const clone = mergedNode(o);
       clone.matrixAutoUpdate = false;
       clone.matrix.multiplyMatrices(pose[3] === 'B' ? flip : new THREE.Matrix4(), rest);
+      // a ghost's own stencil value (1-254): see the depth pass below
+      const gid = part.P.fixed ? (S.ghostId = (S.ghostId || 0) % 254 + 1) : 0;
+      let k = 0;
       clone.traverse((c) => {
         if (!c.isMesh) return;
         const mats = (Array.isArray(c.material) ? c.material : [c.material]).map((m) => {
@@ -261,6 +305,12 @@ async function loadModels(url, sc) {
           if ('metalness' in q) { q.metalness = 0.15; q.roughness = 0.6; }
           if (part.P.fixed) {
             q.transparent = true; q.opacity = 0.32; q.depthWrite = false;
+            // its front faces pass the depth pass's test within a hair, and
+            // the first to land on a pixel marks it, so no other face of
+            // this ghost blends there again
+            Object.assign(q, { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4,
+                               stencilWrite: true, stencilRef: gid, stencilFunc: THREE.NotEqualStencilFunc,
+                               stencilZPass: THREE.ReplaceStencilOp });
           } else if (q.color) {
             q.color.lerp(part.col, sc.tint ?? 0.5);
           }
@@ -269,7 +319,8 @@ async function loadModels(url, sc) {
         c.material = Array.isArray(c.material) ? mats : mats[0];
         c.castShadow = true;
         c.receiveShadow = !part.P.fixed;
-        if (part.P.fixed) sided(c, 3, part.up);
+        // a fixed order, so the same face lands first every frame
+        if (part.P.fixed) sided(c, 3 + 1e-6 * k++, part.up);
       });
       part.grp.add(clone);
       // a model Claude found on the web (find_models.py) must sit on its
@@ -286,7 +337,12 @@ async function loadModels(url, sc) {
         // nearly one depth swap places and the blend flashes (a USB-C ghost's
         // pin rows lit and dimmed frame to frame).
         // Its depth drawn first, unseen, lets only its front surface blend:
-        // one shell, the same every frame
+        // one shell, the same every frame. A model's near-coincident faces
+        // (pins against the housing, plating over the body) sit within
+        // rounding of that depth, so without the tolerance, the stencil and
+        // the fixed order above, which of them passed -- and how many times a
+        // pixel blended -- changed with the view: a fine-pitch connector's
+        // shell shimmered in stair steps as the board turned.
         const front = clone.clone(true);
         front.traverse((c) => {
           if (!c.isMesh) return;
@@ -739,7 +795,8 @@ window.m3dInit = async function (o) {
   document.body.style.background = css(sc.colors.ground);
   const W = o.width, H = o.height;
   const kh = buildKey(sc);
-  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  // a stencil buffer: each fixed part's ghost blends a pixel once (loadModels)
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, stencil: true });
   renderer.setPixelRatio(1);
   renderer.setSize(W, H - kh);
   renderer.setClearColor(rgb(sc.colors.ground), 1);

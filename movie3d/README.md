@@ -60,7 +60,13 @@ Own options: `--movie`, `--fps` (12), `--width`/`--height` (1000x560),
 step, 3; 1 gives the 2D movie's cuts), `--speedup` (how much faster the anneal
 plays at its end, 4), `--no-models` (boxes only), `--kicad-cli`, `--tint` (how
 far each model's colours go toward its group's colour, 0.4), `--work`,
-`--browser`, `--crf` (20).
+`--browser`, `--gpu` (auto), `--crf` (20).
+
+**Drawing on the GPU.** On macOS with Google Chrome (or Chromium) in
+/Applications, `--gpu auto` (the default) draws the frames on the GPU through
+Metal; `--gpu off` keeps the software renderer. On a 306-model board the
+render took 70 s on an M3's GPU against about 24 minutes in software, and the
+two give the same frames to within a fraction of a grey level.
 
 **What it needs.** Its Node libraries, `playwright-core` 1.52.0 and `three`
 0.186.1, are pinned by `package-lock.json` and installed in
@@ -199,8 +205,8 @@ view across the board's long side wins a near tie.
   born at and the tick it died at (stage3d's copper lifetimes). A frame names
   one tick, and the page's shader shows, lights or reddens each item for it.
 - `render.mjs` uses Node and playwright-core to open `page/index.html` in
-  headless Chromium on SwiftShader (CPU WebGL, so the pixels do not depend on
-  the GPU). The page is served through `page.route` from a fake host, so
+  headless Chromium, on SwiftShader (CPU WebGL, so the pixels do not depend on
+  the GPU), or with `--gpu` an installed Chrome on Metal. The page is served through `page.route` from a fake host, so
   nothing leaves the machine. For each frame it calls `m3dFrame(i)` and
   screenshots the result to `frames/f00000.png`, and so on.
 - `page/movie3d.mjs` is the three.js scene. It is a pure function of

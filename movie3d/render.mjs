@@ -32,8 +32,11 @@ async function main() {
   if (job.glb) files['/data/parts.glb'] = job.glb;
   const browser = await chromium.launch({
     executablePath: job.browser || undefined, headless: true,
-    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--use-gl=angle',
-           '--ignore-gpu-blocklist'] });
+    // job.gpu: an installed Chrome drawing on the GPU through Metal (make_movie
+    // --gpu); else SwiftShader, the software renderer
+    args: job.gpu ? ['--use-angle=metal', '--use-gl=angle', '--enable-gpu', '--ignore-gpu-blocklist']
+                  : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--use-gl=angle',
+                     '--ignore-gpu-blocklist'] });
   const errors = [];
   try {
     const page = await browser.newPage({ viewport: { width: job.width, height: job.height },
