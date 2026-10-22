@@ -57,8 +57,7 @@ def main():
                                     'cached': True, 'note': ''}, None)
     sys.modules['models'] = stub
     rec = SimpleNamespace(scene={'parts': parts}, model_src=(BOARD, None, BOARD), refs=refs)
-    a = SimpleNamespace(tint=0.5, no_models=False, kicad_cli=None, no_find_models=True,
-                        refind_models=False)
+    a = SimpleNamespace(tint=0.5, no_models=False, kicad_cli=None)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         record.attach_models(a, rec)
