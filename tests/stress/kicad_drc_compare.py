@@ -83,9 +83,20 @@ KICAD_CLI = (_find_kicad_cli(warn=False)
 # kicad violation types that correspond to copper-clearance/short classes
 # check_drc grades. Everything else (annular_width, courtyard, silk, thermal,
 # malformed, zone fill, footprint/lib checks, text...) is out of scope.
+#
+# The drill-pair class -- check_drc's `via-drill-hole` and
+# `pad-drill-via-drill[-same-net]` -- is `hole_to_hole` in KiCad 10, and
+# `holes_co_located` when the two centres coincide (read from KiCad 10.0.0's
+# own DRC item table, in _pcbnew.kiface). The list named only `hole_near_hole`,
+# the older spelling, so every drill pair check_drc reported read
+# checkdrc_only and was never matched: mod_bme280's two Net-(C1-Pad1) vias
+# 0.18 mm apart, which kicad-cli reports as hole_to_hole. `hole_near_hole`
+# stays for reports from older KiCad. Being listed here also stages both new
+# types at error in _staged_copy, as every copper class is (#526).
 KICAD_COPPER_TYPES = {
     "clearance", "shorting_items", "tracks_crossing",
-    "hole_clearance", "hole_near_hole", "drilled_holes_too_close",
+    "hole_clearance", "hole_to_hole", "holes_co_located",
+    "hole_near_hole", "drilled_holes_too_close",
     "drilled_holes_colliding", "via_hole_larger_than_pad",
     "copper_edge_clearance",
 }
