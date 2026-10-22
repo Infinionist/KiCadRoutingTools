@@ -21,7 +21,8 @@ apart, the movable parts in their way pushed aside in turn.
 Moves, each priced by `Model.local` against the committed state near it:
 
     shift   one part by up to `reach` mm
-    turn    one part to another quarter turn, in place
+    turn    one part to another quarter turn, in place (a part every quarter
+            turn leaves the same, `turns_alike`, keeps its turn in every move)
     swap    two parts of one footprint exchange poses
     jump    one part to its wiring target, at a random turn
     dock    one part against a partner: for one of its nets, the nearest
@@ -123,6 +124,43 @@ def _half_turn(a, b) -> bool:
     return abs((a - b) % 360.0 - 180.0) < 1e-6
 
 
+def turns_alike(part, fp) -> bool:
+    """Whether every quarter turn leaves `part` the same to the placer: its
+    pads (place, net, size, shape, drill) map onto each other turned about
+    its origin, and every box it is priced by -- courtyard or body, the
+    grade's, the far side, the pad copper, the drawn box -- is the same at
+    each turn. A one-pin test point or fiducial with a round pad and a
+    square courtyard: turning it changes nothing but its picture, so the
+    anneal leaves its turn alone (`Annealer.alike`)."""
+    if fp is None or not fp.pads or part.rot % 90:
+        return False
+    pads = []
+    for p in fp.pads:
+        sx, sy, shape = float(p.size_x), float(p.size_y), (p.shape or '').lower()
+        round_ = shape in ('circle', 'rect', 'roundrect', 'oval') and abs(sx - sy) < 1e-6
+        if not round_ or getattr(p, 'hole_x', None) is not None:
+            return False
+        pads.append((round(p.local_x, 4), round(p.local_y, 4), p.net_id, shape, round(sx, 4),
+                     round(float(p.drill or 0.0), 4), tuple(sorted(p.layers or ()))))
+    turned = sorted((round(-y, 4) + 0.0, round(x, 4) + 0.0, *rest) for x, y, *rest in pads)
+    if turned != sorted((x + 0.0, y + 0.0, *rest) for x, y, *rest in pads):
+        return False
+
+    def boxes(rot):
+        out = [part.rect(0.0, 0.0, rot), part.grade_rect(0.0, 0.0, rot),
+               part.padbox(0.0, 0.0, rot), part.drawn_rect(0.0, 0.0, rot)]
+        far = part.tht_rect(0.0, 0.0, rot)
+        out += sorted(far_boxes(far)) if far is not None else []
+        return [None if b is None else tuple(round(v, 4) for v in b) for b in out]
+    first = boxes(part.rot)
+    for q in (90.0, 180.0, 270.0):
+        rot = (part.rot + q) % 360.0
+        part.ensure_rotation(rot)
+        if boxes(rot) != first:
+            return False
+    return True
+
+
 class Annealer:
     def __init__(self, model, movable: List[str], *, seed: int = 0, seats=None):
         self.model = model
@@ -136,6 +174,11 @@ class Annealer:
         self.no_flip = frozenset()
         self.mov = sorted(r for r in movable if r in st.parts)
         self.movset = movset = set(self.mov)
+        # the parts every quarter turn leaves the same (`turns_alike`): a
+        # move keeps their turn, so the anneal never prices a turn that
+        # changes nothing
+        fps = st.pcb_data.footprints
+        self.alike = frozenset(r for r in self.mov if turns_alike(st.parts[r], fps.get(r)))
         # what a seated part's pairs are priced differently against: the
         # parts the anneal does not move, and the other seated parts
         self.walls = sorted((set(st.parts) - movset) | set(self.seats))
@@ -523,6 +566,8 @@ class Annealer:
                 if r in self.no_flip and _half_turn(pose[2], now):
                     pose = (pose[0], pose[1], now)
                 out[r] = project(self.seats[r], pose, now)
+        for r in self.alike.intersection(out):      # its turn changes nothing
+            out[r] = (out[r][0], out[r][1], self.st.parts[r].rot)
         return out
 
     def _carry(self, new):
@@ -1113,7 +1158,12 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
             stats[kind][0] += 1
             if not new:
                 continue
-            kept, dc, do = a.trial(new, T)
+            if kind == 'turn' and a.alike.issuperset(new) and all(new[r] == a.pose(r) for r in new):
+                # a turn of a part every turn leaves the same changes
+                # nothing: kept, as the rule keeps a zero change, unpriced
+                kept, dc, do = True, 0.0, 0.0
+            else:
+                kept, dc, do = a.trial(new, T)
             if kept:
                 stats[kind][1] += 1
                 v['cur'] += dc
