@@ -65,6 +65,19 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:
 #: MEASURED, from the run recorded in the pull request. Never predicted.
 #:
+#: RE-RECORDED 2026-10-22 (tap end connector on the target pad's layer, with
+#: the #1217 split). `truth.quality` of ONE row; blocking and the headline
+#: unmoved.
+#:   * esp_prog:authored -- a tap edge's end connector is judged on the target
+#:     pad's own layer, so a tap that reaches an SMD pad through an unblock via
+#:     no longer draws a connector to the pad's centre on a layer the pad has
+#:     no copper on. The route differs past that tap and leaves one joint KiCad
+#:     counts as dangling, which the end-of-run #1217 pass splits its track at
+#:     (one more segment, no copper moved). Connected, DRC-clean and
+#:     check_weird-clean.
+#:   esp_prog:authored            vias 32 -> 35, segs 188 -> 193, copper 311.88 -> 333.34
+#:   other rows                   unmoved
+#:
 #: RE-RECORDED 2026-10-20 (#1291). `truth.quality` of TWO rows; blocking and
 #: the headline unmoved. Taps on an axial or 45-degree track between grid
 #: points now sit on the grid, so the welds that started off grid move onto
@@ -435,7 +448,8 @@ EXPECTED = {
                # 2026-10-07 (#1159 at-rule neck): 32/303.46/201 -> 36/318.64/182
                # 2026-10-07 (#1186 T by distance): copper 318.64 -> 318.69
                # 2026-10-16 (unblock via taken back): 36/318.69/182 -> 32/311.88/188
-               'quality': {'vias': 32, 'copper_mm': 311.88, 'segments': 188}},
+               # 2026-10-22 (tap connector on the pad's layer, #1217 split): -> 35/333.34/193
+               'quality': {'vias': 35, 'copper_mm': 333.34, 'segments': 193}},
         predictors={
             'crossings': 53, 'hpwl': 253.98092000000003,
             'halo': 127.48707486477095, 'overlap_area': 1.1400451712000104,
