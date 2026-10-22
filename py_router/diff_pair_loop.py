@@ -26,7 +26,8 @@ from polarity_swap import apply_polarity_swap, get_canonical_net_id
 from layer_swap_fallback import try_fallback_layer_swap, add_own_stubs_as_obstacles_for_diff_pair
 from diff_pair_multipoint import (
     get_diff_pair_terminals, route_multipoint_diff_pair,
-    leg_electrically_short, diff_pair_min_coupled_length,
+    leg_electrically_short, pair_leg_electrically_short,
+    diff_pair_min_coupled_length,
 )
 from routing_context import (build_diff_pair_obstacles, build_diff_pair_leg_obstacles,
                              restore_ripped_net)
@@ -256,8 +257,17 @@ def route_diff_pairs(
 
         # A 2-terminal pair is a single leg: if it is electrically short, coupling
         # gains nothing (and tangles through clustered connector pads), so leave
-        # the whole pair for the single-ended follow-up pass.
-        if len(terminals) == 2 and leg_electrically_short(terminals[0], terminals[1], config):
+        # the whole pair for the single-ended follow-up pass. Short counts the
+        # members' own escape copper (#1362): escapes that lead away from the
+        # far terminal make the pair long, and it routes coupled from their tips.
+        _pad_short = (len(terminals) == 2
+                      and leg_electrically_short(terminals[0], terminals[1], config))
+        if _pad_short and not pair_leg_electrically_short(
+                pcb_data, terminals[0], terminals[1], config):
+            print(f"  Short pad to pad, but its own escape copper makes each member "
+                  f"run >= {diff_pair_min_coupled_length(config):.1f}mm - routing "
+                  f"coupled from the escape tips")
+        elif _pad_short:
             print(f"  Electrically short ({diff_pair_min_coupled_length(config):.1f}mm "
                   f"coupled floor) - routing single-ended instead of coupled")
             state.diff_pair_single_ended_nets[pair.p_net_id] = pair.p_net_name

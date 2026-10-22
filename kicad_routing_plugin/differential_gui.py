@@ -700,10 +700,17 @@ class DifferentialTab(wx.Panel):
 
     def _is_short_pair(self, p_net_id, n_net_id):
         """Whether this pair would be deferred to single-ended as electrically
-        short, given the current Pair Width / Gap / Centerline Setback. Cached
-        per (params, pair)."""
+        short, given the current Pair Width / Gap / Centerline Setback and the
+        board's copper (a pair's own fanout escapes count, #1362). Cached per
+        (params, pair) and dropped when the copper changes: a sync replaces
+        the copper lists and routing in place appends to them."""
         from diff_pair_multipoint import diff_pair_is_short
         width, gap, setback = self._short_params()
+        segs, vias = self.pcb_data.segments, self.pcb_data.vias
+        copper = (id(segs), len(segs), id(vias), len(vias))
+        if copper != getattr(self, '_short_cache_copper', None):
+            self._short_cache.clear()
+            self._short_cache_copper = copper
         key = ((round(width, 6), round(gap, 6),
                 None if setback is None else round(setback, 6)),
                p_net_id, n_net_id)

@@ -214,6 +214,17 @@ setback   = centerline_setback (if set) else 4 × (track_width + diff_pair_gap)/
 - A **multi-point** pair defers short legs individually; if *every* leg is
   short the whole pair is left for single-ended.
 
+For a 2-terminal pair a run counts the member's **own copper** (#1362): the
+copper already on its pads (a fanout escape, a layer-swap stub) plus the
+straight gap from that copper's free tips, the points the pair router launches
+from (`member_run_mm`). A pair is deferred only when it is short both pad to
+pad and along those runs. Escapes that lead away from the far terminal make a
+pair long however close its pads are, and it is routed coupled from the escape
+tips, where the single-ended fallback could join one member through its ball
+via and the other along its escape. Copper only lengthens a run, so this never
+defers a pair that the pad-to-pad test routes coupled. The log says
+`Short pad to pad, but its own escape copper ...` when it applies.
+
 Being short is not the only way a pair is left whole for single-ended: a
 multi-point pair whose coupled chain cannot be routed at all is deferred as
 the fallback (#165), and so is a 2-terminal pair whose coupled route failed.
