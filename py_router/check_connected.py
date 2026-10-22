@@ -1667,15 +1667,19 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     # crosses the outline, which the stroke rules above already credit, so
     # point containment is the one case left. A circle is tested on its true
     # radius, not the parser's inscribed 16-gon.
+    # Keyed by the ring OBJECT, which every segment of one shape shares (both
+    # parse paths build it once per shape): hashing the vertex tuple per
+    # segment would cost a many-vertex shape quadratic time on every call.
     _fills = {}
     for seg_idx, seg in enumerate(segments):
         ring = getattr(seg, 'graphic_ring', None)
         if ring and strokes[seg_idx] is not None:
-            _rep = _fills.setdefault((ring, seg.layer),
+            _rep = _fills.setdefault((id(ring), seg.layer),
                                      (seg_idx * 2,
-                                      getattr(seg, 'graphic_circle', None)))[0]
+                                      getattr(seg, 'graphic_circle', None),
+                                      ring))[0]
             _union(_rep, seg_idx * 2)
-    for (ring, layer), (_rep, circle) in _fills.items():
+    for (_rid, layer), (_rep, circle, ring) in _fills.items():
         _on = [p for p in all_points if p[2] == layer]
         if not _on:
             continue
