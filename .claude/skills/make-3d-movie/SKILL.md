@@ -93,8 +93,11 @@ WebSearch and WebFetch, and the installed library with `ls`:
      library nickname that is not KiCad's own. The model is in the
      repository's `*.3dshapes` folder.
    - A `${KISYS3DMOD}/...` or `${KICADn_3DMODEL_DIR}/...` path is KiCad's
-     library, at https://gitlab.com/kicad/libraries/kicad-packages3D. Check its
-     older branches (`7.0`, `8.0`) for models since removed or renamed.
+     library, at https://gitlab.com/kicad/libraries/kicad-packages3D. Check
+     master and its release tags (`9.0.0`, `8.0.0`, `7.0.0`, `6.0.0`: tags,
+     not `9.0`-style branch names, which do not exist there) for models since
+     removed or renamed. A raw file is
+     `https://gitlab.com/kicad/libraries/kicad-packages3D/-/raw/<tag>/<Lib>.3dshapes/<file>`.
    - When a `library_near` file is the same model under a new name (KiCad
      renamed `SW_CuK_JS202011CQN...` to `SW_CK_JS202011CQN...`), use it.
 2. **The manufacturer's model of the exact part**, found from the value, the
