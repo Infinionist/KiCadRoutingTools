@@ -340,6 +340,46 @@ def test_the_strap_escalation_routes_the_exact_seeds():
           f"via(s) between fill seeds the derivation could not see")
 
 
+def test_a_long_pad_joins_only_copper_that_touches_it():
+    """ddr5 GND J1.177, a 0.35 x 2.5 mm SODIMM finger: exact_clusters looked
+    its copper up with a tolerance inflated by the pad's half-LENGTH, and the
+    pad rung measures from the pad's copper, so a via 1.40 mm off the finger
+    joined it. The exact source then reported no link for a pad KiCad grades
+    open. Fixture: the finger at (10, 10), a GND via 1.43 mm off its copper,
+    tracked to a far GND pad; no fill."""
+    from kicad_parser import parse_kicad_pcb
+    from kicad_exact_fill import exact_clusters
+    with tempfile.TemporaryDirectory() as td:
+        b = os.path.join(td, 'b.kicad_pcb')
+        with open(b, 'w', encoding='utf-8') as f:
+            f.write('''(kicad_pcb (version 20250114) (generator "pcbnew") (generator_version "10.0")
+  (general (thickness 1.6))
+  (paper "A4")
+  (layers (0 "F.Cu" signal) (2 "B.Cu" signal) (25 "Edge.Cuts" user))
+  (setup (pad_to_mask_clearance 0))
+  (gr_rect (start 0 0) (end 40 40) (stroke (width 0.1) (type default)) (fill none) (layer "Edge.Cuts"))
+  (footprint "T:F" (layer "F.Cu") (at 10 10)
+    (property "Reference" "J1" (at 0 -1.5 0) (layer "F.SilkS"))
+    (attr smd)
+    (pad "1" smd rect (at 0 0) (size 0.35 2.5) (layers "F.Cu") (net "GND")))
+  (footprint "T:P" (layer "F.Cu") (at 20 8.6)
+    (property "Reference" "R2" (at 0 -1.5 0) (layer "F.SilkS"))
+    (attr smd)
+    (pad "1" smd rect (at 0 0) (size 0.6 0.6) (layers "F.Cu") (net "GND")))
+  (via (at 11.6 8.6) (size 0.35) (drill 0.2) (layers "F.Cu" "B.Cu") (net "GND"))
+  (segment (start 11.6 8.6) (end 20 8.6) (width 0.2) (layer "F.Cu") (net "GND"))
+)
+''')
+        pcb = parse_kicad_pcb(b)
+        gid = {n.name: i for i, n in pcb.nets.items()}['GND']
+        cl = exact_clusters(pcb, gid, [])
+    groups = sorted(sorted(f"{p.component_ref}.{p.pad_number}"
+                           for p in c['pads']) for c in cl)
+    assert groups == [['J1.1'], ['R2.1']], \
+        f'the finger must stand alone (the via is 1.43 mm off it): {groups}'
+    print(f"  PASS: clusters {groups}")
+
+
 TESTS = [test_a_via_or_barrel_end_resolves_to_its_span,
          test_a_forced_link_to_a_via_routes_on_its_span,
          test_the_rescue_routes_the_forced_links,
@@ -347,7 +387,8 @@ TESTS = [test_a_via_or_barrel_end_resolves_to_its_span,
          test_a_path_that_lays_no_copper_is_not_a_weld,
          test_the_weld_reach_test_is_layer_aware,
          test_the_exact_tier_reads_an_anchor_on_its_own_layer,
-         test_the_strap_escalation_routes_the_exact_seeds]
+         test_the_strap_escalation_routes_the_exact_seeds,
+         test_a_long_pad_joins_only_copper_that_touches_it]
 
 
 if __name__ == '__main__':
