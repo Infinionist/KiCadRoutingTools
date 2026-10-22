@@ -548,18 +548,20 @@ def estimated_courtyards(pcb_data, pcb_file: Optional[str] = None,
 
 def courtyard_sides_with_estimates(pcb_data, pcb_file: str,
                                    drawn: Optional[Dict[str, Dict[str, Bbox]]]
-                                   = None):
+                                   = None, skip=()):
     """`(sides, estimates)`: `parser.extract_courtyard_sides`' map -- the
     courtyards the board DRAWS, per side -- with every `estimated_courtyards`
     entry added as its part's own-side courtyard, and the estimates
     themselves for disclosure. A consumer that reads courtyards from this
     map sees a courtyard-less part where it would see a courtyard; one that
     must judge what is drawn (a declared pose, a grade) reads the parser.
-    `drawn` is the parser's map when the caller already read it."""
+    `drawn` is the parser's map when the caller already read it; a ref in
+    `skip` keeps the basis the board draws (its pad box), estimate unused."""
     from placement.parser import extract_courtyard_sides
     sides = dict(extract_courtyard_sides(pcb_file) if drawn is None
                  else drawn)
-    estimates = estimated_courtyards(pcb_data, pcb_file)
+    estimates = {r: e for r, e in estimated_courtyards(pcb_data, pcb_file).items()
+                 if r not in skip}
     for ref, est in estimates.items():
         if ref not in sides:
             sides[ref] = {est.side: est.local}

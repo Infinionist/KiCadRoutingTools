@@ -198,6 +198,13 @@ def test_the_map_consumers_read(td):
     check('the parser\'s own map is not mutated', 'C1' not in drawn)
     again, _ = body.courtyard_sides_with_estimates(pcb, path, drawn=drawn)
     check('handing the parser map in gives the same answer', again == sides)
+    # place_simple's fallback for a part the estimates leave no legal pose
+    skipped, est2 = body.courtyard_sides_with_estimates(pcb, path, skip={'C1'})
+    check('a skipped part keeps what the board draws, its estimate unused',
+          'C1' not in skipped and 'C1' not in est2, (skipped.get('C1'), sorted(est2)))
+    check('...and only that part: the others keep their estimates',
+          {r: v for r, v in skipped.items() if r != 'C1'}
+          == {r: v for r, v in sides.items() if r != 'C1'})
     note = body.format_estimates(est, 'placement') or ''
     check('the NOTE names the count and each rung',
           '5 footprint(s)' in note and 'fab +0.25 mm: C1, C3' in note
