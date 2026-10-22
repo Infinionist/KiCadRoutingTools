@@ -101,7 +101,9 @@ def body_height(ref, name):
 
 def _not_assembled(fp):
     """No body to draw: no 3D model AND nothing placed there (a test pad,
-    a solder jumper) -- stage3d's rule (#1098) -- or a DNP part, model or
+    a solder jumper, a printed antenna, a wire's solder hole: board-only,
+    out of the position files or out of the BOM) -- stage3d's rule (#1098)
+    -- or a DNP part, model or
     not (#1350): the GLB is exported with `--no-dnp`, so it never gets its
     model, and the box it got instead drew a part the board will not carry
     (a board with 23 DNP 0402s had them drawn as boxes, reported as model
@@ -109,11 +111,16 @@ def _not_assembled(fp):
     if getattr(fp, 'dnp', False):
         return True
     return (not getattr(fp, 'has_model', False)
-            and set(getattr(fp, 'attrs', ()) or ()) & {'board_only', 'exclude_from_pos_files'})
+            and set(getattr(fp, 'attrs', ()) or ()) & {'board_only', 'exclude_from_pos_files',
+                                                       'exclude_from_bom'})
 
 
-def part_scene(ref, fp, part, colour, fixed):
-    """One part in its own frame (its pose (0, 0, 0)): pads, courtyard, body."""
+def part_scene(ref, fp, part, colour, fixed, board_area=0.0):
+    """One part in its own frame (its pose (0, 0, 0)): pads, courtyard, body.
+    A footprint with no 3D model whose pad field covers half the board or
+    more gets no body: it is the board's own pin frame (a module-format
+    board's pin rows or castellations), not a part on the board, and a box
+    over it would hide the board."""
     from placement.legality import pads_at_pose
     posed = pads_at_pose(fp, (0.0, 0.0, 0.0))
     rot = math.radians(fp.rotation or 0.0)
@@ -137,10 +144,21 @@ def part_scene(ref, fp, part, colour, fixed):
         hx = hy = None
         if drill > 0 and getattr(src, 'hole_x', None) is not None:
             hx, hy = to_local(src.hole_x, src.hole_y)
-        pads.append([round(q.global_x, 4), round(q.global_y, 4), round(float(q.size_x), 4),
-                     round(float(q.size_y), 4), round(float(q.rect_rotation or 0.0), 3),
-                     (q.shape or 'rect').lower(), face, round(drill, 4),
-                     None if hx is None else round(hx, 4), None if hy is None else round(hy, 4)])
+        row = [round(q.global_x, 4), round(q.global_y, 4), round(float(q.size_x), 4),
+               round(float(q.size_y), 4), round(float(q.rect_rotation or 0.0), 3),
+               (q.shape or 'rect').lower(), face, round(drill, 4),
+               None if hx is None else round(hx, 4), None if hy is None else round(hy, 4)]
+        # a custom pad's copper is its polygons (a printed antenna's meander),
+        # which can lie to one side of its anchor: draw them, and box it by them
+        polys = [[[round(c, 4) for c in to_local(x, y)] for x, y in ring]
+                 for ring in (getattr(src, 'polygons', None) or []) if len(ring) >= 3]
+        if row[5] == 'custom' and polys:
+            xs = [x for ring in polys for x, _y in ring]
+            ys = [y for ring in polys for _x, y in ring]
+            row[:5] = [round((min(xs) + max(xs)) / 2, 4), round((min(ys) + max(ys)) / 2, 4),
+                       round(max(xs) - min(xs), 4), round(max(ys) - min(ys), 4), 0.0]
+            row.append(polys)
+        pads.append(row)
     if part is not None:
         court = part.rect(0.0, 0.0, 0.0)
     elif pads:
@@ -151,7 +169,11 @@ def part_scene(ref, fp, part, colour, fixed):
     court = [round(v, 4) for v in court]
     body = None
     copper = [p for p in pads if p[6] != 'N']
-    if not _not_assembled(fp) and copper:
+    frame = (copper and board_area > 0 and not getattr(fp, 'has_model', False)
+             and (max(p[0] + p[2] / 2 for p in copper) - min(p[0] - p[2] / 2 for p in copper))
+             * (max(p[1] + p[3] / 2 for p in copper) - min(p[1] - p[3] / 2 for p in copper))
+             >= 0.5 * board_area)
+    if not _not_assembled(fp) and copper and not frame:
         h = body_height(ref, fp.footprint_name)
         if _prefix(ref) in COURT_BODY:
             x0, y0, x1, y1 = court
@@ -220,8 +242,10 @@ class Recorder(Story):
         self.refs = sorted(r for r in pcb.footprints if not r.startswith('#')
                            and (r in st.parts or pcb.footprints[r].pads))
         self.idx = {r: i for i, r in enumerate(self.refs)}
+        bb = pcb.board_info.board_bounds
+        area = (bb[2] - bb[0]) * (bb[3] - bb[1]) if bb else 0.0
         parts = [part_scene(r, pcb.footprints[r], st.parts.get(r), colour.get(r, fixed_rgb),
-                            r not in self.movable) for r in self.refs]
+                            r not in self.movable, area) for r in self.refs]
         self.side = {p['ref']: p['side'] for p in parts}
         self.bodyh = {p['ref']: (p['body'][4] if p['body'] else 0.0) for p in parts}
         self.court = {p['ref']: p['court'] for p in parts}
@@ -635,8 +659,13 @@ def attach_models(a, rec):
              if info['found'] else '')
           + (f"; {len(dnp)} DNP part(s) not populated, so drawn as pads: "
              f"{', '.join(dnp[:8])}{'...' if len(dnp) > 8 else ''}" if dnp else ''))
-    if info['missing']:
-        print(f"record: {len(info['missing'])} model(s) the installed library lacks; the make-3d-movie "
+    # a model the skill already looked for and recorded as not found is not asked for again
+    import find_models
+    idx = find_models.load_index()
+    sought = [m for m in info['missing']
+              if (idx.get(find_models._key_of(m)) or {}).get('status') != 'none']
+    if sought:
+        print(f"record: {len(sought)} model(s) the installed library lacks; the make-3d-movie "
               f"skill looks for them on the web (python3 movie3d/find_models.py missing "
               f"{rec.model_src[2]})")
 

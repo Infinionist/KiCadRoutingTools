@@ -159,13 +159,14 @@ def _hidden(fp_text, at):
 
 
 def _assembled(fp_text):
-    """Whether a footprint block is a part the board carries: a copper pad,
-    and not DNP, board-only or left out of the position files (a test pad, a
-    solder jumper, a logo) -- record._not_assembled's rule, read off the
-    text."""
+    """Whether a footprint block with no model is a part the board carries:
+    a copper pad, and not DNP, board-only, or left out of the position files
+    or the BOM (a test pad, a solder jumper, a printed antenna, a logo) --
+    record._not_assembled's rule, read off the text."""
     if not re.search(r'\(pad\s+"[^"]*"\s+(smd|thru_hole)\b', fp_text):
         return False
-    if re.search(r'\(attr\b[^)]*\b(board_only|exclude_from_pos_files|dnp)\b', fp_text):
+    if re.search(r'\(attr\b[^)]*\b(board_only|exclude_from_pos_files|exclude_from_bom|dnp)\b',
+                 fp_text):
         return False
     return not re.search(r'\(dnp\s+yes\)', fp_text)
 

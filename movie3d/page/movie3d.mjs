@@ -96,6 +96,19 @@ function padGeo(sx, sy, shape) {
   return (_geo[k] = g);
 }
 
+// a custom pad's copper, its polygons in the part's frame, extruded flat
+function polyGeo(rings) {
+  const shapes = rings.map((ring) => {
+    const s = new THREE.Shape();
+    ring.forEach(([x, y], i) => (i ? s.lineTo(x, y) : s.moveTo(x, y)));
+    return s;
+  });
+  const g = new THREE.ExtrudeGeometry(shapes, { depth: PAD_T, bevelEnabled: false });
+  g.rotateX(Math.PI / 2);
+  g.translate(0, PAD_T / 2, 0);
+  return g;
+}
+
 function rectLoop(r, y, mat) {
   const [x0, y0, x1, y1] = r;
   const pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map((p) => new THREE.Vector3(p[0], y, p[1]));
@@ -121,14 +134,14 @@ function buildParts(sc, root) {
     const up = P.side === 'F' ? 1 : -1;          // the part's own face looks this way
     const near = [], far = [];
     for (const p of P.pads) {
-      const [lx, ly, sx, sy, tilt, shape, face, drill, hx, hy] = p;
+      const [lx, ly, sx, sy, tilt, shape, face, drill, hx, hy, polys] = p;
       // world faces this pad has copper on: top (+1) and/or bottom (-1)
       const dirs = face === 'T' ? [1, -1] : face === 'F' ? [1] : face === 'B' ? [-1] : [];
       for (const dir of dirs) {
         // local height of that face: the part's own face is 0
         const y0 = dir === up ? 0 : -up * d;
-        const m = new THREE.Mesh(padGeo(sx, sy, shape), padMat);
-        m.position.set(lx, y0 + dir * (PAD_T / 2 + 0.003), ly);
+        const m = new THREE.Mesh(polys ? polyGeo(polys) : padGeo(sx, sy, shape), padMat);
+        m.position.set(polys ? 0 : lx, y0 + dir * (PAD_T / 2 + 0.003), polys ? 0 : ly);
         m.rotation.y = rad(tilt);
         m.castShadow = false;
         m.receiveShadow = true;
