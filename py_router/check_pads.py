@@ -261,9 +261,9 @@ def pads_shorted_as_drawn(pcb, net_ids, tolerance: float = 1e-3):
     touches whose pads carry other nets (#1266's census, a net tie's own tied
     net exempt). No copper can land on such a pad without joining that net
     too, so a net left open by one is unroutable AS DESIGNED: the board needs
-    the fix, not the router. open_weather_station stacks net ties NT1/NT2 at
-    one pose and overlaps NT3/NT4 with swapped nets; KiCad grades all seven
-    contacts `shorting_items` on the unrouted board.
+    the fix, not the router. A board that stacks two net ties at one pose
+    and overlaps two more with swapped nets has all seven contacts graded
+    `shorting_items` by KiCad on the unrouted board.
 
     One row per (pad, foreign copper), sorted::
 

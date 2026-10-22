@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A net whose pad is shorted to another net AS DRAWN is named, not counted.
 
-open_weather_station (stress set 10) stacks net ties NT1/NT2 at one pose, so
+A measured board stacks net ties NT1/NT2 at one pose, so
 the pads tying /Connectors/ETH_PORT4 and ETH_PORT5 to the bridge coincide, and
 overlaps NT3/NT4 rotated 180 degrees against each other, so ETH_PORT7 and
 ETH_PORT8 each sit on the other tie's bridge pad. KiCad 10 grades seven
@@ -53,7 +53,7 @@ SHORTED = sorted(NETS[n] for n in (1, 2, 3, 4, 5))
 
 
 def tie(ref, x, y, rot, net1, net2):
-    """KiCad's NetTie-2_SMD_Pad0.5mm, as open_weather_station places it."""
+    """KiCad's NetTie-2_SMD_Pad0.5mm, as the measured board places it."""
     return (f''' (footprint "NetTie:NetTie-2_SMD_Pad0.5mm" (layer "F.Cu") (at {x} {y} {rot})
   (property "Reference" "{ref}" (at 0 -1.2) (layer "F.SilkS"))
   (attr exclude_from_pos_files exclude_from_bom allow_missing_courtyard)

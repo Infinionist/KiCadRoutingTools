@@ -5,13 +5,13 @@ cut by the final reconciliation.
 route.py's in-run plane finalize audits every zone net with the KiCad oracle
 and then runs the final reconciliation, which lays and rips copper WITH RIP
 AUTHORITY. Nothing looked again, and pours KiCad had just called complete
-shipped cut (the 24f811a1 wave, replayed with a snapshot after every pass):
-ergosnm's rescued ROW_2/ROW_3 and orbiter_kb's rerouted /T_KEY_ROW1 cut
-GND's pour; open_weather_station's rescued RXD0 fenced C28.2 off on a
-2.4 mm2 B.Cu island; eit_mux's /S11 rip-reroute split the B.Cu GND fill
-where only KiCad's refill saw it (a 0.09 mm neck between two vias, under the
-zone's 0.1 mm minimum width, which the raster model passes); ulx3s's SD_D0
-reconciliation route cut the In1.Cu GND plane.
+shipped cut on five boards (the 24f811a1 wave, replayed with a snapshot
+after every pass): rescued keyboard rows and a rerouted key row cut GND's
+pour; a rescued RXD0 fenced a capacitor pad off on a 2.4 mm2 B.Cu island; a
+/S11 rip-reroute split the B.Cu GND fill where only KiCad's refill saw it (a
+0.09 mm neck between two vias, under the zone's 0.1 mm minimum width, which
+the raster model passes); an SD data line's reconciliation route cut the
+In1.Cu GND plane.
 
 Checks:
   B. verified_pour_compare grades the pours by KiCad on both boards: a
@@ -74,7 +74,7 @@ def quiet(fn, *a, **kw):
 def t_compare():
     print('B. verified_pour_compare grades the pours by KiCad, not the raster')
     nm = {1: 'GND', 2: '/S11', 3: '/S13', 4: 'VCC'}.get
-    # eit_mux: the raster joins GND's islands; KiCad reports one link.
+    # The /S11 case: the raster joins GND's islands; KiCad reports one link.
     before = {1: (True, 0), 2: (False, 1), 3: (True, 0)}
     after = {1: (True, 0), 2: (True, 0), 3: (False, 1)}
     cmp, v = verified_pour_compare(before, after, nm, {1: (True, 0)},

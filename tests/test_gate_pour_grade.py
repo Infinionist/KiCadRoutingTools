@@ -7,7 +7,7 @@ ship whatever it traded. A draw that broke a pour net (a zone net) to connect
 signals now does not: the run's in-run plane finalize already tried to mend
 the cut, so the draw takes power pins off their plane to buy a signal that is
 any later step's ordinary retry. But the gate reads pours through the raster
-fill model, which can join fill islands KiCad's refill splits: nrfmicro's
+fill model, which can join fill islands KiCad's refill splits: one board's
 retry step read as trading GND for /P0.17 when KiCad had GND split on its
 input already (its finalize oracle left a GND link open), so with the rule
 alone the gate reverted a plain gain and the board shipped 3 open nets for 2.
@@ -20,7 +20,7 @@ Checks:
      pour draw and a draw that lowers the open pads still ship
   B. _exact_gate_pours grades the pours on KiCad's exact fill of both boards
      (CLI files, GUI staged saves, every temp dropped; no refill keeps the
-     raster grade), and nrfmicro's "trade" is a plain gain of /P0.17
+     raster grade), and a retry's GND-for-/P0.17 "trade" is a plain gain
   C. batch_route's gate re-grades a pour-driven rejection before acting on it
 
     python3 tests/test_gate_pour_grade.py
@@ -79,7 +79,7 @@ def t_gate():
           'pour net(s) GND' in r and 'pours are whole' in r, r)
     c = compare_connectivity({1: (True, 0), 2: (False, 1)},
                              {1: (False, 1), 2: (True, 0)}, nm)
-    check('the same trade with no pour nets named still ships (bms_sensor)',
+    check('the same trade with no pour nets named still ships',
           gate_verdict(c) == 'accept')
     c = compare_connectivity({1: (True, 0), 4: (False, 1)},
                              {1: (False, 1), 4: (True, 0)}, nm,
@@ -157,7 +157,7 @@ def t_gate_exact():
     finally:
         route._exact_pour_states = real
         shutil.rmtree(d, ignore_errors=True)
-    # nrfmicro's retry, as the gate now sees it: the raster says GND was
+    # A retry, as the gate now sees it: the raster says GND was
     # whole on the input and is cut on the output; KiCad says cut on both
     # (1 link -> 2), so /P0.17 is a plain gain.
     raster_b = {1: (True, 0), 2: (False, 1), 3: (False, 1)}

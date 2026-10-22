@@ -143,8 +143,8 @@ def _route_on_prepared_map(pcb_data, net_id, config, state, routed_net_ids,
     A net carrying exact-fill oracle links (#572) routes THEM, as the main
     pass does: endpoint derivation reads the fill model, whose zone credit
     merges the clusters KiCad grades apart, so a derived route "succeeds" on
-    a pour cell of an island (lpddr4 GND: the stub-swap rescue reported
-    J1.195 routed with one segment and it shipped open)."""
+    a pour cell of an island (on a GND net the stub-swap rescue reported
+    a connector pin routed with one segment and it shipped open)."""
     _stubs, via_cells = prepare_obstacles_inplace(
         state.working_obstacles, pcb_data, config, net_id,
         state.all_unrouted_net_ids, routed_net_ids, track_proximity_cache,

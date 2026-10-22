@@ -2,20 +2,20 @@
 """A companion GND via never ships inside its own pair's clearance.
 
 route_diff's `_create_gnd_vias` places a GND return via beside each pair via
-at the float offsets (0.44 mm out, 0.49 mm along on butterstick: 0.4 via,
-0.1/0.1 pair, 0.09 clearance). The router checked the site at the FLOORED
+at the float offsets (0.44 mm out, 0.49 mm along with a 0.4 via, a
+0.1/0.1 pair and 0.09 clearance). The router checked the site at the FLOORED
 grid offset (4 cells along) and lets the pair turn 45 degrees 4+2 cells after
 the via, so a turn toward the GND via passes its inner track 0.289 mm from
 the via centre against 0.340. `_settle_gnd_via` was to move such a via clear,
 but it looked at the position only BEFORE each of its 4 moves -- the 0.051 mm
 shortfall needs 4 moves and a 5th look -- and on any failure it returned the
-planned site, which was placed: butterstick shipped 5 grazing GND vias (9
+planned site, which was placed: one board shipped 5 grazing GND vias (9
 check_drc / KiCad clearance items); where the pair wraps round the site (a
 U-turn) no outward move clears at all.
 
 Checks, on `_create_gnd_vias` itself (the engine both fronts call), on a
 centreline along +x with one layer change at (10, 10) and the pair's P/N
-signal vias there (they cap the U-turn's pocket, as on butterstick):
+signal vias there (they cap the U-turn's pocket, as measured):
   1. Control: no pair copper -> both vias at their planned sites.
   2. The 45-degree turn: precondition, the planned site grazes the turn by
      ~0.051 mm. The via is placed, moved straight outward (< 0.25 mm), and
@@ -108,7 +108,7 @@ OUTER_STRAIGHT = [seg(10.0, 9.9, 12.0, 9.9, P)]
 # inner track's corner sits 0.1 * tan(22.5) before that.
 _c = 0.6 - 0.1 * math.tan(math.radians(22.5))
 TURN = [seg(10.0, 10.1, 10.0 + _c, 10.1, N), seg(10.0 + _c, 10.1, 12.0, 10.1 + 2.0 - _c, N)]
-# 3: the pair wraps back round the site (butterstick SYZYGY2.TX2_N's shape):
+# 3: the pair wraps back round the site (a measured SYZYGY2.TX2_N's shape):
 # turn toward +y, run straight +y, then head back -x past the via.
 UTURN = [seg(10.0, 10.1, 10.5586, 10.1, N), seg(10.5586, 10.1, 10.8, 10.3414, N),
          seg(10.8, 10.3414, 10.8, 10.5586, N), seg(10.8, 10.5586, 9.1, 12.2586, N)]

@@ -1299,8 +1299,8 @@ def _exact_fill_endpoints(pcb_data, net_id, net_name, A, B, exact_map,
         covers the point (the inner planes cover nearly everything) named
         two parts of the PRIMARY cluster as the link's sides, and their
         nearest approach is wherever their outlines coincide -- the board
-        edge: butterstick GND, a carved-off U11 ball 'strapped' at
-        (126.36,81.40) In1<->F.Cu, 30 mm away, zero copper, every round.
+        edge: on one board's GND, a carved-off BGA ball was 'strapped' at
+        an In1<->F.Cu point 30 mm away, zero copper, every round.
         A via or barrel end (None, '*.Cu') is on every layer it spans."""
         named = prefer is not None and '*' not in str(prefer) \
             and '&' not in str(prefer)
@@ -1665,7 +1665,7 @@ def _weld_touches_endpoints(segs, vias, x0, y0, x1, y1,
     link names them: an end on a named layer is reached only by copper ON
     that layer (a segment there, or a via whose span covers it); None or
     '*.Cu' (a via, a plated barrel) is reached on any layer. The scoped
-    rescue is layer-blind, and zynq7020_som GND C130.2 (a B.Cu pad) was
+    rescue is layer-blind, and a GND capacitor's B.Cu pad was
     credited, two rounds running, with a 0.28mm In1.Cu piece lying on the
     net's existing In1 copper: xy within tol of both ends, joining nothing."""
     from geometry_utils import via_on_layer
@@ -2612,8 +2612,8 @@ def oracle_reconnect(board_file: str, net_names, config,
                     # own seeds to each other, on their layers. The gap
                     # derivation saw only the net's tracks/pads/vias near
                     # the gap -- never the fill a plane link must reach --
-                    # and joined whatever lay there on any layer (butterstick
-                    # GND: 17 B.Cu segments for an F.Cu ball island).
+                    # and joined whatever lay there on any layer (on one
+                    # board, 17 B.Cu GND segments for an F.Cu ball island).
                     _esc2, _esc2_cfg = _attempt_edge(
                         pcb_data, net_id, _gap2, config,
                         config.net_clearances or None,
@@ -3386,8 +3386,8 @@ def oracle_reconnect(board_file: str, net_names, config,
                 # barrel, or its points coincide (the exact tier's nearest
                 # approach can be one point). KiCad has just reported these
                 # clusters apart, so no-copper is no weld -- the #572 false-
-                # weld fingerprint (butterstick GND (151.19,103.08): "OK 0
-                # seg(s), 0 via(s)" credited every round, link still open).
+                # weld fingerprint (a GND link reported "OK 0 seg(s),
+                # 0 via(s)" and credited every round, link still open).
                 print(f"    {net_name}: ({ax:.2f},{ay:.2f})<->({bx:.2f},"
                       f"{by:.2f})  FAILED (the path lays no copper -- a "
                       f"zero-copper weld cannot join clusters KiCad reports "

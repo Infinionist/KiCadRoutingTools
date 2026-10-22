@@ -679,9 +679,9 @@ def net_dead_copper(pcb_data, net_id, segments, vias, pads, zones=None):
     # conducts through board art (`conducting_stroke`), so such a cluster is
     # normally in the art's own component already; the geometric test below
     # stays as the conservative anchor (it reads the modelled stroke width,
-    # never narrower than the drawn one). Measured on openstint: deleting the
-    # via bridging /A-'s copper to its graphic took that board from 0
-    # unconnected items to 2. Same rule remove_orphan_islands'
+    # never narrower than the drawn one). Measured: deleting the via bridging
+    # a net's copper to its graphic took a board from 0 unconnected items
+    # to 2. Same rule remove_orphan_islands'
     # _touches_graphic applies.
     import math as _m
 
@@ -1662,9 +1662,9 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
 
     # A FILLED board-level graphic conducts across its whole interior (KiCad
     # 10, `conducting_stroke`): a pad, via or track end inside it joins it
-    # though it touches no stroke (g474_power_charger's L2.1 lies inside the
-    # net's own B.Cu gr_poly). Anything reaching the interior from outside
-    # crosses the outline, which the stroke rules above already credit, so
+    # though it touches no stroke (an inductor pad can lie wholly inside
+    # its net's own filled B.Cu gr_poly). Anything reaching the interior
+    # from outside crosses the outline, which the stroke rules above already credit, so
     # point containment is the one case left. A circle is tested on its true
     # radius, not the parser's inscribed 16-gon.
     # Keyed by the ring OBJECT, which every segment of one shape shares (both

@@ -89,8 +89,8 @@ KICAD_CLI = (_find_kicad_cli(warn=False)
 # `holes_co_located` when the two centres coincide (read from KiCad 10.0.0's
 # own DRC item table, in _pcbnew.kiface). The list named only `hole_near_hole`,
 # the older spelling, so every drill pair check_drc reported read
-# checkdrc_only and was never matched: mod_bme280's two Net-(C1-Pad1) vias
-# 0.18 mm apart, which kicad-cli reports as hole_to_hole. `hole_near_hole`
+# checkdrc_only and was never matched: two Net-(C1-Pad1) vias 0.18 mm
+# apart, which kicad-cli reports as hole_to_hole. `hole_near_hole`
 # stays for reports from older KiCad. Being listed here also stages both new
 # types at error in _staged_copy, as every copper class is (#526).
 KICAD_COPPER_TYPES = {
@@ -309,7 +309,7 @@ def run_check_drc(board: str, clearance: float = None, netclasses: bool = False,
     # Staging leaves the board's min_hole_to_hole alone, so kicad-cli grades
     # drill pairs at it, and the check_drc CLI pins its floor up to it (#439).
     # Graded here at the 0.20 default, a pair between the two read kicad_only
-    # (orangecrab GND/RAM_D3 0.2308 mm apart under its 0.25).
+    # (a GND/RAM_D3 pair 0.2308 mm apart under a board's 0.25).
     try:
         from list_nets import read_design_rules
         import routing_defaults

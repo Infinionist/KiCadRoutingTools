@@ -5,8 +5,8 @@
 
 A replay grades the board its chain ends on, and an open net there is the
 engine's only if some step of the chain that made that board was ASKED to
-route it. neo6502 (set 1) is the case that taught this. Its recorded chain
-routed GND alone in step5a and leaned on that step's end-of-run
+route it. One recorded board taught this. Its recorded chain
+routed GND alone in one step and leaned on that step's end-of-run
 reconciliation, which in those days enrolled every pad-deficit net on the
 board -- 35 of them, the whole RP2040 side. #734 scoped the reconciliation to
 the requested nets, so its replays since then ran no lineage step that

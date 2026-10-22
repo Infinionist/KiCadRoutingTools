@@ -5262,10 +5262,11 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         # off-board test and its edge-exempt-pad acceptance below. The
         # rectangle is the same geometry the old bounding-box-only checks
         # measured, so no distance changes; what they lacked was the
-        # acceptance. lna3030 (#441): the router lands GND and C5 tracks on
-        # edge-launch SMA pins inside the board's own 0.5 mm edge rule, by
-        # design (obstacle_map._edge_band_pad_layer_exemption), and those 5
-        # tracks counted as real DRC only because its outline is 4 gr_lines.
+        # acceptance. #441: the router lands tracks on edge-launch SMA pins
+        # inside the board's own 0.5 mm edge rule, by design
+        # (obstacle_map._edge_band_pad_layer_exemption), and 5 such tracks on
+        # one board counted as real DRC only because its outline is 4
+        # gr_lines.
         bounds_ring = not edge_rings
         if bounds_ring:
             x0, y0, x1, y1 = board_bounds

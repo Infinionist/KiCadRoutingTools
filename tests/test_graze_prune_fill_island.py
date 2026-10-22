@@ -8,8 +8,8 @@ the pad it would over-credit and the opposite for the copper being removed: a
 tap whose end lies in a narrow fill island loses its end's credit, reads as a
 dead end, the island's pad reads as already open, and the removal looks free.
 
-Measured on orangecrab (set3) GND: U3.B3 (csBGA 0.5 mm) sits in an F.Cu fill
-island between the RAM fanout tracks; the router reached it with a short F.Cu
+Measured on a GND ball of a 0.5 mm csBGA, which sits in an F.Cu fill
+island between the RAM fanout tracks: the router reached it with a short F.Cu
 tail through a gap too narrow for fill, and this pass dropped the tail in every
 route step (route.py's #209 gate: "post-routing cleanup DISCONNECTED ... GND
 -> 3 pad(s) now unconnected"). The ball shipped open, KiCad agreeing.
@@ -40,7 +40,7 @@ TAP = ((10.0, 6.0), (10.0, 8.75))   # from pad Q, through the opening
 #: component's points onto its FIRST point, and analyze_conn_excluding drops
 #: every edge of an excluded segment's points -- so were the tap's start that
 #: hub, excluding it would split the main fill and block the removal for a
-#: reason unrelated to the island (on orangecrab GND an earlier segment is).
+#: reason unrelated to the island (on the measured GND an earlier segment is).
 STUB = ((4.0, 4.0), (6.0, 4.0))
 
 

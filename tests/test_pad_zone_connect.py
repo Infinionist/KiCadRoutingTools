@@ -8,8 +8,8 @@ two). NONE makes the filler knock the pad out like foreign copper, so the pad
 reaches its net only through a track, a via or another pad.
 
 The parser did not read the pad/footprint override, so the fill model and
-check_net_connectivity credited pour contact KiCad never makes. Measured on
-corax56 (set8): solder jumper J10's GND half (B.Cu, `(zone_connect 0)`, under
+check_net_connectivity credited pour contact KiCad never makes. Measured:
+solder jumper J10's GND half (B.Cu, `(zone_connect 0)`, under
 J12's RST half) sat inside the B.Cu GND pour; KiCad left it open with the fill
 ending 0.45 mm away, every route step and check_connected's copper grade
 called GND complete, and the open shipped.

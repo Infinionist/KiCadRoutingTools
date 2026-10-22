@@ -4,7 +4,7 @@
 _route_with_via_unblock drops a fab-floor via at a boxed pad and retries the
 A* with that via's cell as an extra endpoint. The via is in neither pcb_data
 nor any via map until the route commits, so nothing kept the retry's own
-layer-change vias away from its drill. mod_bme280 (set3): SJ1.1 is walled in
+layer-change vias away from its drill. Measured: SJ1.1 is walled in
 on F.Cu by its own tied bridge, the in-pad unblock drops a 0.25/0.15 via at
 the pad corner, and the retry came along F.Cu, dropped to B.Cu with a
 0.45/0.3 via 0.18 mm from it and stepped onto the via cell -- drills

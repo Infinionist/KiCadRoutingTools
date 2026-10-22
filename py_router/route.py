@@ -7339,10 +7339,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # VERIFIED-POUR RE-AUDIT, half 1: keep the board the finalize's oracle
     # verified. The final reconciliation below lays and rips copper WITH RIP
     # AUTHORITY after that audit, and nothing used to look again: its rescues
-    # and rip-reroutes cut pours KiCad had just called complete (ergosnm's
-    # rescued ROW_2/ROW_3 and orbiter_kb's rerouted /T_KEY_ROW1 cut GND;
-    # open_weather_station C28.2 fenced off by a rescued RXD0; eit_mux's B.Cu
-    # GND split by a /S11 rip-reroute; ulx3s's SD_D0 cut the In1.Cu plane).
+    # and rip-reroutes cut pours KiCad had just called complete (rescued
+    # keyboard rows and a rerouted key row cut GND; a capacitor pad fenced
+    # off by a rescued RXD0; a B.Cu GND split by a rip-reroute; an SD data
+    # line cut an In1.Cu plane -- five boards).
     # Half 2 (after the reconciliation) re-audits those pours and, where the
     # weld cannot mend one, refuses the reconciliation unless it connected
     # more than it cut.
@@ -8635,7 +8635,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # A rejection that rests on a pour net is checked on KiCad's
             # exact fill of both boards first: the raster can join fill
             # islands KiCad's refill splits, so its "connected before" may be
-            # a pour KiCad never saw whole (nrfmicro's retry: GND split on its
+            # a pour KiCad never saw whole (one retry: GND split on its
             # input by KiCad, whole by the raster, so the run read as trading
             # GND for /P0.17 when it had only connected /P0.17). Only a
             # rejection pays the two refills -- the raster's error here runs

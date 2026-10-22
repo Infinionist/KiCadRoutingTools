@@ -978,8 +978,8 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
   `kicad_parser.pad_joins_zone(pad, zone)` / `pad_zone_connection(pad, zone)`,
   never the raw field: a pad a zone does not join (NONE) gets no pour credit in
   `check_net_connectivity` and is knocked out of the fill model at the zone's
-  clearance, so it needs its own track (corax56's GND solder-jumper half
-  shipped open while every grade credited the pour).
+  clearance, so it needs its own track (a GND solder-jumper half with
+  `(zone_connect 0)` shipped open while every grade credited the pour).
 
 ### Through-Hole vs SMD Pads
 

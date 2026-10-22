@@ -1159,7 +1159,7 @@ _GND_SETTLE_MAX_MM = 0.25
 # Moves the settle may take inside that distance. A track at 45 degrees to
 # the move closes only sin(45) of each step, so the shortfall falls ~3.4x a
 # step: the 0.051 mm a 45-degree turn of the pair leaves needs FOUR moves
-# and a fifth look to see it cleared (butterstick).
+# and a fifth look to see it cleared.
 _GND_SETTLE_MOVES = 8
 
 
@@ -1223,7 +1223,7 @@ def _settle_gnd_via(x, y, ux, uy, pair_segs, config, gnd_net_id, pcb_data,
     net's copper (`via_barrel_clear_of_foreign_copper`), or it is refused.
 
     Before this returned None the planned site came back whenever the settle
-    failed, and was placed: butterstick shipped 5 GND vias up to 0.050 mm
+    failed, and was placed: one board shipped 5 GND vias up to 0.050 mm
     into their own pair's tracks (9 check_drc / KiCad clearance items).
     The position after the LAST move was never looked at either, so a site
     the fourth move had cleared was thrown away for the grazing one.
@@ -1252,7 +1252,7 @@ def _settle_gnd_via(x, y, ux, uy, pair_segs, config, gnd_net_id, pcb_data,
 
 # Last resort before a companion GND via is dropped: rings 0.05 mm apart out
 # to _GND_SETTLE_MAX_MM round the planned site and its mirror, 16 bearings
-# each. cm5_minima1 ETH_PI.TRD2: neither the outward move nor the mirror
+# each. On an Ethernet pair, neither the outward move nor the mirror
 # cleared, and a site 0.10 mm off the planned one -- nearer the signal via --
 # did.
 _GND_RING_STEP_MM = 0.025
@@ -1494,7 +1494,7 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
             # cells on a 0.1 grid), and lets the pair turn 45 degrees after
             # that many cells + 2; the via lands at the float offset, so a
             # turn toward it passes its inner track 0.289 mm from the via
-            # centre against 0.340 (butterstick: 0.4 via, 0.1/0.1 pair, 0.09
+            # centre against 0.340 (a 0.4 via, a 0.1/0.1 pair, 0.09
             # clearance). The settle moves the via outward off such a turn;
             # where the pair wraps round the site (a U-turn) nothing outward
             # clears and the site MIRRORED across the signal via -- the

@@ -171,7 +171,7 @@ the routing pipeline applies both so the model and the output file agree.
 > for the copper being removed: a tap ending in a narrow fill island (an F.Cu
 > pocket between a BGA's fanout tracks) loses its end's credit, reads as a
 > dead end, the island's pad reads as already open, and the removal looks
-> free. orangecrab's U3.B3 (csBGA 0.5 mm) lost its 0.33 mm tail that way in
+> free. A 0.5 mm csBGA's GND ball lost its 0.33 mm tail that way in
 > every route step. `tests/test_graze_prune_fill_island.py` pins it.
 
 > **#1227 -- a dead-end prune never splits copper.** Every gated dead-end pass

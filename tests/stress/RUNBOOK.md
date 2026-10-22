@@ -1026,7 +1026,7 @@ keep serving the previous code.
    a recorded run as a baseline, grep its `transcript.jsonl` for `KICAD_`
    exports (the timing sidecar cannot tell you).
 9. **A net no step of the final lineage scopes is the CHAIN's, not the
-   engine's.** neo6502's recorded step5a routed GND alone and leaned on its
+   engine's.** One board's recorded GND step routed GND alone and leaned on its
    end-of-run reconciliation to enroll 35 other pad-deficit nets; #734 scoped
    that reconciliation to the requested nets, so its replays then shipped 34
    of them open with every step reporting success, while the recorded

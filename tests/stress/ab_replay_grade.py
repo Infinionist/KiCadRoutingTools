@@ -263,7 +263,7 @@ def lineage_scope_row(manifest, board=None):
     """The routable nets no step of the manifest's final lineage scopes
     (lineage_scope.compact: `unscoped`, `unscoped_input_copper`, `pour_only`,
     `unmodelled`). A net in `unscoped` is open on the final board because the
-    CHAIN never asks for it -- neo6502 shipped 34 such nets after #734 -- so
+    CHAIN never asks for it -- one board shipped 34 such nets after #734 -- so
     it is reported beside the grade, never folded into a verdict. A failure
     to read it is recorded under `error`, not raised.
 
@@ -774,8 +774,9 @@ def compare(old_json, new_json):
           f"  ==>  {verdict}")
     # Boards whose final lineage never asks for some routable nets. A replay of
     # today's engine leaves those open whatever the change under test, so a
-    # delta there can be the CHAIN's, not the engine's: neo6502's recorded run
-    # got its 34 from a pre-#734 reconciliation that no longer enrolls them.
+    # delta there can be the CHAIN's, not the engine's: one board's
+    # recorded run got its 34 from a pre-#734 reconciliation that no longer
+    # enrolls them.
     _unscoped = []
     for b in boards:
         _o = len(((old.get(b) or {}).get("lineage_scope") or {}).get("unscoped") or [])

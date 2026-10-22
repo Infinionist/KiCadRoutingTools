@@ -3,16 +3,16 @@
 
     python3 tests/test_lineage_scope.py
 
-neo6502 (set 1) shipped 34 nets open on every replay after #734, with every
-step reporting success: its recorded chain routed GND alone in step5a and
-relied on that step's end-of-run reconciliation enrolling every pad-deficit
+One recorded board shipped 34 nets open on every replay after #734, with
+every step reporting success: its recorded chain routed GND alone in one step
+and relied on that step's end-of-run reconciliation enrolling every pad-deficit
 net on the board, which #734 stopped. Nothing in the grade said the CHAIN
 never asked for those nets, so they were booked against the engine.
 `tests/stress/lineage_scope.py` reads which nets each lineage step scopes and
 `ab_replay_grade` carries the report beside every grade. A tiny synthetic
 manifest + board pins what it must see:
 
- 1. the neo6502 shape: a net whose only lineage step is a fanout escape is
+ 1. the escaped-only shape: a net whose only lineage step is a fanout escape is
     `unscoped`, named with the step that escaped it -- and a `'*'` route
     step that the pruner drops (its output feeds nothing) does not count;
  2. the scoping rules are the tools' own: route.py's '!' exclusion and
@@ -118,7 +118,7 @@ def chain(final_step):
                               "'/SHEET/VCC' --plane-layers B.Cu B.Cu"),
         py('route.py', 'step3.kicad_pcb step4.kicad_pcb GND SIG_A'),
         # A dead end: nothing reads step5_dead, so the pruner drops it and its
-        # '*' must not count -- the neo6502 chain's own '*' attempts were this.
+        # '*' must not count -- the recorded chain's '*' attempts were this.
         py('route.py', "step4.kicad_pcb step5_dead.kicad_pcb '*'"),
         final_step,
     ]
@@ -143,7 +143,7 @@ def main():
     evidence(man, 'synthetic manifest')
     rep = LS.lineage_scope(man)
 
-    print("1. the neo6502 shape: escaped only, and a pruned '*' does not count")
+    print("1. the escaped-only shape: a pruned '*' does not count")
     check("the lineage is the pruned chain (command 5, step5_dead, dropped)",
           [s['index'] for s in rep['lineage']] == [1, 2, 3, 4, 6],
           f"lineage={[(s['index'], s['tool'], s['kind']) for s in rep['lineage']]}")

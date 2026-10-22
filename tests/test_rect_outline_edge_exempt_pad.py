@@ -3,13 +3,13 @@
 
 A track that runs into an edge-exempt pad sitting inside the board's edge rule
 adds no new edge copper, so check_drc publishes it `accepted: edge-exempt-pad`
-(ottercast R7.2, #441: the router opens such a pad's own cells on purpose,
+(#441: the router opens such a pad's own cells on purpose,
 obstacle_map._edge_band_pad_layer_exemption). That acceptance lived only on
 the polygon path. A plain 4-segment rectangle gets no ring from
 kicad_parser.extract_board_contours, so it was graded on a bounding-box path
-with no acceptance, and the same track counted as real DRC: lna3030's 5 tracks
-into its edge-launch SMA pins. The rectangle is now given to tracks and vias
-AS A RING, so both outlines take one path.
+with no acceptance, and the same track counted as real DRC: one board's 5
+tracks into its edge-launch SMA pins. The rectangle is now given to tracks
+and vias AS A RING, so both outlines take one path.
 
 Each arm grades the SAME three tracks on a 4-gr_line rectangle and on a
 5-segment polygon (the rectangle with its far corner chamfered):

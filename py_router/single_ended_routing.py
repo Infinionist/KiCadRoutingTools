@@ -1900,7 +1900,7 @@ def oracle_link_end_layers(pcb_data: PCBData, net_id: int, x: float, y: float,
     copper on every layer it spans, so it is resolved against the net's own
     via or plated pad at that point -- the via's span (blind/buried included),
     the pad's expanded layers. Nothing of the net there: [] (the end is not
-    routable here). mdfpga_hub75 U3.33: the link to a drop via was refused
+    routable here). Measured: an FPGA pin's link to a drop via was refused
     outright as 'layer not in the routing stack (F.Cu / None)'."""
     if layer in routing_layers:
         return [layer]
@@ -3005,7 +3005,7 @@ def _place_shrunk_via_in_pad_impl(pad_obj, obstacles, config, pcb_data, net_id, 
     # size (not the full config.via_size) if a path later changes layer here
     # (a kept via is the net's free via from then on); a full via at the cell
     # grazes a neighbouring foreign pad (only the shrunk via fits) -- issue
-    # #212, glasgow_revC Z5 via vs RN4.6.
+    # #212, a via beside a resistor network's pad.
     # #589 probe hygiene: plan probes route on a throwaway map and emit no
     # copper, but this registry lives on pcb_data and steers the REAL run's
     # via emission -- seq probes place ~10x more unblock vias than blind
@@ -3138,7 +3138,7 @@ def _register_unblock_via(obstacles, vgx, vgy, layer_names, via=None,
     changes layer there -- and a via the route keeps gets its free via from
     its caller (a tap edge's in-progress via, Phase 3's main-route vias,
     the net's own vias at prepare). A dropped via's claim, on the other hand,
-    outlived it on the map: stm32g474_fc (set10) GND, tap edge into U1.4 --
+    outlived it on the map: a GND tap edge into U1.4 --
     the #535 escape via placed legally at (147.65, 111.35) was dropped with
     its edge at the terminal short gate, and the orphan fallback changed
     layer on its cell (147.6, 111.4), which the via map vetoes at every
@@ -3147,7 +3147,7 @@ def _register_unblock_via(obstacles, vgx, vgy, layer_names, via=None,
     With ``via`` (and net_id/config/coord) it also holds the retry searches
     hole-to-hole off the via's drill: the via is in neither pcb_data nor
     any via map until its route commits, so nothing else keeps the retry's
-    OWN layer-change vias away from it. mod_bme280 (set3): SJ1.1 is walled
+    OWN layer-change vias away from it. Measured: SJ1.1 is walled
     in by its own tied bridge, the in-pad unblock drops a 0.25/0.15 via at
     the pad corner, and the retry A* came up beside it with a 0.45/0.3 via
     0.18 mm away -- drills overlapping against a 0.25 hole-to-hole rule.
@@ -3327,7 +3327,7 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
             # the OTHER side often needs layer access too. Its probe burns the full
             # budget wandering the walled outer layer ("forward=5000", not stuck),
             # so it never qualifies above; if it terminates on an SMD pad, via it
-            # as well and retry once at a doubled budget. ottercast Net-(C61-Pad1):
+            # as well and retry once at a doubled budget. On Net-(C61-Pad1):
             # the hand-routed fix is exactly a via in C69.1 AND U6.20 joined on an
             # inner layer -- one-ended unblock can never find that route.
             second = []
@@ -3393,7 +3393,7 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
         # ring holds only the retry's own vias, and comes off on return) and
         # the via was not in pcb_data, because a multipoint tap result is
         # deferred. Until that result commits the barrel therefore blocks
-        # NOBODY. Measured on glasgow_revC at
+        # NOBODY. Measured on one board at
         # the moment a phase-3 ripped net re-routes:
         #     in_pcb_data=0  via_blocked=True  cells=T,F,F,F   (only the PAD blocks)
         #     in_pcb_data=1  via_blocked=True  cells=T,T,T,T   (committed)

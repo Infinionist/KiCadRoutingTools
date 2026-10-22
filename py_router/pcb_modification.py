@@ -4446,9 +4446,9 @@ def prune_grazing_segments(results, pcb_data: PCBData, scope_net_ids=None,
         # already open, and the removal as free. So a removal must ALSO leave
         # the GRADING model (the same check without the validator, which is
         # what check_connected and route.py's #209 gate read) no worse.
-        # Measured: orangecrab GND, U3.B3 (csBGA 0.5mm) shipped open after
-        # this pass dropped its 0.33mm F.Cu tail into the ball's fill island
-        # in every route step.
+        # Measured: a 0.5mm csBGA's GND ball shipped open after this pass
+        # dropped its 0.33mm F.Cu tail into the ball's fill island in every
+        # route step.
         before_grade, graph_grade = None, None
         if _zcv is not None:
             before_grade = check_net_connectivity(

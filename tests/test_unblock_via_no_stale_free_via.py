@@ -8,7 +8,7 @@ every placed unblock via, and nothing took it back when the via was
 dropped -- the retry failed, the route did not use it, or the tap's terminal
 short gate refused the edge (which uncommits the copper but kept the claim).
 A later search on that map then drilled a NEW via on a cell the via map
-vetoes. stm32g474_fc (set10) GND, tap edge into U1.4: the #535 escape via
+vetoes. Measured on a GND tap edge into U1.4: the #535 escape via
 was placed legally at (147.65, 111.35) and dropped with its edge; the orphan
 fallback changed layer on its cell (147.6, 111.4), vetoed at every rung, and
 shipped a 0.3/0.15 via 8.5 um inside U1.5's clearance (the #339 refit

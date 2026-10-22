@@ -147,7 +147,7 @@ this to mean anything: the gate's union-find reads pours through the raster
 fill model, which can join fill islands KiCad's refill splits, so before it
 acts on a rejection that rests on a pour net it re-grades those nets on
 KiCad's exact fill of both boards (the CLI's input and output files; the GUI's
-live board and a staged save of the change-set). nrfmicro's retry read as
+live board and a staged save of the change-set). One retry read as
 trading GND for /P0.17 on the raster; KiCad had GND split on the step's input
 already, so it was a plain gain and ships. Without a KiCad python the raster
 grade stands. The JSON report names the pour nets among `lost` / `gained` as

@@ -5905,8 +5905,8 @@ def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
     measured with pcbnew and kicad-cli 10.0.0: a stroke joins the same-net
     copper it touches, a filled shape its whole interior -- and so does
     `check_connected.check_net_connectivity` (`conducting_stroke`). #513
-    item 6 had concluded the opposite and graded such joins open: on
-    g474_power_charger L2.1, inside its net's own filled B.Cu gr_poly, read
+    item 6 had concluded the opposite and graded such joins open: an
+    inductor pad inside its net's own filled B.Cu gr_poly read
     open to the grader and to the route step while KiCad called it
     connected. They parse as ``Segment(graphic=True)``, immovable art (#337)
     the router routes around and never targets. Returns the number of

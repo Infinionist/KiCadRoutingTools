@@ -8,18 +8,18 @@ cloud_g14integ-kc, 12 nets on 9 boards shipped open):
 * the stub-swap and tap-relocation rescues routed a net carrying exact-fill
   oracle links (#572) by endpoint DERIVATION -- the fill model's zone credit
   merges the clusters KiCad grades apart, so the route "succeeded" on a pour
-  cell of an island (lpddr4 GND J1.195: "STUB-SWAP RESCUE ... routed (1
+  cell of an island (a GND connector pin: "STUB-SWAP RESCUE ... routed (1
   segments)", shipped open). They now route the links, and never re-layer a
   stub a link end sits on;
 * route_oracle_links refused every link with a via or plated-barrel end,
-  which KiCad anchors with no layer (mdfpga_hub75 U3.33: "forced link
+  which KiCad anchors with no layer (an FPGA pin's link: "forced link
   endpoint layer not in the routing stack (F.Cu / None)"). Such an end is
   copper on every layer it spans;
 * the oracle printed "OK 0 seg(s), 0 via(s)" and counted the link routed
-  when the path laid no copper (butterstick GND);
+  when the path laid no copper (a GND link);
 * the weld escalation's reach test was layer-blind, so a 0.28 mm In1.Cu
   piece on the net's existing In1 copper was credited for a B.Cu pad's link
-  two rounds running (zynq7020_som GND C130.2).
+  two rounds running (a GND capacitor pad).
 
 Every row runs with the routers stubbed: no KiCad, no grid search.
 
@@ -245,7 +245,7 @@ def test_a_path_that_lays_no_copper_is_not_a_weld():
 def test_the_weld_reach_test_is_layer_aware():
     from kicad_oracle import _weld_touches_endpoints as touches
     from kicad_parser import Segment
-    # zynq7020_som C130.2: the pad end is on B.Cu, the via end has no layer
+    # A GND capacitor pad: the pad end is on B.Cu, the via end has no layer
     piece = Segment(start_x=139.0, start_y=121.7, end_x=138.8, end_y=121.5,
                     width=0.0762, layer='In1.Cu', net_id=1)
     ends = (139.1, 121.98, 138.4, 121.2)
@@ -266,7 +266,7 @@ def test_the_weld_reach_test_is_layer_aware():
 
 
 def test_the_exact_tier_reads_an_anchor_on_its_own_layer():
-    """butterstick GND: a carved-off ball's F.Cu pad anchor lies in no F.Cu
+    """A GND net: a carved-off ball's F.Cu pad anchor lies in no F.Cu
     island but inside the In1 plane; the tier took the In1 plane as that
     side and strapped it to the F.Cu pour where the two outlines coincide
     (the board edge, 30 mm away). Fixture: an F.Cu pour y 0..10 and an In1

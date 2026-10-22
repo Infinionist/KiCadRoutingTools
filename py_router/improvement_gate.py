@@ -285,7 +285,7 @@ def gate_verdict(cmp: Dict) -> str:
     step's ordinary retry. The draw goes to the board whose pours are whole.
     A pour's state must be KiCad's for this: route.py re-grades the pour
     nets a rejection rests on with KiCad's exact fill of both boards before
-    acting on it (nrfmicro's retry read as GND for /P0.17 on the raster, but
+    acting on it (one retry read as GND for /P0.17 on the raster, but
     KiCad had GND split on the input already, so it was a plain gain).
     """
     net_delta = len(cmp['lost']) - len(cmp['gained'])
@@ -308,8 +308,8 @@ def verified_pour_compare(before: Dict[int, Tuple[bool, int]],
 
     The pours KiCad graded (`kicad_before` / `kicad_after`, {net id:
     (connected, disconnected pads)}) take KiCad's word over the raster's: a
-    raster map can join fill islands KiCad's refill splits (eit_mux GND,
-    ulx3s +3V3, nrfmicro GND), so its "connected" is not evidence for a
+    raster map can join fill islands KiCad's refill splits (measured on GND
+    and +3V3 pours of three boards), so its "connected" is not evidence for a
     pour. A pour KiCad graded on one side only is left out of both -- its
     change is unknown. Everything else is the improvement gate's own grade,
     and the verdict is gate_verdict's, pour-trade tie rule included: a

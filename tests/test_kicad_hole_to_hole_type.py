@@ -7,16 +7,16 @@ check_drc grades two drills too close as `via-drill-hole` (and
 `hole_to_hole`, or `holes_co_located` when the centres coincide. The
 comparator's copper-type list named only the older `hole_near_hole`, so KiCad's
 item was dropped and every such pair read `checkdrc_only`, never matched:
-mod_bme280's two Net-(C1-Pad1) vias 0.18 mm apart (latest wave), glasgow_revC's
-/GNDPLL0 and +3V3 pairs (old main).
+two Net-(C1-Pad1) vias 0.18 mm apart on one board (latest wave), /GNDPLL0
+and +3V3 pairs on another (old main).
 
 Part 1 (always runs, no KiCad): the report parser keeps both types at error
 and still drops an out-of-scope class (control); a KiCad 10 hole_to_hole item
 pairs with check_drc's via-drill-hole; staging lifts a project's `warning`
 severity for both to error (precondition: the fixture project says warning,
-as mod_bme280's does).
+as the measured board's does).
 
-Part 2 (kicad-cli): a board with mod_bme280's pair and a co-located pair is
+Part 2 (kicad-cli): a board with the measured pair and a co-located pair is
 graded end to end by the comparator CLI: KiCad reports both types, both
 match, the board is CONSISTENT. Control: the same board graded with the old
 list reproduces the defect (checkdrc_only=2, matched=0).
@@ -59,7 +59,7 @@ def _item(desc, x, y):
     return {'description': desc, 'pos': {'x': x, 'y': y}, 'uuid': str(uuid.uuid4())}
 
 
-# kicad-cli 10.0.0's item for mod_bme280's pair, at the error staging gives it
+# kicad-cli 10.0.0's item for the measured pair, at the error staging gives it
 # (the board's own project says warning).
 H2H = {'type': 'hole_to_hole', 'severity': 'error',
        'description': 'Drilled hole too close to other hole (board setup '
@@ -106,7 +106,7 @@ def part1(tmp):
     write_pro(pcb)
     with open(pcb[:-len('.kicad_pcb')] + '.kicad_pro', encoding='utf-8') as f:
         src = json.load(f)['board']['design_settings']['rule_severities']
-    ok('precondition: the fixture project says warning for both (as mod_bme280)',
+    ok('precondition: the fixture project says warning for both (as measured)',
        all(src.get(k) == 'warning' for k in HOLE_TYPES), src)
     d, b2 = kdc._staged_copy(pcb, 0.2)
     try:
@@ -128,7 +128,7 @@ _HEAD = ('(kicad_pcb\n\t(version 20260206)\n\t(generator "pcbnew")\n'
 
 
 def board_text(far=False):
-    """mod_bme280's pair (0.45/0.3 and 0.25/0.15 vias, 0.18 mm apart) and two
+    """The measured pair (0.45/0.3 and 0.25/0.15 vias, 0.18 mm apart) and two
     GND vias at one point; `far` spreads both pairs 3 mm apart (clean)."""
     n = [0]
 

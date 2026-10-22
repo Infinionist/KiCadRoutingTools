@@ -2,9 +2,9 @@
 """Board-level copper graphics CONDUCT, as KiCad 10 has it.
 
 #513 item 6 concluded KiCad never credits a net-tagged copper graphic and made
-the connectivity graph skip them. KiCad 10 does credit them: on
-g474_power_charger pad L2.1 sits inside its net's own filled B.Cu gr_poly,
-pcbnew lists the shape among L2.1's connected items and kicad-cli reports the
+the connectivity graph skip them. KiCad 10 does credit them: when an
+inductor pad sits inside its net's own filled B.Cu gr_poly, pcbnew lists the
+shape among the pad's connected items and kicad-cli reports the
 net complete, while check_connected graded it open and the route step spent
 three terminal-escalation rungs and a reconciliation lap trying to route it.
 
