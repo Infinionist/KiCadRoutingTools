@@ -225,15 +225,31 @@ def protection_candidates(routed_results, pcb_data, pairs=None):
     return out
 
 
-def coupled_protection_pairs(pairs, pair_copper):
+def coupled_protection_pairs(pairs, pair_copper, member_audit=None):
     """#1303: the pairs #521 may protect -- every pair of the run except one
-    whose shipped copper `diff_pair_custody.measure_pair_copper` found NOT
-    coupled. That pair's copper is two single-ended routes, which a later
-    step can redo, so freezing it only takes rip room away; imx6ulz DQS0
-    (P on In2.Cu, N on B.Cu) was recorded protected before this."""
-    bad = {name for name, rec in (pair_copper or {}).items()
-           if not rec.get('coupled')}
-    return [(name, pair) for name, pair in pairs if name not in bad]
+    whose shipped copper `diff_pair_custody.measure_pair_copper` found SPLIT.
+    Split copper is two single-ended routes, which a later step can redo, so
+    freezing it only takes rip room away; imx6ulz DQS0 (P on In2.Cu, N on
+    B.Cu) was recorded protected before #1303.
+
+    #1361: not coupled at the routed gap is not split. A pair whose members
+    still run ALONGSIDE each other (`alongside`: one pitch within
+    `diff_pair_custody.ALONGSIDE_GAP_MM`) and end terminal to terminal
+    (`member_audit`, `audit_pair_members`) keeps its protection: that copper
+    is what a later single-ended step cannot lay again. On ulx3s the #444
+    seam re-ask routes GPDI straight from the AC caps to the HDMI pins, P
+    and N 0.8 mm apart, skew 0.17-0.40 mm; reported uncoupled, it went
+    unprotected, and the chain's next steps ripped GPDI_D1 and laid P on
+    In2.Cu beside N on F.Cu (0 mm alongside, skew 0.89 mm). A pair with a
+    member left open is not rescued (#1107): it would wall in the copper
+    that has to finish it."""
+    def _protectable(name):
+        rec = (pair_copper or {}).get(name)
+        if rec is None or rec.get('coupled'):
+            return True
+        aud = (member_audit or {}).get(name) or {}
+        return bool(rec.get('alongside') and aud.get('p') and aud.get('n'))
+    return [(name, pair) for name, pair in pairs if _protectable(name)]
 
 
 def diff_cleanup_scope(pairs, routed_results, single_ended_nets, member_connected):
@@ -1958,16 +1974,23 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # #521, decided on the copper (#1303): coupled pair copper is an invariant
     # later chain steps cannot reproduce (P/N geometry, gap, polarity), so its
     # members are recorded protected and downstream rip steps skip them. A
-    # pair whose shipped copper is NOT coupled has nothing a later step could
-    # not redo, so it is left rippable. Engine-side: the GUI diff tab and the
-    # AI-plan executor inherit the noting; the writeback next to the DRC-floor
-    # persistence records it in the sibling .kicad_pro.
+    # pair whose shipped copper is SPLIT has nothing a later step could not
+    # redo, so it is left rippable; one that is only looser than the routed
+    # gap, members still alongside and complete, is not split (#1361).
+    # Engine-side: the GUI diff tab and the AI-plan executor inherit the
+    # noting; the writeback next to the DRC-floor persistence records it in
+    # the sibling .kicad_pro.
     from protected_nets import note_protection_candidates
     _prot = protection_candidates(
         routed_results, pcb_data,
-        pairs=coupled_protection_pairs(diff_pair_ids_to_route, pair_copper))
+        pairs=coupled_protection_pairs(diff_pair_ids_to_route, pair_copper,
+                                       member_audit))
     if _prot:
         note_protection_candidates(_prot)
+    # #1361: an uncoupled pair's report says whether it is protected anyway.
+    for _r in pair_reports:
+        if _r.get('outcome') == 'uncoupled':
+            _r['protected'] = _r['p_net'] in _prot and _r['n_net'] in _prot
 
     # #1303: the intra-pair status from the shipped copper. The matcher
     # measured its own result dict (segments + stub estimates), which after a
@@ -2015,7 +2038,12 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
               f"{', '.join(sorted(partial_diff_pairs))}{RESET}")
     if uncoupled_diff_pairs:
         # #1303: both members routed, but no coupled run ships. Named with
-        # what the copper does carry, because 'routed' alone hides it.
+        # what the copper does carry, because 'routed' alone hides it, and
+        # whether it is protected all the same (#1361).
+        from diff_pair_custody import ALONGSIDE_GAP_MM
+        _uc_prot = {r['pair']: r.get('protected') for r in pair_reports
+                    if r.get('outcome') == 'uncoupled'}
+
         def _uc(name):
             c = pair_copper.get(name) or {}
             sk = c.get('skew_mm')
@@ -2023,10 +2051,15 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                     f"{max(c.get('length_p_mm', 0), c.get('length_n_mm', 0)):.3f}mm; "
                     f"P on {'/'.join(c.get('layers_p') or ['-'])}, "
                     f"N on {'/'.join(c.get('layers_n') or ['-'])}"
-                    + (f"; skew {sk:.3f}mm" if sk is not None else '') + ")")
+                    + (f"; skew {sk:.3f}mm" if sk is not None else '')
+                    + f"; {c.get('alongside_mm', 0):.3f}mm alongside within "
+                    f"{ALONGSIDE_GAP_MM:g}mm, "
+                    + ('protected' if _uc_prot.get(name) else 'not protected')
+                    + ")")
         print(f"  {RED}Not coupled:   {len(uncoupled_diff_pairs)} pair(s) routed whose "
-              f"shipped copper is not coupled (#1303; not credited as routed, not "
-              f"protected): {'; '.join(_uc(n) for n in sorted(uncoupled_diff_pairs))}"
+              f"shipped copper is not coupled (#1303; not credited as routed; "
+              f"protected only while the members still run alongside, #1361): "
+              f"{'; '.join(_uc(n) for n in sorted(uncoupled_diff_pairs))}"
               f" — JSON_SUMMARY.uncoupled_diff_pairs{RESET}")
     if _member_incomplete:
         # Counted separately from the buckets above: a by-design 'partial'

@@ -1251,9 +1251,15 @@ class DifferentialTab(wx.Panel):
         # (the engine measured it; the CLI prints the same "Not coupled" line).
         uncoupled_pairs = results_data.get('uncoupled_diff_pairs', [])
         if uncoupled_pairs:
+            # #1361: protected all the same while its members still run
+            # alongside (the engine's pair_reports[].protected).
+            _kept = sorted(r['pair'] for r in results_data.get('pair_reports') or []
+                           if r.get('outcome') == 'uncoupled' and r.get('protected'))
             msg += (f"Not coupled: {len(uncoupled_pairs)} "
                     f"(routed, but no coupled run on the board - not counted "
-                    f"as routed, not protected): {', '.join(uncoupled_pairs)}\n")
+                    f"as routed): {', '.join(uncoupled_pairs)}\n")
+            if _kept:
+                msg += (f"  still alongside, so protected: {', '.join(_kept)}\n")
         _intra_bad = [r['pair'] for r in results_data.get('intra_pair_matching', [])
                       if r.get('status') not in ('matched', 'within-tolerance', 'skipped')]
         if _intra_bad:

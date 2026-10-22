@@ -599,9 +599,11 @@ Use the printed flags as-is:
   **maintained** while the geometry stays as small as it can. **When a pair fails
   or falls back** — `route_diff.py`'s `JSON_SUMMARY` lists it in `failed_diff_pairs`,
   `single_ended_diff_pairs` or `uncoupled_diff_pairs` (#1303: routed, but the copper
-  it ships is not coupled -- members on separate layers; route_diff reads this off
-  the board, not off its own result, and does not protect such a pair, so a retry
-  may rip it), or DRC shows an intra-pair / via-via graze — re-run
+  it ships is not coupled -- members on separate layers, or apart wider than the
+  gap; route_diff reads this off the board, not off its own result, and protects
+  such a pair only while its members still run alongside within 1 mm
+  (`pair_reports[].protected`, #1361), so a retry may rip the rest), or DRC shows
+  an intra-pair / via-via graze — re-run
   the failing pairs with **smaller track width, smaller gap, AND smaller vias**
   (`--via-size`/`--via-drill` toward the fab via floor). A tighter track+gap fits a
   narrower channel, and smaller vias fit a tight pad pitch (measured: lumenpnp
