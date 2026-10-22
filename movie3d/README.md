@@ -17,70 +17,29 @@ lives in this directory. It imports the repo's Python modules read-only
 `render_theme`, `render_placement.group_palette`). Its Node libraries are
 installed in `movie3d/node_modules` only.
 
-## Setup
+## Making a movie
 
-```bash
-cd movie3d && npm ci
-```
+**Make one with the `make-3d-movie` skill** (`/make-3d-movie <board>`,
+`.claude/skills/make-3d-movie/SKILL.md`). It is the one way to make this
+movie: it prepares the board the way `plan-pcb-placement` does (the
+connectors, switches and mounting holes locked, every other part piled off
+the board, the intent and the groups), finds the 3D models the installed
+library lacks, and runs `make_movie.py`.
 
-This installs `playwright-core` 1.52.0 and `three` 0.186.1, pinned by
-`package-lock.json` (about 31 MB, in `movie3d/node_modules`).
+`make_movie.py` takes the board and an output board first; every other
+argument but its own goes to `place_simple.py`, so its output board is
+place_simple's placement for that seed. The movie is written beside it as
+`_3d.mp4`, or to `--movie`, with four stills: `_start.png`, `_anneal.png`
+(mid-anneal), `_bottom.png` (the board turned over) and `_final.png`. The
+JSON and the frames go to the output's name + `_movie3d/` (or `--work`).
 
-**Browser.** playwright-core 1.52.0 drives Chromium build 1169. If
-Playwright's per-user cache already holds `chromium_headless_shell-1169`, you
-need nothing more. Any project on Playwright 1.52 leaves it there
-(`~/Library/Caches/ms-playwright` on macOS). Otherwise, either run
-`npx playwright-core install chromium-headless-shell` from `movie3d/`, which
-downloads it into that per-user cache, or point `--browser` (or
-`$MOVIE3D_CHROMIUM`) at a Chrome or Chromium executable.
+With `--route BOARD:SET` (a stress-corpus board whose recorded chain routes
+this one), it runs place_movie's own `run_flow`, in `--route-work` (default:
+the output's name + `_work`, place_movie's default, so a 2D flow run's work
+is reused):
 
-Also needed: `ffmpeg` on PATH and Node 18 or newer. Python needs nothing
-beyond the repo's own `requirements.txt`.
-
-**Part models** need KiCad's `kicad-cli` (KiCad 10, with its 3D model
-library). It is found through `--kicad-cli`, then `$KICAD_CLI`, then the
-repo's `kicad_oracle` resolver, then `/Applications/KiCad/KiCad.app`, then
-PATH. Without it, every part is drawn as a box.
-
-**Models the library lacks** are looked for on the web by the
-`make-3d-movie` skill (`.claude/skills/make-3d-movie/SKILL.md`), which then
-makes the movie. `find_models.py missing BOARD` lists them (with the parts
-that use them and close-named library files, for a rename); Claude, in the
-session, searches; `find_models.py add KEY URL` downloads and checks one
-(https only, at most 40 MB, a zip read in memory, kept only when it is a
-STEP or VRML model), `library KEY PATH` records a renamed installed file and
-`none KEY` a model not found. The answers live in `movie3d/cache/found/`
-(gitignored). make_movie runs no agent: it draws whatever has been recorded,
-names the models still missing, and keeps the box for a found model that
-does not sit on its footprint.
-
-## Make a movie
-
-```bash
-python3 -X utf8 movie3d/make_movie.py BOARD OUT.kicad_pcb \
-    --groups groups.json --intent intent.json --seed 0
-```
-
-BOARD and OUT come first. Every argument other than make_movie's own is passed
-to `place_simple.py`. OUT is place_simple's placed board, the same placement
-place_simple gives for that seed. The movie is written to OUT's name +
-`_3d.mp4`, or to `--movie`. Four stills go beside it: `_start.png`,
-`_anneal.png` (mid-anneal), `_bottom.png` (the board turned over) and
-`_final.png`. The JSON and the frames go to
-OUT's name + `_movie3d/` (or `--work`).
-
-With place_movie's flow and routing (a stress-corpus board whose recorded
-chain routes this one):
-
-```bash
-python3 -X utf8 movie3d/make_movie.py BOARD OUT.kicad_pcb \
-    --groups groups.json --intent intent.json --route ch32v003_usb:6
-```
-
-This runs place_movie's own `run_flow`, in `--route-work` (default: OUT's
-name + `_work`, place_movie's default, so a 2D flow run's work is reused):
-
-1. the round's seeds are placed (`--scattered` 6, `--clustered` 6, and the opt-in `--anchored`, 0);
+1. the round's seeds are placed (`--scattered` 6, `--clustered` 6, and the
+   opt-in `--anchored`, 0);
 2. the `--judge` 6 cheapest legal seeds are fast-routed;
 3. the best of them is routed in full.
 
@@ -90,26 +49,11 @@ cheapest when that one is the judge's best. It records that seed's placement
 and plays its fast route. Then the camera pulls back to every judged seed's
 fast-routed board side by side and frames the best one. It flies in to the
 best seed, clears its fast route, and plays its full route on the 3D board.
-OUT is the best seed. The stills add `_placed.png`, `_fast_route.png` and
-`_seeds.png` (the seed grid with the best one framed).
+The output board is the best seed. The stills add `_placed.png`,
+`_fast_route.png` and `_seeds.png` (the seed grid with the best one framed).
 Options for the flow: `--jobs`, `--route-jobs`, `--fresh` and
 `--route-frames` (past this many router events in a chain, several share a
 frame; 240).
-
-From a fresh clone (tigard, 89 parts):
-
-```bash
-mkdir -p movie3d/out
-python3 py_tools/check_floorplan.py kicad_files/tigard.kicad_pcb --emit-intent movie3d/out/tigard.intent.json
-python3 -X utf8 movie3d/make_movie.py kicad_files/tigard.kicad_pcb movie3d/out/tigard_placed.kicad_pcb \
-    --groups docs/examples/tigard.groups.json --intent movie3d/out/tigard.intent.json --seed 0
-```
-
-On an M-series Mac this takes about 90 s: record 17 s (place_simple's own
-anneal 13 s, the model export 4 s the first time), render 70 s (306 frames at
-225 ms each, SwiftShader), encode 1 s. The result is 25.5 s of movie at 12 fps,
-4.4 MB. 78 of the 89 parts are drawn from their KiCad models; the console
-names the rest.
 
 Own options: `--movie`, `--fps` (12), `--width`/`--height` (1000x560),
 `--frames` (anneal frames, tweens included, 120), `--tween` (frames per anneal
@@ -117,6 +61,26 @@ step, 3; 1 gives the 2D movie's cuts), `--speedup` (how much faster the anneal
 plays at its end, 4), `--no-models` (boxes only), `--kicad-cli`, `--tint` (how
 far each model's colours go toward its group's colour, 0.4), `--work`,
 `--browser`, `--crf` (20).
+
+**What it needs.** Its Node libraries, `playwright-core` 1.52.0 and `three`
+0.186.1, are pinned by `package-lock.json` and installed in
+`movie3d/node_modules` only (about 31 MB). playwright-core 1.52.0 drives
+Chromium build 1169: Playwright's per-user cache holds it once any project on
+Playwright 1.52 has fetched it (`~/Library/Caches/ms-playwright` on macOS),
+or `--browser` (or `$MOVIE3D_CHROMIUM`) names a Chrome or Chromium
+executable. Also `ffmpeg` on PATH and Node 18 or newer; Python needs nothing
+beyond the repo's `requirements.txt`.
+
+**Part models** need KiCad's `kicad-cli` (KiCad 10, with its 3D model
+library), found through `--kicad-cli`, then `$KICAD_CLI`, then the repo's
+`kicad_oracle` resolver, then `/Applications/KiCad/KiCad.app`, then PATH.
+Without it, every part is drawn as a box. **A model the library lacks** is
+found on the web by the skill and recorded with `find_models.py` in
+`movie3d/cache/found/` (gitignored): its download is kept only when it is a
+STEP or VRML model (https only, at most 40 MB, a zip read in memory).
+make_movie runs no agent: it draws whatever has been recorded, names the
+models still missing, and keeps the box for a found model that does not sit
+on its footprint.
 
 ## What it shows
 

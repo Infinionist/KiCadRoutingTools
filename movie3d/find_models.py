@@ -13,10 +13,11 @@ and reads; this tool lists what to look for and records each answer, so the
 movie itself never runs an agent.
 
     python3 movie3d/find_models.py missing BOARD [--retry]
-        JSON: the board's hints (title, company, libraries) and every model
-        still missing, with the parts that use it and the installed library
-        files whose names are close to it (a rename). A model recorded as
-        not found is left out unless --retry.
+        JSON: the board's hints (title, company, libraries), where KiCad's
+        3D library is installed, and every model still missing, with the
+        parts that use it, the installed files whose names are close to it
+        (a rename) and the installed folders a comparable model is likely in.
+        A model recorded as not found is left out unless --retry.
     python3 movie3d/find_models.py add KEY URL --match exact|equivalent [--source S] [--note N]
         download URL and keep it as KEY's model -- https only, at most
         MAX_BYTES, a zip read in memory and only its model members taken (no
@@ -155,6 +156,41 @@ def near_names(key, library_index, n=5):
     return [library_index[h][0] for h in hits]
 
 
+#: words a library folder name and a footprint name share that say nothing
+#: about what the part is
+_GENERIC = {'smd', 'tht', 'mm', 'vertical', 'horizontal', 'metric', 'handsolder', 'pad', 'roundrect',
+            'value', 'and', 'the', 'with', 'for'}
+#: a footprint's spelling -> the library folders' spelling
+_ALIASES = {'sw': 'switch', 'pinheader': 'pinheader', 'pinsocket': 'pinsocket', 'led': 'led',
+            'xtal': 'crystal', 'osc': 'oscillator', 'jst': 'jst', 'ic': 'package'}
+
+
+def _words(s):
+    return {_ALIASES.get(w, w) for w in re.split(r'[^a-z0-9]+', (s or '').lower())
+            if len(w) >= 2 and w not in _GENERIC and not w.isdigit()}
+
+
+def library_folders(item, root, n=6):
+    """The installed library's `.3dshapes` folders a comparable model of a
+    missing one is likely in: the folder its own path names, then the ones
+    sharing words with its parts' footprint names, values and descriptions
+    (USB -> Connector_USB, SW -> Button_Switch_*, PinHeader ->
+    Connector_PinHeader_*)."""
+    if not root or not os.path.isdir(root):
+        return []
+    folders = sorted(d for d in os.listdir(root) if d.endswith('.3dshapes'))
+    out = [m.group(1) + '.3dshapes' for p in item['referenced_as']
+           for m in [re.search(r'([^/\\]+)\.3dshapes[/\\]', p)] if m]
+    out = [f for f in out if f in folders]
+    words = set()
+    for p in item['parts']:
+        words |= _words(p['footprint'].split(':')[-1]) | _words(p['value']) | _words(p['description'])
+    scored = sorted(((len(_words(f[:-len('.3dshapes')]) & words), f) for f in folders),
+                    key=lambda s: (-s[0], s[1]))
+    out += [f for s, f in scored if s > 0 and f not in out]
+    return out[:n]
+
+
 def missing_report(board, kicad_cli=None, retry=False):
     """The `missing` subcommand's document."""
     import models
@@ -168,6 +204,7 @@ def missing_report(board, kicad_cli=None, retry=False):
     index = load_index()
     _staged, _counts, missing, _found = models.stage_models(text, dirs, board_dir, found=index)
     lib = models._library_index(dirs)
+    root = (models._share_dirs(cli) or [None])[0]
     want = describe_missing(text, missing)
     out, skipped = [], []
     for k, w in sorted(want.items()):
@@ -175,9 +212,10 @@ def missing_report(board, kicad_cli=None, retry=False):
         if e and e.get('status') == 'none' and not retry:
             skipped.append({'key': k, 'note': e.get('note', '')})
             continue
-        out.append(dict(w, library_near=near_names(k, lib),
+        out.append(dict(w, library_near=near_names(k, lib), library_folders=library_folders(w, root),
                         **({'previously': e.get('note', '')} if e else {})))
-    return {'board': board_hints(text, board), 'missing': out, 'not_found_before': skipped}
+    return {'board': board_hints(text, board), 'library_root': root, 'missing': out,
+            'not_found_before': skipped}
 
 
 # ------------------------------------------------------------------ add
