@@ -5897,17 +5897,21 @@ def _extract_via_protection_attrs(content: str) -> Dict[str, Dict[str, str]]:
 
 
 def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
-    """Warn loudly when a board carries NET-TAGGED copper graphics (#513 item 6).
+    """Say when a board carries NET-TAGGED copper graphics.
 
     KiCad allows a ``gr_line``/``gr_rect``/... on a copper layer to carry a
-    ``(net ...)`` field (card-edge/pogo connector fingers drawn as graphics),
-    but its connectivity engine does NOT treat graphics as electrical
-    connections. These parse as ``Segment(graphic=True)`` and are modelled as
-    obstacles/DRC-real copper ONLY -- the router cannot route TO them and the
-    connectivity model must not credit joins THROUGH them, or a physically
-    open net reads "already fully connected" (opengammakit: 5 nets shipped
-    split with 0 DRC violations). Returns the number of net-tagged graphic
-    segments found. Called by BOTH parse paths (file text and pcbnew build)."""
+    ``(net ...)`` field (card-edge/pogo connector fingers drawn as graphics,
+    a filled copper area). KiCad 10's connectivity conducts through them --
+    measured with pcbnew and kicad-cli 10.0.0: a stroke joins the same-net
+    copper it touches, a filled shape its whole interior -- and so does
+    `check_connected.check_net_connectivity` (`conducting_stroke`). #513
+    item 6 had concluded the opposite and graded such joins open: on
+    g474_power_charger L2.1, inside its net's own filled B.Cu gr_poly, read
+    open to the grader and to the route step while KiCad called it
+    connected. They parse as ``Segment(graphic=True)``, immovable art (#337)
+    the router routes around and never targets. Returns the number of
+    net-tagged graphic segments found. Called by BOTH parse paths (file text
+    and pcbnew build)."""
     tagged = [s for s in segments
               if getattr(s, 'graphic', False) and getattr(s, 'net_id', 0)]
     if not tagged:
@@ -5916,23 +5920,20 @@ def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
     nets = sorted({id_to_name.get(s.net_id, f'net {s.net_id}') for s in tagged})
     preview = ', '.join(nets[:6]) + (', ...' if len(nets) > 6 else '')
     print(f"WARNING: {len(tagged)} NET-TAGGED copper graphic segment(s) on "
-          f"{len(nets)} net(s) ({preview}). KiCad does NOT treat graphics as "
-          f"electrical connections: they are obstacles only, the router cannot "
-          f"target them, and copper joined only through them is electrically "
-          f"OPEN. Convert them to footprint pads or tracks if they must "
-          f"conduct (#513).")
+          f"{len(nets)} net(s) ({preview}). KiCad conducts through them (a "
+          f"stroke joins the copper it touches, a filled shape its whole "
+          f"interior) and so does our connectivity grading, but they are "
+          f"immovable art the router routes around and never targets (#337).")
     # ...and say what it will look like AFTERWARDS, which is the part people
-    # actually hit (#659). KiCad's own DRC lists such a net as unconnected on
-    # every run, forever: the art is copper to KiCad, so it demands a link to
-    # it, while #337 makes the art immutable so no routing pass may weld to it
-    # or delete it. Measured over 31 recorded boards, this is the DOMINANT
-    # class of "KiCad says open, our grading says connected" -- 36 of 51 such
-    # links on zone-less signal nets. Nobody should spend a retry on it.
-    print(f"         Expect KiCad DRC to keep reporting these {len(nets)} "
-          f"net(s) as UNCONNECTED on every run: no routing pass can fix it "
-          f"(the art is immutable, #337), so this is a board-authoring fix, "
-          f"not a routing failure. It is the single largest source of "
-          f"'KiCad says open, our grading says connected' (#659).")
+    # actually hit (#659): art that touches none of its net's other copper is
+    # an island KiCad's DRC demands a link to, and #337 makes it immutable, so
+    # no routing pass welds to it or deletes it. Measured over 31 recorded
+    # boards it was 36 of 51 KiCad-only open links on zone-less signal nets.
+    # Nobody should spend a retry on it.
+    print(f"         A net whose art touches none of its other copper stays "
+          f"UNCONNECTED in KiCad's DRC on every run: no routing pass welds "
+          f"to art, so joining it is a board-authoring fix, not a routing "
+          f"failure (#659).")
     return len(tagged)
 
 
@@ -9210,7 +9211,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
     segments.extend(pcbnew_graphic_copper(board, _live_fps, _live_keys,
                                           get_layer_name, to_mm))
 
-    # Parity with parse_kicad_pcb: net-tagged graphics never conduct (#513).
+    # Parity with parse_kicad_pcb: the same net-tagged graphics notice.
     warn_net_tagged_graphics(segments,
                              {n.name: nid for nid, n in nets.items()})
 

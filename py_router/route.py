@@ -5311,8 +5311,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     #   pad-less end -> rip/reroute DEBRIS; it conducts
                     #       nothing, so welding adds dead metal. The late
                     #       orphan sweep deletes it at the end of the run.
-                    #   graphic end -> net-tagged copper ART (#337/#513):
-                    #       immutable, so neither operation applies.
+                    #   graphic end -> net-tagged copper ART (#337) that
+                    #       reaches no pad: KiCad conducts through it, but it
+                    #       is immutable and the router never targets it, so
+                    #       neither operation applies.
                     # Measured over the recorded corpus the zone-less signal
                     # links split 9 pad-less / 36 graphic / 6 live, so
                     # enrolling all of them sends the router after 45 links it
@@ -5350,7 +5352,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                             if _art659:
                                 _why659.append(
                                     f"{_art659} to net-tagged copper GRAPHICS "
-                                    f"(#513: convert them to pads/tracks)")
+                                    f"no pad reaches (art the router never "
+                                    f"targets: a board-authoring fix)")
                             print(f"  ORACLE CHECK: {_net}: KiCad reports "
                                   f"{len(_pairs)} open link(s), none weldable"
                                   + (" -- " + "; ".join(_why659)

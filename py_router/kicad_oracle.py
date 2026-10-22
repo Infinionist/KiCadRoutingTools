@@ -1080,8 +1080,9 @@ def _largest_track_component_points(pcb_data, net_id, max_pts: int = 40):
 def _via_abuts_graphic(vias_, segs) -> bool:
     """True if any of `vias_` overlaps a same-net GRAPHIC in `segs` (#337 art).
 
-    Graphics do not conduct in our connectivity graph (#513) but ARE copper to
-    KiCad, so a barrel touching one is joined to the net through it. Every
+    Graphics ARE copper to KiCad (and to our connectivity graph since it
+    conducts through board art), so a barrel touching one is joined to the
+    net through it. Every
     debris deleter has to honour this or it removes a real connection: the
     segment-based guards test `any(seg.graphic)` over the cluster, which is
     vacuous for a cluster that has no segments. No layer test -- a barrel

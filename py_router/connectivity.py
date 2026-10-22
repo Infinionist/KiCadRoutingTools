@@ -707,6 +707,12 @@ def get_terminal_component_info(
     copper_count: Dict[int, int] = {}
     segs_by_component: Dict[int, List[Segment]] = {}
     for si, seg in enumerate(net_segments):
+        if getattr(seg, 'graphic', False):
+            # Board art conducts, so it joins the terminals it touches into
+            # one component above, but it is immovable copper the router did
+            # not lay (#337): never a launch surface, nor what makes an island
+            # the copper-richest.
+            continue
         root = uf.find(2 * si)
         copper_count[root] = copper_count.get(root, 0) + 1
         segs_by_component.setdefault(root, []).append(seg)
@@ -979,7 +985,7 @@ def get_stub_segments(pcb_data: PCBData, net_id: int, stub_x: float, stub_y: flo
     Returns:
         List of segments forming the stub, ordered from free end to pad
     """
-    # Copper GRAPHICS are excluded: they never conduct (#513) and are written
+    # Copper GRAPHICS are excluded: they are immovable art (#337), written
     # back from the original file with their original layer, so a stub walk
     # that picks one up hands immovable board copper to the layer-swap
     # machinery -- which then relayers it in pcb_data only, blinding the

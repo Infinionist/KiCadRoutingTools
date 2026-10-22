@@ -144,7 +144,7 @@ def get_stub_info(pcb_data: PCBData, net_id: int, stub_x: float, stub_y: float,
     if pad_x is None:
         layer_segments = [s for s in pcb_data.segments
                           if s.net_id == net_id and s.layer == stub_layer
-                          and not getattr(s, 'graphic', False)]  # graphics never conduct (#513/#583)
+                          and not getattr(s, 'graphic', False)]  # art is immovable (#337/#583)
         # BFS from chain end position to find connected pad
         visited = set()
         queue = [(current_x, current_y)]
@@ -1074,8 +1074,8 @@ def connected_stub_segments_on_layer(pcb_data: PCBData, net_id: int, layer: str,
     foreign copper we need that whole trace, so BFS the net's layer copper from
     the seed endpoints. Returns the connected segment objects (incl. the seeds).
     """
-    # Graphics never conduct (#513) and are immovable, so the component walk
-    # must not extend through them -- a track stub touching own-net board art
+    # Graphics are immovable art (#337), so the component walk must not
+    # extend through them -- a track stub touching own-net board art
     # would otherwise drag the art into the moved set (#583).
     layer_segs = [s for s in pcb_data.segments
                   if s.net_id == net_id and s.layer == layer
