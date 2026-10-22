@@ -884,6 +884,21 @@ def _unblock_via_refit(pcb_data, net_id, x, y, rec, config):
     return None
 
 
+def _emit_via_site(pcb_data, gx, gy, x, y):
+    """Where route conversion drills a via the path places at cell (gx, gy):
+    the exact site a #189/#535 unblock validated for that cell, else the cell
+    centre (x, y). The unblock places its via on a 0.05 mm fine pass and the
+    claim it leaves is a grid cell, so the centre can be up to half a cell
+    from the site that was checked: a GND tap edge into U1.4 placed its
+    escape via legally at (147.65, 111.35), dropped it with the edge, and the
+    orphan fallback that changed layer on the cell drilled at (147.6, 111.4),
+    8.5 um inside U1.5's clearance. The track ends stay at the centre, inside
+    the barrel."""
+    sites = getattr(pcb_data, '_unblock_via_sites', None)
+    site = sites.get((gx, gy)) if sites is not None else None
+    return site if site is not None else (x, y)
+
+
 def _emit_via_size(pcb_data, gx, gy, config, net_id=None, x=None, y=None):
     """(size, drill) for a via the route conversion emits at cell (gx, gy). If a #189
     via-in-pad unblock placed a DRC-legal shrunk via here, return THAT size so the
@@ -2370,10 +2385,11 @@ def _route_net_with_obstacles_impl(pcb_data: PCBData, net_id: int, config: GridR
             if ((gx1, gy1) not in through_hole_positions
                     and not {layer_names[layer1], layer_names[layer2]}
                     <= partial_spans.get((gx1, gy1), frozenset())):
+                _vx, _vy = _emit_via_site(pcb_data, gx1, gy1, x1, y1)
                 _vsz, _vdr = _emit_via_size(pcb_data, gx1, gy1, config,
-                                            net_id=net_id, x=x1, y=y1)
+                                            net_id=net_id, x=_vx, y=_vy)
                 via = Via(
-                    x=x1, y=y1,
+                    x=_vx, y=_vy,
                     size=_vsz,
                     drill=_vdr,
                     layers=["F.Cu", "B.Cu"],  # Always through-hole
@@ -3001,23 +3017,28 @@ def _place_shrunk_via_in_pad_impl(pad_obj, obstacles, config, pcb_data, net_id, 
     via = Via(x=v['x'], y=v['y'], size=v['size'], drill=v['drill'],
               layers=v.get('layers', ['F.Cu', 'B.Cu']), net_id=net_id)
     vgx, vgy = coord.to_grid(v['x'], v['y'])
-    # Record this cell's DRC-legal shrunk via size so route conversion emits THAT
-    # size (not the full config.via_size) if a path later changes layer here
-    # (a kept via is the net's free via from then on); a full via at the cell
-    # grazes a neighbouring foreign pad (only the shrunk via fits) -- issue
-    # #212, a via beside a resistor network's pad.
+    # Record this cell's DRC-legal shrunk via size, and the site it was checked
+    # at, so route conversion drills THAT via THERE (not the full
+    # config.via_size at the cell centre) if a path later changes layer on the
+    # cell through the free via _register_unblock_via leaves; a full via at the
+    # cell grazes a neighbouring foreign pad (only the shrunk via fits) --
+    # issue #212, a via beside a resistor network's pad.
     # #589 probe hygiene: plan probes route on a throwaway map and emit no
     # copper, but this registry lives on pcb_data and steers the REAL run's
     # via emission -- seq probes place ~10x more unblock vias than blind
     # ones and the leak measurably changed routing (oc null-control 37 vs
     # 33 with the plan off). Probes keep the unblock via for their own
-    # path; they just must not leave a persistent size registration.
+    # path; they just must not leave a persistent size or site registration.
     if not getattr(config, 'plan_probe', False):
         sizes = getattr(pcb_data, '_unblock_via_sizes', None)
         if sizes is None:
             sizes = {}
             pcb_data._unblock_via_sizes = sizes
         sizes[(vgx, vgy)] = (v['size'], v['drill'])
+        sites = getattr(pcb_data, '_unblock_via_sites', None)
+        if sites is None:
+            sites = pcb_data._unblock_via_sites = {}
+        sites[(vgx, vgy)] = (v['x'], v['y'])    # _emit_via_site drills here
     # Off-pad rung: the tap's pad->via trace is the escape stub -- it ships
     # with the via (both kept or both dropped by the caller's used-via check).
     stub_segments = []
@@ -3131,18 +3152,13 @@ def _register_unblock_via(obstacles, vgx, vgy, layer_names, via=None,
     caller adds the cell on every layer to its sources or targets), so the
     retry A* reaches the pad through the via.
 
-    It registers NO free via. A free via says "a barrel of this net is
-    here": the search changes layer on it at zero cost and through the
-    via-blocked veto and the path's own via spacing (router.rs). The retry
-    does not need one -- it ends on the via cell, on any layer, and never
-    changes layer there -- and a via the route keeps gets its free via from
-    its caller (a tap edge's in-progress via, Phase 3's main-route vias,
-    the net's own vias at prepare). A dropped via's claim, on the other hand,
-    outlived it on the map: a GND tap edge into U1.4 --
-    the #535 escape via placed legally at (147.65, 111.35) was dropped with
-    its edge at the terminal short gate, and the orphan fallback changed
-    layer on its cell (147.6, 111.4), which the via map vetoes at every
-    rung, and shipped a 0.3/0.15 via 8.5 um inside U1.5's clearance.
+    It also registers a FREE VIA there: the search may change layer on the
+    cell at zero cost and through the via-blocked veto (router.rs), and the
+    claim outlives a via the route drops. That is how a later search reaches
+    a boxed pad through the shrunk via an earlier, failed retry found legal
+    (#212): an orphan fallback into the same pad routes through the cell.
+    Conversion drills such a via at the site the unblock checked, not at the
+    cell centre (_emit_via_site).
 
     With ``via`` (and net_id/config/coord) it also holds the retry searches
     hole-to-hole off the via's drill: the via is in neither pcb_data nor
@@ -3156,6 +3172,7 @@ def _register_unblock_via(obstacles, vgx, vgy, layer_names, via=None,
     can still end there), stamped ref-counted into the via map and every
     populated rung, and appended to ``rings`` for
     _release_unblock_via_rings, which the caller runs on every exit."""
+    obstacles.add_free_via(vgx, vgy)
     for li in range(len(layer_names)):
         obstacles.add_source_target_cell(vgx, vgy, li)
     obstacles.add_allowed_rect(vgx - 5, vgy - 5, vgx + 5, vgy + 5)   # #800
@@ -3388,9 +3405,10 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
                     n_offpad += 1
         # #803: COMMIT the kept unblock copper to pcb_data now.
         #
-        # _register_unblock_via's map entries are permissive (a source/target
-        # override on every layer + an 11x11 allowed block; its hole-to-hole
-        # ring holds only the retry's own vias, and comes off on return) and
+        # _register_unblock_via's map entries are permissive (a free via, a
+        # source/target override on every layer + an 11x11 allowed block; its
+        # hole-to-hole ring holds only the retry's own vias, and comes off on
+        # return) and
         # the via was not in pcb_data, because a multipoint tap result is
         # deferred. Until that result commits the barrel therefore blocks
         # NOBODY. Measured on one board at
@@ -6185,7 +6203,9 @@ def _path_to_segments_vias(
                     partial_spans.get((gx1, gy1), frozenset()):
                 pass    # a blind/micro via of the net spans both layers
             else:
-                vx, vy = coord.to_float(gx1, gy1)  # via stays on the grid cell
+                # the grid cell, or the site an unblock checked for it
+                vx, vy = _emit_via_site(pcb_data, gx1, gy1,
+                                        *coord.to_float(gx1, gy1))
                 _vsz, _vdr = _emit_via_size(pcb_data, gx1, gy1, config,
                                             net_id=net_id, x=vx, y=vy)
                 # #671: ride an existing same-net barrel rather than drilling a
