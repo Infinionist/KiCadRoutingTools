@@ -1152,48 +1152,157 @@ def _gnd_via_offsets(config, spacing_mm, gnd_net_id, pair_net_ids):
             config.via_size + gnd_pair_clr, gnd_pair_clr)
 
 
-# Furthest a companion GND via is moved off its planned site to clear the
+# Furthest a companion GND via is moved off a candidate site to clear the
 # pair's tracks as drawn. The planned site is where the router checked it
 # against foreign copper; a longer move is re-checked here instead.
 _GND_SETTLE_MAX_MM = 0.25
+# Moves the settle may take inside that distance. A track at 45 degrees to
+# the move closes only sin(45) of each step, so the shortfall falls ~3.4x a
+# step: the 0.051 mm a 45-degree turn of the pair leaves needs FOUR moves
+# and a fifth look to see it cleared (butterstick).
+_GND_SETTLE_MOVES = 8
+
+
+def _gnd_via_pair_shortfall(x, y, config, gnd_net_id, pair_segs, pair_vias=(),
+                            board_copper=()):
+    """How far a GND via at (x, y) sits inside the clearance of the pair's
+    own copper, in mm (<= 0 when it clears all of it), and the item.
+
+    `pair_segs` / `pair_vias`: the copper this route lays (not on the board
+    yet); `board_copper`: the pair's copper already on the board (stubs,
+    earlier vias, pads), as ('seg'|'via'|'pad', item). Each item is priced
+    at the value check_drc grades the GND via against it: `pair_clearance`
+    on a track's layer, the stack against a via (a through via meets it on
+    every layer), `pad_pair_clearance` to the pad's copper as check_drc
+    measures it (`point_to_pad_distance`: round, rounded and custom pads
+    are not their bounding rectangle)."""
+    from geometry_utils import point_to_segment_distance_seg
+    r = config.via_size / 2
+    worst, what = 0.0, None
+
+    def _note(need, have, item):
+        nonlocal worst, what
+        if need - have > worst or what is None:
+            worst, what = need - have, item
+
+    for seg in pair_segs:
+        _note(r + seg.width / 2 + config.pair_clearance(gnd_net_id, seg.net_id, seg.layer),
+              point_to_segment_distance_seg(x, y, seg), seg)
+    for v in pair_vias:
+        _note(r + v.size / 2 + config.pair_clearance(gnd_net_id, v.net_id, kind='stack'),
+              math.hypot(v.x - x, v.y - y), v)
+    if board_copper:
+        from check_drc import point_to_pad_distance
+        for kind, item in board_copper:
+            if kind == 'seg':
+                _note(r + item.width / 2
+                      + config.pair_clearance(gnd_net_id, item.net_id, item.layer),
+                      point_to_segment_distance_seg(x, y, item), item)
+            elif kind == 'via':
+                _note(r + item.size / 2
+                      + config.pair_clearance(gnd_net_id, item.net_id, kind='stack'),
+                      math.hypot(item.x - x, item.y - y), item)
+            else:
+                _note(r + config.pad_pair_clearance(item, gnd_net_id),
+                      point_to_pad_distance(x, y, item), item)
+    return worst, what
 
 
 def _settle_gnd_via(x, y, ux, uy, pair_segs, config, gnd_net_id, pcb_data,
-                    pair_net_ids):
+                    pair_net_ids, pair_vias=(), board_copper=(), recheck=False):
     """Move a companion GND via outward along (ux, uy) until it clears the
-    pair's tracks AS DRAWN (#1207), or return it where it was planned.
+    pair's own copper AS DRAWN (#1207). Returns the site, or None when no
+    site within `_GND_SETTLE_MAX_MM` clears it.
 
     The offsets are measured from the grid centerline, but the tracks follow
     the smoothed float path, which can sit tens of microns off it beside the
-    via (measured 0.035 mm on a converging exit). Each track is priced at the
-    value check_drc grades the via against it, `pair_clearance` on its layer.
-    A moved site must also clear every other net's copper
-    (`via_barrel_clear_of_foreign_copper`), or the planned one is kept.
+    via (measured 0.035 mm on a converging exit), and the pair may turn
+    toward the via right after it (see `_create_gnd_vias`). The pair's own
+    copper is `_gnd_via_pair_shortfall`'s. A moved site -- and any site with
+    `recheck`, which the router never checked -- must also clear every other
+    net's copper (`via_barrel_clear_of_foreign_copper`), or it is refused.
+
+    Before this returned None the planned site came back whenever the settle
+    failed, and was placed: butterstick shipped 5 GND vias up to 0.050 mm
+    into their own pair's tracks (9 check_drc / KiCad clearance items).
+    The position after the LAST move was never looked at either, so a site
+    the fourth move had cleared was thrown away for the grazing one.
     """
-    from geometry_utils import point_to_segment_distance_seg
-    r = config.via_size / 2
-    x0, y0, moved = x, y, 0.0
-    for _ in range(4):
-        deficit = max((r + seg.width / 2
-                       + config.pair_clearance(gnd_net_id, seg.net_id, seg.layer)
-                       - point_to_segment_distance_seg(x, y, seg)
-                       for seg in pair_segs), default=0.0)
+    moved = 0.0
+    for i in range(_GND_SETTLE_MOVES + 1):
+        deficit, _item = _gnd_via_pair_shortfall(x, y, config, gnd_net_id, pair_segs,
+                                                 pair_vias, board_copper)
         if deficit <= 1e-6:
             break
+        if i == _GND_SETTLE_MOVES:
+            return None
         step = deficit + 1e-3
         x, y, moved = x + ux * step, y + uy * step, moved + step
-    else:
-        return x0, y0
-    if moved == 0.0 or moved > _GND_SETTLE_MAX_MM:
-        return x0, y0
-    if pcb_data is not None:
+        if moved > _GND_SETTLE_MAX_MM:
+            return None
+    if (moved > 0.0 or recheck) and pcb_data is not None:
         from stub_layer_switching import via_barrel_clear_of_foreign_copper
         ok, _why = via_barrel_clear_of_foreign_copper(
             x, y, gnd_net_id, pcb_data, config,
             {n for n in pair_net_ids if n is not None})
         if not ok:
-            return x0, y0
+            return None
     return x, y
+
+
+# Last resort before a companion GND via is dropped: rings 0.05 mm apart out
+# to _GND_SETTLE_MAX_MM round the planned site and its mirror, 16 bearings
+# each. cm5_minima1 ETH_PI.TRD2: neither the outward move nor the mirror
+# cleared, and a site 0.10 mm off the planned one -- nearer the signal via --
+# did.
+_GND_RING_STEP_MM = 0.025
+_GND_RING_BEARINGS = 64
+
+
+def _board_window(pcb_data, centres, reach):
+    """pcb_data restricted to copper within `reach` of any of `centres`
+    (by bounding box), for repeated point checks near them."""
+    from types import SimpleNamespace
+    xs = [c[0] for c in centres]
+    ys = [c[1] for c in centres]
+    x0, x1, y0, y1 = min(xs) - reach, max(xs) + reach, min(ys) - reach, max(ys) + reach
+    segs = [s for s in pcb_data.segments
+            if max(s.start_x, s.end_x) >= x0 and min(s.start_x, s.end_x) <= x1
+            and max(s.start_y, s.end_y) >= y0 and min(s.start_y, s.end_y) <= y1]
+    vias = [v for v in pcb_data.vias if x0 <= v.x <= x1 and y0 <= v.y <= y1]
+    return SimpleNamespace(segments=segs, vias=vias, nets=pcb_data.nets,
+                           pads_by_net=getattr(pcb_data, 'pads_by_net', {}))
+
+
+def _gnd_via_ring_site(centres, anchor, config, gnd_net_id, pcb_data,
+                       pair_net_ids, pair_segs, pair_vias, board_copper):
+    """The clear site nearest `anchor` (the signal via the GND via serves)
+    on the first ring round `centres` that has one, or None.
+
+    Clear: `_gnd_via_pair_shortfall` <= 0 and every other net's copper
+    clear (`via_barrel_clear_of_foreign_copper`, priced only for the
+    candidates the pair leaves, nearest the anchor first, on the board
+    windowed to the rings -- pads keep their own window)."""
+    from stub_layer_switching import via_barrel_clear_of_foreign_copper
+    exclude = {n for n in pair_net_ids if n is not None}
+    if pcb_data is not None:
+        pcb_data = _board_window(pcb_data, centres, _GND_SETTLE_MAX_MM + 2.0)
+    rings = int(round(_GND_SETTLE_MAX_MM / _GND_RING_STEP_MM))
+    for k in range(1, rings + 1):
+        rad = k * _GND_RING_STEP_MM
+        cands = []
+        for x0, y0 in centres:
+            for j in range(_GND_RING_BEARINGS):
+                a = 2.0 * math.pi * j / _GND_RING_BEARINGS
+                x, y = x0 + rad * math.cos(a), y0 + rad * math.sin(a)
+                if _gnd_via_pair_shortfall(x, y, config, gnd_net_id, pair_segs,
+                                           pair_vias, board_copper)[0] <= 1e-6:
+                    cands.append((math.hypot(x - anchor[0], y - anchor[1]), x, y))
+        for _d, x, y in sorted(cands):
+            if pcb_data is None or via_barrel_clear_of_foreign_copper(
+                    x, y, gnd_net_id, pcb_data, config, exclude)[0]:
+                return x, y
+    return None
 
 
 def _gnd_via_drill_conflict(x, y, config, pcb_data, placed=(), ignore=frozenset()):
@@ -1235,8 +1344,46 @@ def _gnd_via_drill_conflict(x, y, config, pcb_data, placed=(), ignore=frozenset(
     return None
 
 
+def _pair_board_copper(pcb_data, pair_net_ids, ignore_vias=frozenset(),
+                       ignore_segments=frozenset()):
+    """The pair's own copper already on the board -- its stubs, vias and
+    copper pads -- as ('seg'|'via'|'pad', item) for `_gnd_via_pair_shortfall`.
+    `ignore_*` hold the keys of items the call REPLACES (a meandered pair's
+    current route, still in pcb_data)."""
+    nets = {n for n in pair_net_ids if n is not None}
+    if pcb_data is None or not nets:
+        return []
+    out = [('seg', s) for s in getattr(pcb_data, 'segments', None) or ()
+           if s.net_id in nets and _seg_key(s) not in ignore_segments]
+    out += [('via', v) for v in getattr(pcb_data, 'vias', None) or ()
+            if v.net_id in nets and (round(v.x, 6), round(v.y, 6), v.net_id) not in ignore_vias]
+    by_net = getattr(pcb_data, 'pads_by_net', None) or {}
+    out += [('pad', p) for n in nets for p in by_net.get(n, ())
+            if p.pad_type != 'np_thru_hole'
+            and any(l.endswith('.Cu') for l in (p.layers or ()))]
+    return out
+
+
+def _seg_key(s):
+    return (round(s.start_x, 6), round(s.start_y, 6), round(s.end_x, 6),
+            round(s.end_y, 6), s.layer, s.net_id)
+
+
+def _copper_label(item, nets):
+    """'<net> track on <layer>' / '<net> via' / '<net> pad <REF>.<n>'."""
+    if item is None:
+        return 'its copper'
+    net = nets[item.net_id].name if item.net_id in nets else f'net {item.net_id}'
+    if hasattr(item, 'start_x'):
+        return f'{net} track on {item.layer}'
+    if hasattr(item, 'pad_number'):
+        return f'{net} pad {item.component_ref}.{item.pad_number}'
+    return f'{net} via'
+
+
 def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
-                     pair_net_ids=(None,), pair_segs=(), pcb_data=None, ignore_vias=()):
+                     pair_net_ids=(None,), pair_segs=(), pcb_data=None, ignore_vias=(),
+                     pair_vias=(), ignore_segments=(), not_placed=None):
     """Create GND vias at layer changes in the centerline path.
 
     Args:
@@ -1252,6 +1399,11 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
         pcb_data: the board, against which a settled site is re-checked
         ignore_vias: vias this call REPLACES (a meandered pair's own, still in
             pcb_data); their drills are not obstacles to the new ones (#1341)
+        pair_vias: the pair's signal vias this route lays (not on the board
+            yet); a GND via clears their copper and their drills
+        ignore_segments: segments this call REPLACES, still in pcb_data
+        not_placed: a list to append one record per GND via NOT placed
+            ({'x', 'y', 'pair', 'reason', 'detail'}), for the run's summary
 
     Returns:
         List of Via objects for GND connections
@@ -1261,6 +1413,17 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
         return gnd_vias
     _ignore = frozenset((round(v.x, 6), round(v.y, 6), v.net_id)
                         for v in (ignore_vias or ()))
+    pair_vias = list(pair_vias or ())
+    _settles = bool(pair_segs) or bool(pair_vias)
+    _board_copper = (_pair_board_copper(pcb_data, pair_net_ids, _ignore,
+                                        frozenset(_seg_key(s) for s in ignore_segments or ()))
+                     if _settles else [])
+    _nets = getattr(pcb_data, 'nets', None) or {}
+    _names = [_nets[n].name if n in _nets else f'net {n}'
+              for n in pair_net_ids if n is not None]
+    # The pair as route_diff names it: /X.TX2_P + /X.TX2_N -> /X.TX2
+    _pair_name = (os.path.commonprefix(_names).rstrip('_+-.') or ', '.join(_names)
+                  if len(_names) == 2 else ', '.join(_names))
 
     gnd_via_perp_mm, via_via_dist_mm, _gnd_clr = _gnd_via_offsets(
         config, spacing_mm, gnd_net_id, pair_net_ids)
@@ -1325,34 +1488,79 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
             gnd_dir = gnd_via_dirs[via_idx] if via_idx < len(gnd_via_dirs) else 1
             via_idx += 1
 
-            # GND via positions: perpendicular offset + along-heading offset
-            gnd_p_x = cx + perp_x * gnd_via_perp_mm + dx * via_via_dist_mm * gnd_dir
-            gnd_p_y = cy + perp_y * gnd_via_perp_mm + dy * via_via_dist_mm * gnd_dir
-            gnd_n_x = cx - perp_x * gnd_via_perp_mm + dx * via_via_dist_mm * gnd_dir
-            gnd_n_y = cy - perp_y * gnd_via_perp_mm + dy * via_via_dist_mm * gnd_dir
-            if pair_segs:
-                gnd_p_x, gnd_p_y = _settle_gnd_via(
-                    gnd_p_x, gnd_p_y, perp_x, perp_y, pair_segs, config,
-                    gnd_net_id, pcb_data, pair_net_ids)
-                gnd_n_x, gnd_n_y = _settle_gnd_via(
-                    gnd_n_x, gnd_n_y, -perp_x, -perp_y, pair_segs, config,
-                    gnd_net_id, pcb_data, pair_net_ids)
+            # One GND via each side of the pair: perpendicular offset (sgn
+            # picks the side) + along-heading offset. The router checked the
+            # site on the GRID, at the floored offsets (0.49 mm along -> 4
+            # cells on a 0.1 grid), and lets the pair turn 45 degrees after
+            # that many cells + 2; the via lands at the float offset, so a
+            # turn toward it passes its inner track 0.289 mm from the via
+            # centre against 0.340 (butterstick: 0.4 via, 0.1/0.1 pair, 0.09
+            # clearance). The settle moves the via outward off such a turn;
+            # where the pair wraps round the site (a U-turn) nothing outward
+            # clears and the site MIRRORED across the signal via -- the
+            # router's other candidate, as near the signal via -- is tried,
+            # then any site within the settle distance of either, nearest
+            # the signal via. A via none of them clears is NOT placed, and
+            # said so: the planned site used to come back from a failed
+            # settle and ship grazing.
+            for sgn in (1.0, -1.0):
+                ox, oy = sgn * perp_x, sgn * perp_y
+                site, short, tried = None, None, []
+                for along in ((gnd_dir, -gnd_dir) if _settles else (gnd_dir,)):
+                    sx = cx + ox * gnd_via_perp_mm + dx * via_via_dist_mm * along
+                    sy = cy + oy * gnd_via_perp_mm + dy * via_via_dist_mm * along
+                    if not _settles:
+                        site = (sx, sy)
+                        break
+                    tried.append((sx, sy))
+                    if short is None:
+                        short = (sx, sy) + _gnd_via_pair_shortfall(
+                            sx, sy, config, gnd_net_id, pair_segs, pair_vias,
+                            _board_copper)
+                    site = _settle_gnd_via(sx, sy, ox, oy, pair_segs, config,
+                                           gnd_net_id, pcb_data, pair_net_ids,
+                                           pair_vias=pair_vias,
+                                           board_copper=_board_copper,
+                                           recheck=(along != gnd_dir))
+                    if site is not None:
+                        break
+                if site is None and tried:
+                    site = _gnd_via_ring_site(
+                        tried, (cx + ox * _pn_off, cy + oy * _pn_off), config,
+                        gnd_net_id, pcb_data, pair_net_ids, pair_segs, pair_vias,
+                        _board_copper)
+                if site is None:
+                    px_, py_, d_, item = short
+                    why = (f"no site clears the pair's own copper: the planned one is "
+                           f"{d_:.3f}mm inside {_copper_label(item, _nets)}, and "
+                           f"neither it, its mirror across the signal via nor any "
+                           f"site within {_GND_SETTLE_MAX_MM}mm of either clears")
+                    print(f"  GND return via at ({px_:.3f},{py_:.3f}) not placed: {why}")
+                    if not_placed is not None:
+                        not_placed.append({'x': round(px_, 4), 'y': round(py_, 4),
+                                           'pair': _pair_name, 'reason': 'pair-copper',
+                                           'detail': why})
+                    continue
+                gx, gy = site
 
-            # The router checked each site on the GRID (the floored offset);
-            # the via lands at the float offset and the settle may move it
-            # further, and neither re-check looked at a drill -- another
-            # pair's GND via is the same net, so it was skipped outright.
-            # CM5 DPHY0_P.C's GND via shipped 0.21mm hole-to-hole from
-            # DPHY0_P.D2's against 0.25 (#1341). The final site is checked
-            # against every drill; one that fails is not placed (the planned
-            # site is not a fallback: the settle moved it off the pair's
-            # tracks, #1207). The blocker is usually a GND via already there.
-            for gx, gy in ((gnd_p_x, gnd_p_y), (gnd_n_x, gnd_n_y)):
-                why = _gnd_via_drill_conflict(gx, gy, config, pcb_data, gnd_vias,
-                                              _ignore)
+                # The router checked each site on the GRID (the floored offset);
+                # the via lands at the float offset and the settle may move it
+                # further, and neither re-check looked at a drill -- another
+                # pair's GND via is the same net, so it was skipped outright.
+                # CM5 DPHY0_P.C's GND via shipped 0.21mm hole-to-hole from
+                # DPHY0_P.D2's against 0.25 (#1341). The final site is checked
+                # against every drill -- the pair's own signal vias too, which
+                # are not on the board yet; one that fails is not placed. The
+                # blocker is usually a GND via already there.
+                why = _gnd_via_drill_conflict(gx, gy, config, pcb_data,
+                                              gnd_vias + pair_vias, _ignore)
                 if why is not None:
                     print(f"  GND return via at ({gx:.3f},{gy:.3f}) not placed: "
                           f"{why} (#1341)")
+                    if not_placed is not None:
+                        not_placed.append({'x': round(gx, 4), 'y': round(gy, 4),
+                                           'pair': _pair_name, 'reason': 'drill',
+                                           'detail': why})
                     continue
                 # free=True prevents KiCad auto-assigning net
                 gnd_vias.append(Via(
@@ -5222,10 +5430,11 @@ def _route_diff_pair_with_obstacles_impl(pcb_data: PCBData, diff_pair: DiffPairN
         }
 
     # Create GND vias at layer changes if enabled
+    gnd_not_placed = []
     gnd_vias = _create_gnd_vias(
         simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
         pair_net_ids=(p_net_id, n_net_id), pair_segs=p_segs + n_segs,
-        pcb_data=pcb_data
+        pcb_data=pcb_data, pair_vias=p_vias + n_vias, not_placed=gnd_not_placed
     )
     new_vias.extend(gnd_vias)
 
@@ -5317,6 +5526,9 @@ def _route_diff_pair_with_obstacles_impl(pcb_data: PCBData, diff_pair: DiffPairN
         # GND via data for regeneration after length matching
         'gnd_net_id': gnd_net_id,
         'gnd_via_dirs': gnd_via_dirs,
+        # Companion GND vias this route could not place, one record each
+        # (_create_gnd_vias); the run's summary totals the shipped routes'.
+        'gnd_vias_not_placed': gnd_not_placed,
         # True when source/target polarities differ (used by the flip retry to
         # verify a flipped route actually resolved the mismatch)
         'polarity_swap_needed': polarity_swap_needed,

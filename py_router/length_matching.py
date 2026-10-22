@@ -3538,6 +3538,7 @@ def apply_meanders_to_diff_pair(
                                for x, y, layer in new_centerline_float]
 
         # Recreate GND vias for multi-layer routes
+        gnd_not_placed = []
         if not is_single_layer and config.gnd_via_enabled:
             from diff_pair_routing import _create_gnd_vias
             gnd_net_id = result.get('gnd_net_id')
@@ -3546,8 +3547,10 @@ def apply_meanders_to_diff_pair(
                 new_centerline_grid, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
                 pair_net_ids=(p_net_id, n_net_id), pair_segs=p_segs + n_segs,
                 pcb_data=pcb_data,
-                # the pair's current vias are still on the board: these replace them
-                ignore_vias=result.get('new_vias') or ()
+                # the pair's current route is still on the board: these replace it
+                ignore_vias=result.get('new_vias') or (),
+                ignore_segments=result.get('new_segments') or (),
+                pair_vias=p_vias_new + n_vias_new, not_placed=gnd_not_placed
             )
             new_vias.extend(gnd_vias)
 
@@ -3567,6 +3570,8 @@ def apply_meanders_to_diff_pair(
         modified_result = dict(result)
         modified_result['new_segments'] = new_segments
         modified_result['new_vias'] = new_vias
+        # The GND vias were re-created above (or dropped with the old route).
+        modified_result['gnd_vias_not_placed'] = gnd_not_placed
         modified_result['p_routed_length'] = p_routed_length
         modified_result['n_routed_length'] = n_routed_length
         modified_result['centerline_length'] = avg_routed_length  # Use actual routed length

@@ -1267,6 +1267,13 @@ class DifferentialTab(wx.Panel):
                     f"as routed): {', '.join(uncoupled_pairs)}\n")
             if _kept:
                 msg += (f"  still alongside, so protected: {', '.join(_kept)}\n")
+        # Companion GND return vias with no legal site (the CLI prints the
+        # same "GND vias not placed" line; each one is named in the log).
+        gnd_not_placed = results_data.get('gnd_vias_not_placed') or []
+        if gnd_not_placed:
+            msg += (f"GND vias not placed: {len(gnd_not_placed)} companion return "
+                    f"via(s) with no legal site, on "
+                    f"{', '.join(sorted({d['pair'] for d in gnd_not_placed}))}\n")
         _intra_bad = [r['pair'] for r in results_data.get('intra_pair_matching', [])
                       if r.get('status') not in ('matched', 'within-tolerance', 'skipped')]
         if _intra_bad:
