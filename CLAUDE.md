@@ -71,7 +71,10 @@ Validate routed boards against the *real* spec, with the right checker — most
 - **`route.py` reads/writes a sibling `<output>.kicad_pro` DRC floor.** Re-running
   to the same output path reads it back and silently changes the routing (looks
   like non-determinism; it isn't). For clean A/B comparisons, route to a FRESH
-  output path each run (or `rm` the `.kicad_pro` first).
+  output path each run (or `rm` the `.kicad_pro` first). The leftover is kept
+  (an existing output sibling is never overwritten), but every routing writer
+  now WARNS when the output's `.kicad_pro` predates the step and its rules
+  differ from the input's (`warn_leftover_output_project`).
 - **Never `cp` a board without its `.kicad_pro` (#441).** The sibling `.kicad_pro`
   carries the DRC floor (the Default-netclass clearance/track/via the chain routed
   to). A bare `cp a.kicad_pcb b.kicad_pcb` strands it: the next route step reads no

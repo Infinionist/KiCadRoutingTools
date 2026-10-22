@@ -1960,8 +1960,60 @@ def seed_project_for_output(output_pcb: str, input_pcb=None):
     there, such an output reached kicad-cli without the board's custom rules:
     a pad pair legal under its 0.16 mm rule was graded a clearance violation
     on 12 of 13 single-net re-routes (#1286). Idempotent: an existing output
-    sibling is never touched. Returns the paths seeded."""
+    sibling is never touched. Returns the paths seeded.
+
+    An existing output ``.kicad_pro`` whose rules differ from the input's is
+    still kept, but said so on the first write of that output in this process
+    (``warn_leftover_output_project``)."""
+    warn_leftover_output_project(output_pcb, input_pcb)
     return carry_input_siblings(output_pcb, input_pcb)
+
+
+#: Outputs this process has already seeded: the leftover warning is about the
+#: project found BEFORE the step's first write, not the one its own writeback
+#: lowered since.
+_SEEDED_OUTPUTS = set()
+
+
+def _project_rules(path):
+    """A project's rule floors and net classes, or None when unreadable."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            proj = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(proj, dict):
+        return None
+    rules = ((proj.get('board') or {}).get('design_settings') or {}).get('rules')
+    return rules, (proj.get('net_settings') or {}).get('classes')
+
+
+def warn_leftover_output_project(output_pcb, input_pcb=None):
+    """Warn when the output already has a ``.kicad_pro`` whose rules differ
+    from the input's: one left by an earlier run to the same path. It is kept
+    (an existing output sibling is never overwritten), and the floor writeback
+    then lowers from ITS floors, so a rerun silently inherits an earlier
+    attempt's relaxations ("unchanged by this step but still below the board's
+    ORIGINAL"). A PCB-chat routing plan run twice in one folder on 2026-10-22
+    kept a 0.127 mm track floor from its first attempt that way. Once per
+    output per process. Returns True when it warned."""
+    if not (output_pcb and input_pcb):
+        return False
+    key = os.path.abspath(output_pcb)
+    if key == os.path.abspath(input_pcb) or key in _SEEDED_OUTPUTS:
+        return False
+    _SEEDED_OUTPUTS.add(key)
+    in_pro, out_pro = find_project(input_pcb), find_project(output_pcb)
+    if not (os.path.isfile(in_pro) and os.path.isfile(out_pro)):
+        return False
+    if _project_rules(in_pro) == _project_rules(out_pro):
+        return False
+    print(f"  WARNING: {out_pro} is left from an earlier run and is kept (an "
+          f"existing output sibling is never overwritten). Its design rules "
+          f"differ from the input's, and this step's floor writeback lowers "
+          f"from them, not from {os.path.basename(in_pro)}. Route to a fresh "
+          f"output path, or delete it first, to start from the input's rules.")
+    return True
 
 
 def fanout_written_floors(kind, tracks, vias):
