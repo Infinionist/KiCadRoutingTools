@@ -1247,6 +1247,17 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
             if _h:
                 pad_hole_only[pad_idx] = _h
 
+    # A pad whose zone connection resolves to NONE for a zone (a pad or
+    # footprint `(zone_connect 0)`, or the zone's `connect_pads no`) never
+    # touches that zone's fill in KiCad: the filler knocks it out like foreign
+    # copper, so it joins the net only through tracks, vias or pads.
+    from kicad_parser import pad_joins_zone as _pad_joins_zone
+
+    def _pad_refused_by_zone(pid, zone):
+        info = point_info.get(pid)
+        return bool(info and info[0] == 'pad'
+                    and not _pad_joins_zone(pads[info[1]], zone))
+
     # Connect points through zones (power planes)
     # All points on the same layer that are inside the same zone are connected
     zone_repr_id = {}  # zone_idx -> a representative point id credited to the zone
@@ -1290,6 +1301,8 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
             if _mask.any():
                 _mask &= ~points_in_polygon_mask(_pxs, _pys, _hole)
         for _in_poly, (x, y, layer, pid, size) in zip(_mask, points_on_layer):
+            if _in_poly and _pad_refused_by_zone(pid, zone):
+                continue   # zone connection NONE: KiCad keeps the fill off it
             if _in_poly:
                 # Removal gates pass a fill validator (#outline-over-credit,
                 # bitaxe Q2): outline membership only counts where real fill

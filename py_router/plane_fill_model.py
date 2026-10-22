@@ -354,21 +354,29 @@ class ZoneFillModel:
                 guard = max(guard_base, _nc.get(s.net_id, 0.0))
                 _stamp_seg(s)
         guard = guard_base
+        from kicad_parser import pad_joins_zone
         for plist in pcb_data.pads_by_net.values():
             for p in plist:
-                if p.net_id == net_id:
+                if p.net_id == net_id and pad_joins_zone(p, zone):
                     continue
                 is_th = p.drill and p.drill > 0
                 on_layer = (layer in p.layers or '*.Cu' in p.layers)
                 if not is_th and not on_layer:
                     continue
-                # Per-pad clearance override (#326): KiCad's filler (and its
-                # hole_clearance rule) honors it, so stamp this pad at
-                # max(zc, class pair, override). The closure guard is rebound
-                # for the stamps below and restored after the loop.
-                guard = max(guard_base,
-                            _nc.get(p.net_id, 0.0),
-                            getattr(p, 'local_clearance', 0.0) or 0.0)
+                if p.net_id == net_id:
+                    # Own pad with zone connection NONE (a solder jumper's
+                    # GND half): KiCad's filler knocks it out like foreign
+                    # copper, at max(zone clearance, physical_clearance rule)
+                    # -- the zone's own clearance here, no class pairing.
+                    guard = zc
+                else:
+                    # Per-pad clearance override (#326): KiCad's filler (and
+                    # its hole_clearance rule) honors it, so stamp this pad at
+                    # max(zc, class pair, override). The closure guard is
+                    # rebound for the stamps below and restored after the loop.
+                    guard = max(guard_base,
+                                _nc.get(p.net_id, 0.0),
+                                getattr(p, 'local_clearance', 0.0) or 0.0)
                 if p.pad_type == 'np_thru_hole':
                     _stamp_disc(p.global_x, p.global_y, (p.drill or 0) / 2.0)
                     continue

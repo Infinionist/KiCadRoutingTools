@@ -462,6 +462,14 @@ class Pad:
     # Set by sense_branch.resolve_sense_branches on both parse paths; the
     # router may never attach new copper to it.
     sense: str = ""
+    # The pad's zone-connection OVERRIDE, spelled like Zone.pad_connection
+    # ('none', 'thermal', 'solid', 'thru_hole_only'): the pad's own
+    # `(zone_connect N)`, else its footprint's, resolved at parse time the way
+    # local_clearance is. None = no override, so each zone's own connect_pads
+    # decides. Never read it directly to ask "does the pour reach this pad":
+    # pad_zone_connection(pad, zone) applies the zone and THT rules. Set by
+    # BOTH parse paths.
+    zone_connection: Optional[str] = None
 
 
 _VIA_BIRTH_WATCH = None
@@ -815,6 +823,10 @@ class Footprint:
     # paths agree string for string. '' = the file names no sheet. Appended.
     sheet_name: str = ""
     sheet_file: str = ""
+    # The footprint-level `(zone_connect N)` override, raw (see
+    # Pad.zone_connection, which already carries it for every pad without one
+    # of its own). None = not set. Appended.
+    zone_connection: Optional[str] = None
 
 
 #: The (attr ...) flags `Footprint.attrs` keeps -- the ones the text form and
@@ -4531,6 +4543,12 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
         # clearance above, so a PAD's own token cannot be mistaken for one.
         fp_paste_margin, fp_paste_ratio = _paste_overrides(fp_text[:_clr_end],
                                                            _file_version)
+        # Footprint-level zone connection override. KiCad writes it right
+        # after the header (clearance ...); its own bound, because the one
+        # above stops at '(zone', which is a prefix of '(zone_connect'.
+        _zc_child = re.search(r'\((?:pad\s|fp_|zone\s|model\s)', fp_text)
+        fp_zone_connection = zone_connect_from_text(
+            fp_text[:_zc_child.start()] if _zc_child else fp_text)
 
         # Net-tie pad groups: (net_tie_pad_groups "1, 2" "3, 4") -- each quoted
         # string is one comma-separated group of pad numbers this footprint
@@ -4597,6 +4615,7 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             ref_label=ref_label,
             paste_margin=fp_paste_margin,
             paste_margin_ratio=fp_paste_ratio,
+            zone_connection=fp_zone_connection,
             parsed_pose=(fp_x, fp_y, fp_rotation, fp_layer),
             attrs=fp_attrs,
             has_model=fp_has_model,
@@ -4843,6 +4862,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
                 unconnected_layer_mode=unconnected_layer_mode_from_text(pad_text),
                 die_length=_pad_die[0],
                 die_delay=_pad_die[1],
+                zone_connection=(zone_connect_from_text(pad_text)
+                                 or fp_zone_connection),
             )
 
             footprint.pads.append(pad)
@@ -7171,6 +7192,52 @@ def zone_connection_settings(zone_header: str):
             float(b.group(1)) if b else None)
 
 
+#: KiCad's ZONE_CONNECTION enum as a pad or footprint `(zone_connect N)` writes
+#: it, spelled like Zone.pad_connection. INHERITED (-1) is never written.
+ZONE_CONNECT_NAMES = {0: 'none', 1: 'thermal', 2: 'solid', 3: 'thru_hole_only'}
+
+_ZONE_CONNECT_RE = re.compile(r'\(zone_connect\s+(-?\d+)\)')
+
+
+def zone_connect_from_text(text: str) -> Optional[str]:
+    """The `(zone_connect N)` override in a pad block or a footprint header,
+    spelled like Zone.pad_connection; None = not set (inherit)."""
+    m = _ZONE_CONNECT_RE.search(text)
+    return ZONE_CONNECT_NAMES.get(int(m.group(1))) if m else None
+
+
+def zone_connect_from_pcbnew(item) -> Optional[str]:
+    """The pcbnew twin of zone_connect_from_text, for a PAD or a FOOTPRINT:
+    its OWN override (GetLocalZoneConnection), never an inherited one."""
+    try:
+        return ZONE_CONNECT_NAMES.get(int(item.GetLocalZoneConnection()))
+    except Exception:
+        return None
+
+
+def pad_zone_connection(pad, zone) -> str:
+    """How `zone` connects to `pad`: 'none', 'thermal' or 'solid' -- KiCad's
+    resolution (DRC_ENGINE::EvalZoneConnection): the pad's own override, else
+    its footprint's (both already folded into Pad.zone_connection), else the
+    zone's connect_pads (thermal when the zone does not say). Thermal-for-PTH
+    ('thru_hole_only') gives a plated through-hole pad a thermal relief and
+    every other pad a solid joint. A `zone_connection` custom rule in the
+    .kicad_dru (which KiCad ranks between the pad's and the footprint's
+    override) is not read."""
+    mode = (getattr(pad, 'zone_connection', None)
+            or getattr(zone, 'pad_connection', None) or 'thermal')
+    if mode == 'thru_hole_only':
+        return 'thermal' if getattr(pad, 'pad_type', '') == 'thru_hole' else 'solid'
+    return mode
+
+
+def pad_joins_zone(pad, zone) -> bool:
+    """False when KiCad keeps `zone`'s fill off this pad of its own net
+    (connection 'none'): the pour then pulls back by its clearance, and the
+    pad reaches the net only through a track, a via or another pad."""
+    return pad_zone_connection(pad, zone) != 'none'
+
+
 def extract_keepouts(content: str) -> List[dict]:
     """Extract keep-out rule areas (zones with a (keepout ...) clause and no net fill).
 
@@ -8676,6 +8743,8 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
         # header read. pcbnew 10 returns None when unset (probed), else IU / a
         # ratio.
         fp_paste_margin, fp_paste_ratio = _pcbnew_paste_overrides(fp, to_mm)
+        # Footprint-level zone connection override, parity with the text read.
+        fp_zone_connection = zone_connect_from_pcbnew(fp)
 
         # Net-tie pad groups — parity with the text parser (Kelvin shunts /
         # net-tie parts; KiCad exempts the grouped pads' mutual clearance).
@@ -8807,6 +8876,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             ref_label=fp_ref_label,
             paste_margin=fp_paste_margin,
             paste_margin_ratio=fp_paste_ratio,
+            zone_connection=fp_zone_connection,
             parsed_pose=(fp_x, fp_y, fp_rotation, fp_layer),
             attrs=fp_attrs,
             has_model=fp_has_model,
@@ -9088,6 +9158,8 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                 unconnected_layer_mode=unconnected_layer_mode_from_pcbnew(pad),
                 die_length=_pad_die[0],
                 die_delay=_pad_die[1],
+                zone_connection=(zone_connect_from_pcbnew(pad)
+                                 or fp_zone_connection),
             )
 
             footprint.pads.append(pad_obj)
@@ -10230,6 +10302,10 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
         bfc = getattr(bf, 'clearance', 0.0); ffc = getattr(ff, 'clearance', 0.0)
         if not close(bfc, ffc):
             diffs.append(f"Footprint {ref} clearance: board={bfc:.3f} file={ffc:.3f}")
+        # Footprint-level zone connection: inherited by every pad without its own.
+        bzc = getattr(bf, 'zone_connection', None); fzc = getattr(ff, 'zone_connection', None)
+        if bzc != fzc:
+            diffs.append(f"Footprint {ref} zone_connection: board={bzc} file={fzc}")
         # #1211: the schematic sheet, which `place_pose replicate` resolves a
         # channel by (name) and maps its parts by (path). A pcbnew accessor
         # that moved would hand the GUI a board with no sheets.
@@ -10331,6 +10407,12 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
                 bc = getattr(bp, 'local_clearance', 0.0); fc = getattr(fp, 'local_clearance', 0.0)
                 if not close(bc, fc):
                     diffs.append(f"Pad {ref}:{bp.pad_number} local_clearance: board={bc:.3f} file={fc:.3f}")
+                # Zone connection override: 'none' keeps the pour off the pad,
+                # so a path that dropped it would credit pour contact KiCad
+                # never makes.
+                bzc = getattr(bp, 'zone_connection', None); fzc = getattr(fp, 'zone_connection', None)
+                if bzc != fzc:
+                    diffs.append(f"Pad {ref}:{bp.pad_number} zone_connection: board={bzc} file={fzc}")
                 # Roundrect corner ratio - only consumed (and only meaningful) for
                 # roundrect pads; pcbnew returns a default ratio on every pad shape,
                 # so comparing it on circle/rect pads is pure noise.
