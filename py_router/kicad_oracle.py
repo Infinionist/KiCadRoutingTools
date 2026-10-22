@@ -1633,25 +1633,43 @@ def _direct_sliver_weld(pcb_data, net_id, ax, ay, bx, by, layer, config,
 
 
 def _weld_touches_endpoints(segs, vias, x0, y0, x1, y1,
-                            tol: float = 1.0) -> bool:
+                            tol: float = 1.0, layers=(None, None)) -> bool:
     """#648 sharpening of the #570 guard: the rescue was handed EXACT gap
     endpoints (strict), so its copper must actually REACH both. Copper
     merely inside the corridor box can be an unrelated fragment join -- the
     rescue's own component model credited three In3 debris segments ~2.8mm
     from either endpoint of an F.Cu zone link, three rounds running, while
     KiCad re-reported the identical link. `tol` is deliberately loose (the
-    rescue may walk an endpoint to an adjacent legal cell)."""
-    def _near(x, y):
+    rescue may walk an endpoint to an adjacent legal cell).
+
+    ...but never across layers. `layers` are the two ends' layers as the
+    link names them: an end on a named layer is reached only by copper ON
+    that layer (a segment there, or a via whose span covers it); None or
+    '*.Cu' (a via, a plated barrel) is reached on any layer. The scoped
+    rescue is layer-blind, and zynq7020_som GND C130.2 (a B.Cu pad) was
+    credited, two rounds running, with a 0.28mm In1.Cu piece lying on the
+    net's existing In1 copper: xy within tol of both ends, joining nothing."""
+    from geometry_utils import via_on_layer
+
+    def _any_layer(lay):
+        return lay is None or '*' in str(lay) or '&' in str(lay)
+
+    def _near(x, y, lay):
         for s in segs:
+            if not _any_layer(lay) and s.layer != lay:
+                continue
             from geometry_utils import point_to_segment_distance as _p2s
             if _p2s(x, y, s.start_x, s.start_y, s.end_x, s.end_y) \
                     <= s.width / 2.0 + tol:
                 return True
         for v in vias:
+            if not _any_layer(lay) and not via_on_layer(v, lay):
+                continue
             if math.hypot(v.x - x, v.y - y) <= v.size / 2.0 + tol:
                 return True
         return False
-    return bool(segs or vias) and _near(x0, y0) and _near(x1, y1)
+    l0, l1 = layers
+    return bool(segs or vias) and _near(x0, y0, l0) and _near(x1, y1, l1)
 
 
 def _copper_in_corridor(segs, vias, x0, y0, x1, y1, pad: float = 3.0) -> bool:
@@ -2564,7 +2582,9 @@ def oracle_reconnect(board_file: str, net_names, config,
                             or not _weld_touches_endpoints(
                             _esc2.get('new_segments') or [],
                             _esc2.get('new_vias') or [],
-                            _pa[0], _pa[1], _pb[0], _pb[1])):
+                            _pa[0], _pa[1], _pb[0], _pb[1],
+                            layers=(_pa[2] if len(_pa) > 2 else None,
+                                    _pb[2] if len(_pb) > 2 else None))):
                     print(f"    {net_name}: exact-fill strap REJECTED "
                           f"(emitted copper outside the link corridor -- "
                           f"#570/#648 false-claim guard)")
@@ -2892,10 +2912,11 @@ def oracle_reconnect(board_file: str, net_names, config,
                 if _esc and not _esc.get('failed') \
                         and not _weld_touches_endpoints(
                             _esc.get('new_segments') or [],
-                            _esc.get('new_vias') or [], ax, ay, bx, by):
+                            _esc.get('new_vias') or [], ax, ay, bx, by,
+                            layers=(al, bl)):
                     print(f"    {net_name}: weld escalation REJECTED "
                           f"(copper reaches neither/only one gap endpoint "
-                          f"-- unrelated fragment join, #648)")
+                          f"on its layer -- unrelated fragment join, #648)")
                     _esc = None
                 # #658: the rescue's scoped fine router has no layer-cost
                 # plumbing, so a FORBIDDEN layer (cost -1, e.g. power
@@ -3299,6 +3320,19 @@ def oracle_reconnect(board_file: str, net_names, config,
             # #1169: wide where the net's own width fits, narrow at the pinch.
             _legs = widen_link_legs(route_points, used_width, pcb_data,
                                     net_id, config)
+            if not (_legs or _extra_conn or via_positions):
+                # Nothing to write: the path only changed layer at an existing
+                # barrel, or its points coincide (the exact tier's nearest
+                # approach can be one point). KiCad has just reported these
+                # clusters apart, so no-copper is no weld -- the #572 false-
+                # weld fingerprint (butterstick GND (151.19,103.08): "OK 0
+                # seg(s), 0 via(s)" credited every round, link still open).
+                print(f"    {net_name}: ({ax:.2f},{ay:.2f})<->({bx:.2f},"
+                      f"{by:.2f})  FAILED (the path lays no copper -- a "
+                      f"zero-copper weld cannot join clusters KiCad reports "
+                      f"apart, #572)")
+                failed += 1
+                continue
             for x1, y1, x2, y2, l1, _lw in _legs:
                 new_sexprs.append(generate_segment_sexpr(
                     (x1, y1), (x2, y2), _lw, l1, net_id,

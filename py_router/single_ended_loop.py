@@ -138,13 +138,24 @@ def _route_on_prepared_map(pcb_data, net_id, config, state, routed_net_ids,
     included), no own-pad lift, no free vias -- and the net's OWN cached copper
     back on the map as an obstacle, which blocked rescues that should succeed
     (#1146 audit: 6 of 10 two-pad nets on a fanned board against 10 of 10 on
-    a prepared map)."""
+    a prepared map).
+
+    A net carrying exact-fill oracle links (#572) routes THEM, as the main
+    pass does: endpoint derivation reads the fill model, whose zone credit
+    merges the clusters KiCad grades apart, so a derived route "succeeds" on
+    a pour cell of an island (lpddr4 GND: the stub-swap rescue reported
+    J1.195 routed with one segment and it shipped open)."""
     _stubs, via_cells = prepare_obstacles_inplace(
         state.working_obstacles, pcb_data, config, net_id,
         state.all_unrouted_net_ids, routed_net_ids, track_proximity_cache,
         layer_map, state.net_obstacles_cache,
         state.ripped_route_layer_costs, state.ripped_route_via_positions)
     try:
+        _olinks = (getattr(state, 'oracle_links_by_net', None)
+                   or {}).get(net_id)
+        if _olinks:
+            return route_oracle_links(pcb_data, net_id, config,
+                                      state.working_obstacles, _olinks)
         return route_net_with_obstacles(pcb_data, net_id, config,
                                         state.working_obstacles)
     finally:
@@ -354,9 +365,32 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
                         state.ripped_route_via_positions,
                         refused_sink=state.collision_refused_net_ids)
 
+    # #572: a stub carrying an exact-fill link end is the copper KiCad
+    # anchored that link on; re-layering it would leave the forced link
+    # aimed at a point with nothing under it on that layer.
+    _anchors = [(a[0], a[1], a[2]) for link in
+                ((getattr(state, 'oracle_links_by_net', None) or {})
+                 .get(net_id) or ()) for a in link]
+
+    def _carries_link_end(stub):
+        if not _anchors:
+            return False
+        from geometry_utils import point_to_segment_distance
+        from stub_layer_switching import stub_switch_segments
+        for s in stub_switch_segments(pcb_data, stub):
+            for ax_, ay_, al_ in _anchors:
+                # None / '*.Cu': a via or plated barrel, on every layer
+                if al_ is not None and '*' not in al_ and al_ != s.layer:
+                    continue
+                if point_to_segment_distance(ax_, ay_, s.start_x, s.start_y,
+                                             s.end_x, s.end_y) \
+                        <= s.width / 2.0 + 0.05:
+                    return True
+        return False
+
     for (sx, sy, slayer) in ends[:2]:
         stub = get_stub_info(pcb_data, net_id, sx, sy, slayer)
-        if stub is None:
+        if stub is None or _carries_link_end(stub):
             continue
         for dest in cand_layers:
             if dest == slayer:

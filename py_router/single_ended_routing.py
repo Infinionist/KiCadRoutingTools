@@ -1890,6 +1890,38 @@ def _augment_all_blocked_pad_side(cells, pad, config, obstacles):
     return cells
 
 
+def oracle_link_end_layers(pcb_data: PCBData, net_id: int, x: float, y: float,
+                           layer, routing_layers) -> List[str]:
+    """The routing layers one forced-link end (#572) is copper on.
+
+    A named layer in the stack is the answer. KiCad anchors a VIA or a plated
+    barrel with no layer (kicad-cli's "Via ... on F.Cu - B.Cu" parses to None)
+    and the exact source spells a through-hole pad '*.Cu': such an end is
+    copper on every layer it spans, so it is resolved against the net's own
+    via or plated pad at that point -- the via's span (blind/buried included),
+    the pad's expanded layers. Nothing of the net there: [] (the end is not
+    routable here). mdfpga_hub75 U3.33: the link to a drop via was refused
+    outright as 'layer not in the routing stack (F.Cu / None)'."""
+    if layer in routing_layers:
+        return [layer]
+    if layer is not None and '*' not in str(layer) and '&' not in str(layer):
+        return []
+    from geometry_utils import via_on_layer
+    from net_queries import expand_pad_layers
+    for v in pcb_data.vias:
+        if v.net_id == net_id and \
+                math.hypot(v.x - x, v.y - y) <= v.size / 2.0 + 1e-3:
+            return [l for l in routing_layers if via_on_layer(v, l)]
+    for p in pcb_data.pads_by_net.get(net_id, []):
+        if not pad_is_plated_through(p):
+            continue
+        if math.hypot(p.global_x - x, p.global_y - y) \
+                <= max(p.size_x, p.size_y) / 2.0 + 1e-3:
+            cu = set(expand_pad_layers(p.layers, list(routing_layers)))
+            return [l for l in routing_layers if l in cu]
+    return []
+
+
 def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
                        obstacles: GridObstacleMap, links,
                        attraction_path=None) -> Optional[dict]:
@@ -1916,9 +1948,11 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
     merged = None
     for link in links:
         (ax, ay, al, _ak), (bx, by, bl, _bk) = link
-        la = layer_idx.get(al)
-        lb = layer_idx.get(bl)
-        if la is None or lb is None:
+        las = oracle_link_end_layers(pcb_data, net_id, ax, ay, al,
+                                     config.layers)
+        lbs = oracle_link_end_layers(pcb_data, net_id, bx, by, bl,
+                                     config.layers)
+        if not las or not lbs:
             print(f"    forced link endpoint layer not in the routing stack "
                   f"({al} / {bl}) -- link unroutable here")
             uncommit_dropped_result(pcb_data, merged)
@@ -1926,13 +1960,13 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
                     'failed_link': ((ax, ay), (bx, by))}
         gax, gay = coord.to_grid(ax, ay)
         gbx, gby = coord.to_grid(bx, by)
-        print(f"    forced oracle link: ({ax:.3f},{ay:.3f})[{al}] <-> "
-              f"({bx:.3f},{by:.3f})[{bl}]")
+        print(f"    forced oracle link: ({ax:.3f},{ay:.3f})"
+              f"[{'/'.join(las)}] <-> ({bx:.3f},{by:.3f})[{'/'.join(lbs)}]")
         result = route_net_with_obstacles(
             pcb_data, net_id, config, obstacles,
             attraction_path=attraction_path,
-            sources_override=[(gax, gay, la, ax, ay)],
-            targets_override=[(gbx, gby, lb, bx, by)])
+            sources_override=[(gax, gay, layer_idx[l], ax, ay) for l in las],
+            targets_override=[(gbx, gby, layer_idx[l], bx, by) for l in lbs])
         if not result or result.get('failed'):
             if merged and merged.get('new_segments'):
                 print(f"    ({len(merged['new_segments'])} segment(s) from "
