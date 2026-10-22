@@ -46,7 +46,10 @@ DIAGONAL_MARGIN = 0.25  # mm
 # shrunk/rejected until the unblock failed. Tolerate up to this much sub-clearance
 # at PLACEMENT and let the post-route via-nudge (nudge_grazing_vias) move the
 # residual graze to full clearance instead -- a nudged via stays connected; a
-# stranded pad does not. Matches check_drc's default grading margin.
+# stranded pad does not. It is LOOSER than check_drc's grading margin (5% of
+# the clearance: 5 um at 0.1 mm), so a residual the nudge cannot move ships as
+# a counted item; the refit picks a SIZE and is no legality gate for the SITE,
+# which must come from the via map.
 UNBLOCK_REFIT_MARGIN_MM = 0.05  # mm (absolute; NOT a fraction like check_drc's clearance_margin)
 
 # Cost parameters

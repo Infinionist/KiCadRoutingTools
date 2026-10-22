@@ -2968,10 +2968,10 @@ def _place_shrunk_via_in_pad_impl(pad_obj, obstacles, config, pcb_data, net_id, 
               layers=v.get('layers', ['F.Cu', 'B.Cu']), net_id=net_id)
     vgx, vgy = coord.to_grid(v['x'], v['y'])
     # Record this cell's DRC-legal shrunk via size so route conversion emits THAT
-    # size (not the full config.via_size) if the path later changes layer here
-    # through the registered free via. The free via is what lets the boxed pad
-    # connect; a full via at the cell grazes a neighbouring foreign pad (only the
-    # shrunk via fits) -- issue #212, glasgow_revC Z5 via vs RN4.6.
+    # size (not the full config.via_size) if a path later changes layer here
+    # (a kept via is the net's free via from then on); a full via at the cell
+    # grazes a neighbouring foreign pad (only the shrunk via fits) -- issue
+    # #212, glasgow_revC Z5 via vs RN4.6.
     # #589 probe hygiene: plan probes route on a throwaway map and emit no
     # copper, but this registry lives on pcb_data and steers the REAL run's
     # via emission -- seq probes place ~10x more unblock vias than blind
@@ -3093,8 +3093,22 @@ def _net_pads_near(pcb_data, net_id, cells, coord):
 
 def _register_unblock_via(obstacles, vgx, vgy, layer_names, via=None,
                           net_id=None, config=None, coord=None, rings=None):
-    """Expose a placed via cell on every layer and let the router transit/place a
-    free via there (so the retry A* can reach the pad through it).
+    """Expose a placed via cell on every layer as a retry endpoint (the
+    caller adds the cell on every layer to its sources or targets), so the
+    retry A* reaches the pad through the via.
+
+    It registers NO free via. A free via says "a barrel of this net is
+    here": the search changes layer on it at zero cost and through the
+    via-blocked veto and the path's own via spacing (router.rs). The retry
+    does not need one -- it ends on the via cell, on any layer, and never
+    changes layer there -- and a via the route keeps gets its free via from
+    its caller (a tap edge's in-progress via, Phase 3's main-route vias,
+    the net's own vias at prepare). A dropped via's claim, on the other hand,
+    outlived it on the map: stm32g474_fc (set10) GND, tap edge into U1.4 --
+    the #535 escape via placed legally at (147.65, 111.35) was dropped with
+    its edge at the terminal short gate, and the orphan fallback changed
+    layer on its cell (147.6, 111.4), which the via map vetoes at every
+    rung, and shipped a 0.3/0.15 via 8.5 um inside U1.5's clearance.
 
     With ``via`` (and net_id/config/coord) it also holds the retry searches
     hole-to-hole off the via's drill: the via is in neither pcb_data nor
@@ -3108,7 +3122,6 @@ def _register_unblock_via(obstacles, vgx, vgy, layer_names, via=None,
     can still end there), stamped ref-counted into the via map and every
     populated rung, and appended to ``rings`` for
     _release_unblock_via_rings, which the caller runs on every exit."""
-    obstacles.add_free_via(vgx, vgy)
     for li in range(len(layer_names)):
         obstacles.add_source_target_cell(vgx, vgy, li)
     obstacles.add_allowed_rect(vgx - 5, vgy - 5, vgx + 5, vgy + 5)   # #800
@@ -3341,10 +3354,12 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
                     n_offpad += 1
         # #803: COMMIT the kept unblock copper to pcb_data now.
         #
-        # _register_unblock_via is purely permissive (free-via + a source/target
-        # override on every layer + an 11x11 allowed block) and the via was not in
-        # pcb_data, because a multipoint tap result is deferred. Until that result
-        # commits the barrel therefore blocks NOBODY. Measured on glasgow_revC at
+        # _register_unblock_via's map entries are permissive (a source/target
+        # override on every layer + an 11x11 allowed block; its hole-to-hole
+        # ring holds only the retry's own vias, and comes off on return) and
+        # the via was not in pcb_data, because a multipoint tap result is
+        # deferred. Until that result commits the barrel therefore blocks
+        # NOBODY. Measured on glasgow_revC at
         # the moment a phase-3 ripped net re-routes:
         #     in_pcb_data=0  via_blocked=True  cells=T,F,F,F   (only the PAD blocks)
         #     in_pcb_data=1  via_blocked=True  cells=T,T,T,T   (committed)
@@ -5050,11 +5065,11 @@ def route_multipoint_taps(
         removed exactly, cell by cell. They matter most on the PERSISTENT
         working map (reroute_loop's in-place mode), where
         restore_obstacles_inplace removes only its own same-net-via cells;
-      * free vias -- every in-progress via and every #189 unblock via. A free
-        via is a zero-cost layer change that also overrides the via-blocked
-        veto (router.rs), so one left where no barrel is lets a later search
-        drill there through any keep-out. The set is put back to what it held
-        on entry;
+      * free vias -- every in-progress via (a kept #189 unblock via among
+        them). A free via is a zero-cost layer change that also overrides the
+        via-blocked veto (router.rs), so one left where no barrel is lets a
+        later search drill there through any keep-out. The set is put back to
+        what it held on entry;
       * the source/target overrides, the terminal allowed-cell rects (#800)
         and the endpoint exemption: per-route scaffolding that no map builder
         adds (prepare/restore_obstacles_inplace empty them on the working map),
@@ -5071,7 +5086,8 @@ def route_multipoint_taps(
     the same either way. Measured on glasgow_revC's release chain: 5 of 399
     calls took the copy, each a reroute whose main route had run the #189
     via-in-pad unblock on the same map (an unblock via registered there and
-    not committed to pcb_data is a free via no probe here can name)."""
+    not committed to pcb_data was a free via no probe here could name;
+    _register_unblock_via registers none any more)."""
     ring_cells: list = []
     # Ledger-only (KICAD_OBSTACLE_LEDGER=1): checks the contract above on
     # whatever map this is, which the ref-count ledger cannot (it books only
@@ -5735,9 +5751,10 @@ def _route_multipoint_taps_impl(
             # with it: it is already in pcb_data (#803) and no result will
             # carry it. Left there, the orphan fallback below landed on it as
             # the pad's own via and reported the pad connected while the file
-            # had no via there (found reviewing #1273). Its free-via
-            # registration stays: a later edge that changes layer on that cell
-            # emits its own via, refit-checked (#339).
+            # had no via there (found reviewing #1273). It leaves no free via
+            # behind either (_register_unblock_via registers none): a later
+            # edge changes layer on that cell only where the via map allows a
+            # via, never through the veto a barrel that is gone would lift.
             _uncommit_unblock_copper(pcb_data, unblock_vias, unblock_segments)
             edge_key = (min(src_idx, tgt_idx), max(src_idx, tgt_idx))
             failed_edges.add(edge_key)
