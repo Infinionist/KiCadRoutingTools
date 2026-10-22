@@ -770,6 +770,12 @@ def summary_min(merged: Dict, name_cap: int = 20) -> Dict:
     if merged.get('finalize_excluded_nets'):
         out['finalize_excluded_nets'] = _names(
             merged['finalize_excluded_nets'])
+    if merged.get('unroutable_as_designed'):
+        # Open nets whose pad is shorted to another net as drawn: no retry
+        # fixes them, so the agent reading only this line must see them.
+        out['unroutable_as_designed'] = _names(sorted(
+            {r.get('net') for r in merged['unroutable_as_designed']
+             if r.get('net')}))
     # #1069: how many nets the final-board re-grade read. Absent when the
     # tally rests on the summaries alone (no re-grade ran).
     if isinstance(merged.get('regrade'), dict):

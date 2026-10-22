@@ -17,7 +17,8 @@ one more line in the unrouted count. This pins:
   3. route.py names the open nets under `unroutable_as_designed` in
      JSON_SUMMARY and prints them; on the corrected board every net routes
      and the key is absent;
-  4. merge_summaries carries the key from pass 1 for nets still failing.
+  4. merge_summaries carries the key from pass 1 for nets still failing,
+     and JSON_SUMMARY_MIN names them.
 
     python3 tests/test_unroutable_as_designed.py
 """
@@ -170,6 +171,12 @@ with tempfile.TemporaryDirectory() as d:
           "the nets still failing only",
           [r['net'] for r in m.get('unroutable_as_designed', [])] == ['A'],
           m.get('unroutable_as_designed'))
+    from route_summary import summary_min
+    check("JSON_SUMMARY_MIN names them",
+          summary_min(m).get('unroutable_as_designed') == ['A'],
+          summary_min(m).get('unroutable_as_designed'))
+    check("...and has no such key when nothing is shorted",
+          'unroutable_as_designed' not in summary_min(merge_summaries([last])))
 
 print('-' * 60)
 if fails:
