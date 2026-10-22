@@ -1906,6 +1906,33 @@ def oracle_reconnect(board_file: str, net_names, config,
     # carry either away. A field-for-field copy, so a board with no map
     # routes exactly as before.
     config = replace(config)
+    # The caller's drill-to-drill floor is the hole_to_hole_clearance argument
+    # (every caller passes its run's); the configs the callers build carry the
+    # dataclass's 0.20, and the oracle's #649b stitching via and its rescue
+    # escalation (net_rescue reads config.hole_to_hole_clearance) priced holes
+    # at that instead.
+    if hole_to_hole_clearance and hole_to_hole_clearance > 0:
+        config.hole_to_hole_clearance = hole_to_hole_clearance
+    # The board's copper-to-HOLE floor (#617/#1038), resolved once from the
+    # REAL project. Every NPTH check of this leg -- the link maps' track and
+    # via keep-outs (build_base_obstacles), the width upgrade, #1169's leg
+    # widening and the emission gate (wide_route_clear), the seed filter
+    # (npth_floor_ok) -- asks resolve_hole_clearance(pcb_data, config), which
+    # reads the project beside pcb_data.source_path. The board parsed below is
+    # `board_file`: the CLI finalize's half-written output, which has no
+    # project beside it yet, or the GUI's staged save. Both read as declaring
+    # nothing, so the leg held tracks only at the flat 0.20 fab floor and laid
+    # no via keep-out at all (neo6502: a 0.4 GND leg 0.21 mm off USB-PWR1's
+    # NPTH wall against the declared 0.25). An explicit config.hole_clearance
+    # wins, as it does in the resolver.
+    if not (getattr(config, 'hole_clearance', 0.0) or 0.0) > 0:
+        try:
+            from obstacle_map import resolve_hole_clearance
+            _hc = resolve_hole_clearance(None, config, project_from or board_file)
+            if _hc > 0:
+                config.hole_clearance = _hc
+        except Exception:                                   # noqa: BLE001
+            pass
     _ncl_by_name = dict(net_clearances_by_name or {})
     _bad_fields = set(net_widths_by_name or {}) - set(ORACLE_WIDTH_MAPS)
     if _bad_fields:

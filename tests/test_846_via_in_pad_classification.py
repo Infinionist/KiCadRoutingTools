@@ -69,7 +69,11 @@ VIA_SIZE, VIA_DRILL = 0.45, 0.20
 # so no escape can be lost. An earlier draft asserted `len(vias) + len(dropped)
 # > 0` under the label "escapes are unchanged", which would have passed on
 # (0 vias, 36 dropped). These numbers are the pre-change measurement on
-# upstream/main e239e067.
+# upstream/main e239e067 -- except routed_output U2, which escapes two more
+# pads since: DATA_23 (U2.67) by a stub to its own existing via, 0.188 mm off
+# U2.68, once the under-pad escape measured pads exactly instead of off the
+# stub map; and DATA_6 (U2.46) at 0.095 mm, the under-pad escalation down the
+# QFN clearance ladder (#1328). Both are new escapes, none is lost.
 CASES = [
     ('qfn_underpad_coupling', 'U1', ['SIG*'], 'F.Cu', 0.1, 0.12, (8, 0)),
     ('qfn_diffpair_escape', 'U1', ['DP1*'], 'F.Cu', 0.1, 0.15, (2, 0)),
@@ -79,7 +83,7 @@ CASES = [
     # EVERYTHING (`if True:`) is invisible, because every via on the three
     # boards above does overlap: measured, that row SURVIVED until this
     # board was added.
-    ('routed_output', 'U2', ['Net-(U2A-*)'], 'B.Cu', 0.1, 0.10, (14, 22)),
+    ('routed_output', 'U2', ['Net-(U2A-*)'], 'B.Cu', 0.1, 0.10, (15, 20)),
 ]
 
 CHECKS = []
@@ -208,7 +212,7 @@ def main():
         check(f'{board} {ref}: escapes match the PRE-change measurement '
               f'({len(vias)} vias, {len(dropped)} dropped)',
               (len(vias), len(dropped)) == expect,
-              f'expected {expect} on upstream/main e239e067 -- the clamp only '
+              f'expected {expect} (see CASES) -- the clamp only '
               f'shrinks vias, which relaxes every clearance term, so no '
               f'escape may be lost'),
 

@@ -1425,9 +1425,29 @@ def _generate_debug_arrows(center_src_x, center_src_y, src_dir_x, src_dir_y,
     return arrows
 
 
-def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
+def _vias_as_layer_copper(vias, layer):
+    """Each via that spans `layer`, as a zero-length track of its own
+    diameter there: a pair member's via is partner copper on every layer it
+    spans (#318)."""
+    from geometry_utils import via_on_layer
+    from kicad_parser import Segment
+    return [Segment(start_x=v.x, start_y=v.y, end_x=v.x, end_y=v.y,
+                    width=v.size, layer=layer, net_id=v.net_id)
+            for v in vias if via_on_layer(v, layer)]
+
+
+def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data,
+                              p_vias=(), n_vias=()):
     """#318: neck a polarity's segment that sits sub-clearance to its PARTNER's
     just-created copper, and REPORT what necking cannot fix.
+
+    `p_vias` / `n_vias` are the members' just-created vias. A via is partner
+    copper on every layer it spans: a segment is necked against it like
+    against a track, and a via on or near the partner's track or via is a hard
+    violation. Without them a route that loops back over its own via pair
+    (rp2040_motorctrl /CAN1 leg 1, a polarity-fix route out the target's
+    opposite side) shipped each via sitting on the partner's diagonal -- a
+    P/N short graded clean here because only tracks were compared.
 
     Returns ``(necked, hard)``: `hard` lists (seg, partner, gap) still inside
     clearance after necking, which the caller must treat as a failed route --
@@ -1475,10 +1495,12 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
             hit = _pc_memo[key] = _pcf(a_nid, b_nid, layer)
         return hit
 
-    def neck_side(own, partner):
+    _via_copper = _vias_as_layer_copper
+
+    def neck_side(own, partner, partner_vias):
         nonlocal necked
         for s in own:
-            for o in partner:
+            for o in list(partner) + _via_copper(partner_vias, s.layer):
                 if o.layer != s.layer:
                     continue
                 d = _seg_seg_min_dist(s.start_x, s.start_y, s.end_x, s.end_y,
@@ -1491,8 +1513,8 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
                         s.width = round(new_w, 4)
                         necked += 1
 
-    neck_side(p_segs, n_segs)
-    neck_side(n_segs, p_segs)
+    neck_side(p_segs, n_segs, n_vias)
+    neck_side(n_segs, p_segs, p_vias)
 
     # HARD violations -- what necking cannot reach. `neck_side` floors every
     # width at the fab minimum, so when `allowed_half` goes NEGATIVE it quietly
@@ -1508,15 +1530,29 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
     # another option, exactly as the terminal SHORT gate (#157 `hard` list) does
     # for single-ended terminals.
     hard = []
-    for s in p_segs:
-        for o in n_segs:
-            if o.layer != s.layer:
-                continue
-            d = _seg_seg_min_dist(s.start_x, s.start_y, s.end_x, s.end_y,
-                                  o.start_x, o.start_y, o.end_x, o.end_y)
-            gap = d - s.width / 2.0 - o.width / 2.0
-            if gap < _pair_clearance(s.net_id, o.net_id, s.layer) - 1e-6:
-                hard.append((s, o, gap))
+
+    def _hard(a_list, b_list):
+        for s in a_list:
+            for o in b_list:
+                if o.layer != s.layer:
+                    continue
+                d = _seg_seg_min_dist(s.start_x, s.start_y, s.end_x, s.end_y,
+                                      o.start_x, o.start_y, o.end_x, o.end_y)
+                gap = d - s.width / 2.0 - o.width / 2.0
+                if gap < _pair_clearance(s.net_id, o.net_id, s.layer) - 1e-6:
+                    hard.append((s, o, gap))
+    _hard(p_segs, n_segs)
+    if p_vias or n_vias:
+        # Tracks against the partner's vias, on every layer each via spans,
+        # then via against via on every layer both span.
+        for lyr in {s.layer for s in list(p_segs) + list(n_segs)}:
+            _hard([s for s in p_segs if s.layer == lyr], _via_copper(n_vias, lyr))
+            _hard([s for s in n_segs if s.layer == lyr], _via_copper(p_vias, lyr))
+        _stack = (getattr(config, 'board_copper_layers', None)
+                  or getattr(config, 'layers', None)
+                  or {l for v in list(p_vias) + list(n_vias) for l in (v.layers or ())})
+        for lyr in set(_stack):
+            _hard(_via_copper(p_vias, lyr), _via_copper(n_vias, lyr))
     return necked, hard
 
 
@@ -3450,6 +3486,7 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
             # is cheap; score = length + heavy weight on uncoupled mm. A
             # plan with essentially no uncoupled copper is taken on the spot.
             best_plan = None  # (score, legs, vias, iters, split)
+            bypassed = 0
             for plan in leg_plans:
                 leg_state['s'] = {p_net_id: [], n_net_id: []}
                 leg_state['v'] = {p_net_id: [], n_net_id: []}
@@ -3476,6 +3513,14 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                     leg_state['path'][(net_id, _side)] = lpath or []
                 if not good:
                     continue
+                # #1303: each net's signal must run THROUGH its coupled
+                # middle (`_middle_bypassed`).
+                if any(_middle_bypassed(pcb_data, _nid, mid_vias_by_net[_nid],
+                                        leg_state['s'][_nid], leg_state['v'][_nid],
+                                        terminal_pads=terminal_pads)
+                       for _nid in (p_net_id, n_net_id)):
+                    bypassed += 1
+                    continue
                 _lp = leg_state['s'][p_net_id]
                 _ln = leg_state['s'][n_net_id]
                 _len = sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
@@ -3495,6 +3540,9 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                     print(f"      leg couple: best plan still ships "
                           f"{_split:.1f}mm uncoupled leg copper")
             if not ok:
+                if bypassed:
+                    return None, (f"{bypassed} leg plan(s) joined the terminals "
+                                  f"without the coupled middle")
                 return None, "terminal legs could not attach to the coupled middle"
             all_segs = mid_segs + leg_segs
             all_vias = p_vias + n_vias + leg_vias
@@ -3564,20 +3612,12 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                         return None
                     return _rs, _rv
 
-                # #1303: the coupling term and the coupling gate
-                # (`seam_coupling`).
-                _pitch1303 = config.track_width + config.diff_pair_gap
-
-                def _coupling(_segs):
-                    return seam_coupling(_segs, p_net_id, n_net_id, config)
-
                 def _joint_score(_segs, _vias):
                     _pl = [s for s in _segs if s.net_id == p_net_id]
                     _nl = [s for s in _segs if s.net_id == n_net_id]
                     _len = sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
                                for s in _segs)
-                    return (_len + 2.0 * len(_vias) + 3.0 * _split_len(_pl, _nl)
-                            + 3.0 * _coupling(_segs)[1])
+                    return _len + 2.0 * len(_vias) + 3.0 * _split_len(_pl, _nl)
 
                 # JOINT re-ask: each net re-asked in turn, the second against
                 # the first's NEW copper -- then the pair result is accepted or
@@ -3586,11 +3626,10 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                 # "decoupled" until BOTH nets move into it); a raw-length
                 # accept undoes the coupling. Both orders are tried.
                 _base_score = _joint_score(all_segs, all_vias)
-                _base_coupled = _coupling(all_segs)[0]
                 _other_v = [v for v in all_vias
                             if v.net_id not in (p_net_id, n_net_id)]
                 _best_joint = None
-                _lost1303 = None
+                _split1303 = None
                 for _first, _second in ((p_net_id, n_net_id), (n_net_id, p_net_id)):
                     _cur_s, _cur_v = list(all_segs), list(all_vias)
                     for _net in (_first, _second):
@@ -3612,21 +3651,21 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                                                   _cur_s, _cur_v,
                                                   terminal_pads=terminal_pads):
                         continue
-                    # #1303: a re-ask exists to dissolve the seams of a
-                    # coupled pair, never to trade its coupled run for
-                    # length. One pitch of slack lets a dissolved seam move
-                    # where the coupled run starts or ends.
-                    _cc = _coupling(_cur_s)[0]
-                    if _cc < _base_coupled - _pitch1303:
-                        if _lost1303 is None or _cc > _lost1303:
-                            _lost1303 = _cc
+                    # #1303: a re-ask dissolves the seams of a coupled
+                    # pair; it never splits the pair (`seam_splits_pair`).
+                    _sp = seam_splits_pair(all_segs, _cur_s, p_net_id,
+                                           n_net_id, config)
+                    if _sp:
+                        if _split1303 is None or _sp[1] > _split1303[1]:
+                            _split1303 = _sp
                         continue
                     _sc = _joint_score(_cur_s, _cur_v)
                     if _best_joint is None or _sc < _best_joint[0]:
                         _best_joint = (_sc, _cur_s, _cur_v)
-                if _lost1303 is not None and _best_joint is None:
-                    print(f"      #444 seam re-ask rejected: it loses the coupled "
-                          f"middle ({_base_coupled:.1f} -> {_lost1303:.1f}mm coupled)")
+                if _split1303 is not None and _best_joint is None:
+                    print(f"      #444 seam re-ask rejected: it splits the pair "
+                          f"({_split1303[0]:.0%} -> {_split1303[1]:.0%} of the "
+                          f"route alongside its partner)")
                 if _best_joint is not None and _best_joint[0] < _base_score - 0.2:
                     print(f"      #444 seam re-ask: joint whole-connection A* "
                           f"replaces composed pair (score {_base_score:.1f} -> "
@@ -3671,7 +3710,9 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
         _n318, _h318 = _neck_pair_partner_grazes(
             [s for s in best['all_segs'] if s.net_id == p_net_id],
             [s for s in best['all_segs'] if s.net_id == n_net_id],
-            config, pcb_data)
+            config, pcb_data,
+            p_vias=[v for v in best['all_vias'] if v.net_id == p_net_id],
+            n_vias=[v for v in best['all_vias'] if v.net_id == n_net_id])
         if _h318:
             # An intra-pair short is not a pair. This loop already RANKS
             # candidates by `overlaps`, so a self-grazing polarity loses to a
@@ -3738,7 +3779,7 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
 
 
 def _hybrid_route_connects(pcb_data, p_net_id, n_net_id, new_segs, new_vias,
-                           terminal_pads=None) -> bool:
+                           terminal_pads=None, replaces=None) -> bool:
     """True only if BOTH halves of the pair connect terminal-to-terminal with the
     new hybrid copper added to the pair's existing (fanout-stub) copper. Used to
     reject a hybrid route that left a terminal orphaned (#215).
@@ -3750,10 +3791,20 @@ def _hybrid_route_connects(pcb_data, p_net_id, n_net_id, new_segs, new_vias,
     check would wrongly fail because those aren't connected yet (HDMI TMDS on
     fpga_sdram: the U1<->J3 leg coupled fine but the deferred J3->U7 ESD tap left
     U7 'unconnected', rejecting the good coupled leg). When None (the 2-terminal
-    hybrid) the whole net IS the leg, so all pads are checked as before."""
+    hybrid) the whole net IS the leg, so all pads are checked as before.
+
+    ``replaces`` (id()s of board segments and vias): copper already on the board
+    that ``new_segs``/``new_vias`` would REPLACE, left out of the check. The
+    chain seam re-ask (`seam_reask_chain_leg`) runs on a committed leg, so
+    without this the leg's own old copper joined the pads for any candidate --
+    an EMPTY one included: daisy_pedal_board /USBCONN-D's leg 1 was "replaced"
+    by no copper (score 18.2 -> 9.0) and the pair shipped disconnected."""
     from check_connected import check_net_connectivity
-    board_segs = getattr(pcb_data, 'segments', None) or []
-    board_vias = getattr(pcb_data, 'vias', None) or []
+    _gone = replaces or ()
+    board_segs = [s for s in (getattr(pcb_data, 'segments', None) or [])
+                  if id(s) not in _gone]
+    board_vias = [v for v in (getattr(pcb_data, 'vias', None) or [])
+                  if id(v) not in _gone]
     pads_by_net = getattr(pcb_data, 'pads_by_net', None) or {}
     for nid in (p_net_id, n_net_id):
         pads = (terminal_pads.get(nid, []) if terminal_pads is not None
@@ -3764,6 +3815,43 @@ def _hybrid_route_connects(pcb_data, p_net_id, n_net_id, new_segs, new_vias,
         if not r.get('connected') or r.get('disconnected_pads'):
             return False
     return True
+
+
+def _middle_bypassed(pcb_data, net_id, mid_vias, leg_segs, leg_vias,
+                     terminal_pads=None) -> bool:
+    """#1303: True when ``net_id``'s terminals are joined by its legs (plus
+    the board's copper) WITHOUT its coupled middle.
+
+    The net's own copper is no obstacle to its legs, so a leg that cannot
+    reach the middle's near end directly can reach the FAR end and run back
+    along the middle. On imx6ulz DQS0 the N leg from U2 ran In2.Cu -> B.Cu to
+    the via at the middle's far end (where the U1 leg also lands), rose to
+    F.Cu there and ran back beside the middle to its near end. Both pads then
+    met at that via, and the middle hung off the signal path as a loop: the
+    post-route cleanup broke the loop (cycle prune) and removed the dangling
+    middle (strict collapse), so DQS0 shipped 0 mm coupled with 12 mm of
+    skew. The cleanup was right -- copper the signal does not pass through
+    couples nothing -- so the plan is refused here instead, and the next
+    plan, polarity or layer pair is tried.
+
+    ``mid_vias`` (the middle's own layer changes) stay in: a leg reusing one
+    to reach the far side bypasses the middle as surely. Board copper that
+    joins the terminals by itself is not the legs' doing: False."""
+    from check_connected import check_net_connectivity
+    pads = (terminal_pads.get(net_id, []) if terminal_pads is not None
+            else (getattr(pcb_data, 'pads_by_net', None) or {}).get(net_id, []))
+    if len(pads) < 2:
+        return False
+    segs = [s for s in (getattr(pcb_data, 'segments', None) or []) if s.net_id == net_id]
+    vias = [v for v in (getattr(pcb_data, 'vias', None) or []) if v.net_id == net_id]
+
+    def _joined(extra_segs, extra_vias):
+        r = check_net_connectivity(net_id, segs + list(extra_segs),
+                                   vias + list(extra_vias), pads)
+        return bool(r.get('connected')) and not r.get('disconnected_pads')
+    if _joined([], []):
+        return False
+    return _joined(leg_segs, list(mid_vias) + list(leg_vias))
 
 
 def _seg_to_seglist_min_edge(x1, y1, x2, y2, width, layer, other_segs):
@@ -3813,7 +3901,8 @@ def _seg_seg_distance(ax, ay, bx, by, cx, cy, dx, dy):
                pt_seg(cx, cy, ax, ay, bx, by), pt_seg(dx, dy, ax, ay, bx, by))
 
 
-def _collapse_leg_attach_join(leg_segs, attach_xy, config, pcb_data, net_id, partner_segs):
+def _collapse_leg_attach_join(leg_segs, attach_xy, config, pcb_data, net_id, partner_segs,
+                              partner_vias=()):
     """Collapse a hybrid leg's short grid->float "join" at the coupled-middle
     attach end when it pinches the partner track below clearance (#215).
 
@@ -3832,7 +3921,12 @@ def _collapse_leg_attach_join(leg_segs, attach_xy, config, pcb_data, net_id, par
     sub-clearance to the partner copper -- so clean junctions are left untouched
     and downstream pairs are not perturbed -- and (b) the relocated segment
     provably clears the partner (and any foreign pad) by the full clearance, so
-    the tilt can never introduce a new graze. Mutates ``leg_segs`` in place."""
+    the tilt can never introduce a new graze. Mutates ``leg_segs`` in place.
+
+    ``partner_vias`` are partner copper too, on every layer each spans: watchy
+    USB_D's N leg landed its stand-in 0.088 mm from P's middle via, which the
+    float near-end clears by 0.101, and #318's gate (which counts vias)
+    refused every layer pair for it."""
     if len(leg_segs) < 2:
         return leg_segs
     ax, ay = attach_xy
@@ -3848,6 +3942,7 @@ def _collapse_leg_attach_join(leg_segs, attach_xy, config, pcb_data, net_id, par
         return leg_segs  # join doesn't continue the penultimate segment
 
     w = config.get_net_track_width(net_id, pen.layer)
+    partner_segs = list(partner_segs) + _vias_as_layer_copper(partner_vias, pen.layer)
     # partner_segs is the OTHER half of the SAME pair, so the requirement is the
     # INTRA-PAIR floor min(clearance, diff_pair_gap) -- the coupled trace runs at
     # the design gap by construction, and the clearance ledger grades the board
@@ -4239,7 +4334,8 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
             path, coord, layer_names, net_id, config,
             _start_orig, _end_orig,
             through_hole_positions=reuse_holes, pcb_data=pcb_data)
-        _collapse_leg_attach_join(ps, (mid_pt[0], mid_pt[1]), config, pcb_data, net_id, partner_segs)
+        _collapse_leg_attach_join(ps, (mid_pt[0], mid_pt[1]), config, pcb_data, net_id,
+                                  partner_segs, partner_vias=partner_vias)
         return ps, pv, it, path
     finally:
         remove_segments_list_from_obstacles(obstacles, partner_segs, config)
@@ -4249,29 +4345,69 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
             obstacles.remove_blocked_vias_batch(np.array(ring_cells, dtype=np.int32))
 
 
-def seam_coupling(segs, p_net_id, n_net_id, config):
-    """#1303: (coupled mm, uncoupled mm) of a seam re-ask candidate's copper.
+#: #1303: a re-ask candidate SPLITS the pair when the share of its route that
+#: runs alongside the partner falls below this fraction of the composed
+#: pair's share.
+SEAM_SPLIT_SHARE = 0.5
 
-    Both #444 re-asks priced a candidate by length, vias and `_split_len` --
-    copper farther than 1 mm from its partner -- and nothing asked whether the
-    pair was still COUPLED: P and N side by side at the gap they were routed
-    at. On imx6ulz DQS0 the joint re-ask swapped the coupled middle for P on
-    In2.Cu and N on B.Cu (0 mm coupled) on length alone (score 185.0 ->
-    100.4). Coupled length here is KiCad's measure
-    (`net_queries.diff_pair_coupling`, no obstruction test: the candidate is
-    not on the board) at the window route_diff grades the shipped pair with
-    (`diff_pair_custody.COUPLED_GAP_FACTOR` x gap); uncoupled is
-    max(P, N track length) - coupled. Each re-ask adds 3 x uncoupled to its
-    score and rejects a candidate that loses more than one pitch of the
-    coupled run it started from."""
+
+def seam_coupling(segs, p_net_id, n_net_id):
+    """#1303: (alongside mm, route mm) of a seam re-ask's copper: the length
+    of P and N side by side -- KiCad's coupling geometry
+    (`net_queries.diff_pair_coupling`): parallel facing spans on one layer, at
+    any distance, as KiCad counts them when the board sets no maximum gap --
+    and the route's length, max(P, N). No obstruction test: a candidate is not
+    on the board. Distance is the re-ask score's business (`_split_len`)."""
     from net_queries import diff_pair_coupling
-    from diff_pair_custody import COUPLED_GAP_FACTOR
-    c = diff_pair_coupling(None, p_net_id, n_net_id, None,
-                           COUPLED_GAP_FACTOR * config.diff_pair_gap,
-                           p_tracks=[s for s in segs if s.net_id == p_net_id],
-                           n_tracks=[s for s in segs if s.net_id == n_net_id],
+    p_tracks = [s for s in segs if s.net_id == p_net_id]
+    n_tracks = [s for s in segs if s.net_id == n_net_id]
+    c = diff_pair_coupling(None, p_net_id, n_net_id, None, None,
+                           p_tracks=p_tracks, n_tracks=n_tracks,
                            obstruction=False)
-    return c['coupled_mm'], c['uncoupled_mm']
+
+    def _len(tracks):
+        return sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
+                   for s in tracks)
+    return c['coupled_mm'], max(_len(p_tracks), _len(n_tracks))
+
+
+def seam_splits_pair(base_segs, cand_segs, p_net_id, n_net_id, config):
+    """#1303: does a #444 re-ask candidate SPLIT the pair the composed route
+    keeps together? Returns None when it does not, else (base share,
+    candidate share) for the rejection message.
+
+    Both re-asks priced a candidate by length, vias and `_split_len` alone,
+    so on imx6ulz DQS0 the joint re-ask swapped a coupled middle for P on
+    In2.Cu and N on B.Cu (0 mm alongside) because the composed pair's long
+    legs scored worse (185.0 -> 100.4); CLK0's candidate put P on F.Cu and
+    N on B.Cu the same way.
+
+    The test is the SHARE of the route that runs alongside the partner
+    (`seam_coupling`, capped at 1: KiCad's measure counts a span once per
+    facing partner segment), never its absolute length: a re-ask exists to
+    remove the composed route's detours, and a shorter route carries less
+    coupled length by construction (ottercast EPHY_TX: a 44 mm composed leg,
+    95% alongside, against a 6 mm re-ask 69% alongside). Nor is it measured
+    at the gap the pair was routed at: a re-ask is one single-ended A* per
+    net attracted to its partner, so it runs alongside at the routing
+    clearance or wider -- at 1.5x the gap nearly every candidate reads 0 mm
+    coupled. Gating there refused every re-ask on a coupled middle, shipped
+    the composed detours instead, and cost 13 corpus boards a net or more
+    (esp32s3_m2_som 1 -> 6: SPICLK's F.Cu middle swung across the U3 -> J2
+    corridor its GPIOs need; the straight re-ask ran on B.Cu at a 0.3 mm
+    gap).
+
+    A composed route with less than one pitch alongside has no coupled run
+    to lose."""
+    b_al, b_len = seam_coupling(base_segs, p_net_id, n_net_id)
+    if b_len <= 0 or b_al < config.track_width + config.diff_pair_gap:
+        return None
+    c_al, c_len = seam_coupling(cand_segs, p_net_id, n_net_id)
+    b_share = min(1.0, b_al / b_len)
+    c_share = min(1.0, c_al / c_len) if c_len > 0 else 0.0
+    if c_share >= SEAM_SPLIT_SHARE * b_share:
+        return None
+    return b_share, c_share
 
 
 def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
@@ -4334,9 +4470,7 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
         _nl = [s for s in segs if s.net_id == n_id]
         _len = sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
                    for s in segs)
-        # #1303: + the coupling term (seam_coupling).
-        return (_len + 2.0 * len(vias) + 3.0 * _split_len(_pl, _nl)
-                + 3.0 * seam_coupling(segs, p_id, n_id, config)[1])
+        return _len + 2.0 * len(vias) + 3.0 * _split_len(_pl, _nl)
 
     def _reask(net, cur_segs, cur_vias):
         partner = n_id if net == p_id else p_id
@@ -4377,10 +4511,8 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
     old_segs = list(leg_result.get('new_segments') or [])
     old_vias = list(leg_result.get('new_vias') or [])
     base = _score(old_segs, old_vias)
-    base_coupled = seam_coupling(old_segs, p_id, n_id, config)[0]
-    pitch = config.track_width + config.diff_pair_gap
     best = None
-    lost = None
+    split = None
     for first, second in ((p_id, n_id), (n_id, p_id)):
         cur_s, cur_v = list(old_segs), list(old_vias)
         moved = False
@@ -4398,19 +4530,22 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
         if _connector_grazes_foreign_copper(cur_s, pcb_data, p_id, n_id, config):
             continue
         if not _hybrid_route_connects(pcb_data, p_id, n_id, cur_s, cur_v,
-                                      terminal_pads=_leg_pads):
+                                      terminal_pads=_leg_pads,
+                                      replaces=_leg_seg_ids | _leg_via_ids):
             continue
-        # #1303: never trade the leg's coupled run for length.
-        cc = seam_coupling(cur_s, p_id, n_id, config)[0]
-        if cc < base_coupled - pitch:
-            lost = cc if lost is None else max(lost, cc)
+        # #1303: never split the pair (seam_splits_pair).
+        sp = seam_splits_pair(old_segs, cur_s, p_id, n_id, config)
+        if sp:
+            if split is None or sp[1] > split[1]:
+                split = sp
             continue
         sc = _score(cur_s, cur_v)
         if best is None or sc < best[0]:
             best = (sc, cur_s, cur_v)
-    if best is None and lost is not None:
-        print(f"      #444 chain seam re-ask rejected: it loses the coupled "
-              f"run ({base_coupled:.1f} -> {lost:.1f}mm coupled)")
+    if best is None and split is not None:
+        print(f"      #444 chain seam re-ask rejected: it splits the pair "
+              f"({split[0]:.0%} -> {split[1]:.0%} of the route alongside "
+              f"its partner)")
     if best is None or best[0] >= base - 0.2:
         return False
     print(f"      #444 chain seam re-ask: leg replaced "
@@ -5063,7 +5198,8 @@ def _route_diff_pair_with_obstacles_impl(pcb_data: PCBData, diff_pair: DiffPairN
 
     # #318: pairwise partner neck -- emission-time necking cannot see the
     # partner's copper (assembled in the same commit), see helper docstring.
-    _necked318, _hard318 = _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data)
+    _necked318, _hard318 = _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data,
+                                                     p_vias=p_vias, n_vias=n_vias)
     if _hard318:
         # An intra-pair short is not a pair. Necking has already tried and the
         # gap is still inside clearance, so writing this would ship P and N

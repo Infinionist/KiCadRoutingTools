@@ -1085,7 +1085,15 @@ def repair_planes(
         grid_step=grid_step,
         layers=list(routing_layers),
         board_edge_clearance=board_edge_clearance,
-        ripup_blocker_select=ripup_blocker_select
+        ripup_blocker_select=ripup_blocker_select,
+        # The run's drill-to-drill floor. This parameter reached the region
+        # joins and sub-runs directly, but the CONFIG kept the dataclass's
+        # 0.20, and everything reading config.hole_to_hole_clearance -- the
+        # tap via maps, the tap-graze via nudge, merge_close_same_net_vias --
+        # held vias 0.20 apart on a 0.25 board. butterstick: the nudge moved
+        # two P_1.35_DRAM tap vias to 0.402 mm from a U11 ball's via (needs
+        # 0.45).
+        hole_to_hole_clearance=hole_to_hole_clearance,
     )
     # #658: the finalize/repair legs previously routed with UNIFORM layer
     # costs -- the chain's --layer-costs never reached this engine, so

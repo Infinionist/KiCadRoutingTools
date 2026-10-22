@@ -596,18 +596,45 @@ from the terminal escapes (`_route_direct_coupled_middle`):
    (boxed by the adjacent `USB_DET` stub, ~0.225 mm away) 1/1 with no hand-placed
    vias — issue #197.
 
-4. **Seam re-ask (#444), never at the cost of coupling (#1303).** Each net's
+   **The middle must carry the signal (#1303).** A net's own copper is no
+   obstacle to its legs, so a leg that cannot reach the middle's near end
+   directly can reach its FAR end and run back along it. Both terminals then meet at that via
+   and the middle hangs off the signal path as a loop; the post-route cleanup
+   correctly breaks the loop and removes the dangling middle (imx6ulz DQS0 shipped
+   0 mm coupled with 12 mm of skew that way). A leg plan whose legs join a net's
+   terminals without its middle is refused (`_middle_bypassed`), and the next
+   plan, polarity or layer pair is tried (`hybrid F.Cu: rejected -- 4 leg plan(s)
+   joined the terminals without the coupled middle` under `--debug-lines`).
+
+4. **Seam re-ask (#444), never splitting the pair (#1303).** Each net's
    assembled copper (escape → middle → escape) is re-asked as ONE whole-connection
    A* against its partner's copper, and the pair of replacements is taken when
-   it scores better: length + 2 per via + 3 per mm of leg copper farther than
-   1 mm from the partner + **3 per mm of uncoupled length** at up to 1.5x the
-   routed gap (`seam_coupling`, KiCad's coupling measure). A candidate that
-   loses more than one pitch of the coupled run it started from is rejected
-   outright (`#444 seam re-ask rejected: it loses the coupled middle (8.7 ->
-   0.2mm coupled)`): the re-ask dissolves seams, it does not trade the coupled
-   middle for length. On imx6ulz DQS0 it used to swap the middle for P on
-   In2.Cu and N on B.Cu (0 mm coupled) on length alone. The chain re-ask of a
-   multipoint leg (`seam_reask_chain_leg`) carries the same term and gate.
+   it scores better: length + 2 per via + 3 per mm of copper farther than
+   1 mm from the partner. A candidate that SPLITS the pair is rejected
+   outright (`#444 seam re-ask rejected: it splits the pair (42% -> 0% of the
+   route alongside its partner)`, `seam_splits_pair`): the share of its route
+   that runs alongside the partner -- KiCad's coupling geometry, parallel
+   facing spans on one layer at any distance, as KiCad counts them when the
+   board sets no maximum gap -- has fallen below half the composed route's.
+   On imx6ulz DQS0 and CLK0 the re-ask used to swap the middle for P and N on
+   different layers (0 mm coupled) on length alone.
+
+   The test is a share, not a length, and not at the routed gap. A re-ask
+   exists to remove the composed route's detours, so a shorter route carries
+   less coupled length by construction (ottercast EPHY_TX: a 44 mm composed
+   leg against a 6 mm re-ask); and a re-ask is one single-ended A* per net,
+   attracted to its partner, so it runs alongside at the routing clearance or
+   wider, a few times the pair gap. How far apart it runs is the score's
+   business (the split term). A gate at 1.5x the gap that refused any loss of
+   coupled length rejected every re-ask on a coupled middle and shipped the
+   composed detours instead: 13 corpus boards lost a net or more
+   (esp32s3_m2_som 1 → 6: SPICLK's F.Cu middle swung across the corridor its
+   GPIOs need, where the re-ask ran straight on B.Cu at a 0.3 mm gap), and
+   fewer pairs ended within 0.1 mm of skew (112 → 96). The chain re-ask of a
+   multipoint leg (`seam_reask_chain_leg`) carries the same gate. It runs on a
+   leg already on the board, so its connectivity check leaves out the copper
+   the candidate would replace: counting it let an EMPTY candidate "replace"
+   daisy_pedal_board /USBCONN-D's leg, and the pair shipped disconnected.
 
 The result is a fully-connected, DRC-clean pair: coupled where it matters (the
 parallel run) and single-ended only on the last millimetre at each terminal,

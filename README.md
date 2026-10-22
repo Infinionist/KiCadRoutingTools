@@ -1023,13 +1023,6 @@ The shared option groups — geometry, power-net widths, algorithm/strategy, pro
 - No coarse grid assignment before detailed routing to plan overall topology
 - Area-scoped design rules only as keep-outs: a `.kicad_dru` rule conditioned on a rule area is honoured as a (net-filtered) `disallow` keep-out, and per-layer clearance rules are honoured, but an area-scoped clearance or width rule is reported as not honoured
 
-## TODO
-
-- Power neck-down at pad entries (#1318): the zone's fit test runs on the routing grid, with an
-  off-grid guard for the pad-centre end, so a pad-entry run that clears in exact geometry (a
-  0.3 mm rail into a 0.3 mm pin at 0.5 mm pitch) can still be refused and ship at the signal
-  width. An exact geometric fit check for the pad-entry pieces is untried.
-
 ## Contributing
 
 The most valuable contribution is routing a board we haven't seen: run

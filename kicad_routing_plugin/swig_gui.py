@@ -1929,6 +1929,11 @@ class RoutingDialog(wx.Dialog):
                 # reaches fanout too -- it is the step where a track-to-via
                 # teardrop matters most.
                 'add_teardrops': self.add_teardrops_check.GetValue(),
+                # #1318: the route tab's power nets/widths, as the planes tab
+                # takes them -- qfn_fanout lays a power net's stub at its
+                # width where it fits (qfn_fanout.py --power-nets). None when
+                # the fields are empty or the counts disagree.
+                **self._fanout_power_nets(),
                 # #693: the fanout tab's shared params were the ONE set that
                 # did not carry this, so its live-floor writeback had nothing
                 # to gate on. Unchecked must mean "change no DRC setting" on
@@ -2771,13 +2776,18 @@ class RoutingDialog(wx.Dialog):
             _qo = getattr(_ft, 'qfn_options', None)
             if _qo is not None:
                 for _n, _v in (('qfn_track_width', defaults.QFN_TRACK_WIDTH),
-                               ('qfn_clearance', defaults.QFN_CLEARANCE)):
+                               ('qfn_clearance', defaults.QFN_CLEARANCE),
+                               # #1328: unchecked = the board's Default class,
+                               # qfn_fanout.py's omitted --clearance.
+                               ('qfn_clearance_check', False)):
                     _ctl = getattr(_qo, _n, None)
                     if _ctl is not None:
                         try:
                             _ctl.SetValue(_v)
                         except Exception:
                             pass
+                if getattr(_qo, 'qfn_clearance', None) is not None:
+                    _qo.qfn_clearance.Enable(False)
         except Exception:
             pass
         try:
@@ -3084,6 +3094,21 @@ class RoutingDialog(wx.Dialog):
     def _get_selected_layers(self):
         """Get list of selected layers."""
         return [layer for layer, cb in self.layer_checks.items() if cb.GetValue()]
+
+    def _fanout_power_nets(self):
+        """#1318: ``{'power_nets', 'power_nets_widths'}`` from the route tab's
+        fields for the fanout tab (qfn_fanout.py --power-nets /
+        --power-nets-widths), both None when the fields are empty, unparsable
+        or of different lengths -- the CLI refuses a mismatch, and a fanout
+        that cannot read the widths lays every stub at its own width."""
+        nets = _split_net_list(self.power_nets_ctrl.GetValue()) or None
+        try:
+            widths = [float(w) for w in self.power_widths_ctrl.GetValue().split()] or None
+        except ValueError:
+            widths = None
+        if not nets or not widths or len(nets) != len(widths):
+            return {'power_nets': None, 'power_nets_widths': None}
+        return {'power_nets': nets, 'power_nets_widths': widths}
 
     def _selected_layer_costs(self):
         """Layer costs from the shared Basic-tab control, aligned to the

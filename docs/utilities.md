@@ -1936,8 +1936,12 @@ Options:
   --layer, -l         Routing layer (default: the layer the component is mounted on)
   --width, --track-width, -w  Track width in mm (default: 0.1)
   --extension         Extension past pad edge before bend in mm (default: 0.05)
-  --clearance         Min clearance to other-net pads in mm (default: 0.1); stubs
-                      that would graze a foreign pad are shortened or dropped
+  --clearance         Min clearance to other-net copper in mm (default: the
+                      board's Default net-class clearance, else 0.1, capped by
+                      --clearance-ceiling). A fan that would graze is
+                      shortened; a straight escape that cannot clear is retried
+                      at lower clearances when --escalation allows, and
+                      dropped only when none clears (#1328)
   --nets, -n          Net patterns to include
   --grid-step         Routing grid step in mm (default: 0.1). Fanned stub ends
                       are snapped to this grid so the router gets on-grid
@@ -1966,6 +1970,15 @@ Options:
                       -1 explicitly allows it (#581). Default: the project
                       record, else allowed
   --add-teardrops     Add teardrop settings to all pads and vias in the output
+  --power-nets / --power-nets-widths  route.py's power nets and widths (pass
+                      the route step's own). A surface stub of such a net, on a
+                      pad at least that wide, is laid leg by leg at the net's
+                      width wherever that clears everything the stub test
+                      checks and every other net's stub, and at --width where it
+                      does not (#1318: route.py keeps fanout copper as it is).
+                      A pad narrower than the rail keeps --width: that stub ships
+                      under width either way. GUI: the route tab's Power Nets /
+                      Power Widths fields reach the QFN fanout.
   --fab-tier {standard,advanced,auto}  JLC fab capability floor (default: auto)
   --fab-overrides FILE  Fab-floor override file overlaying the selected --fab-tier
   --escalation, --clearance-ceiling, --strict-sizes, and the DRC-settings flags
