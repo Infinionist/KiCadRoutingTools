@@ -584,14 +584,12 @@ gate, `place_pose` and the graders:
 - **Estimated courtyards (#1300).** The placer, the seat gate and the
   renderer seat such a part on an ESTIMATED courtyard
   (`body.estimated_courtyards`, `QuenchState(estimate_courtyards=True)`):
-  the graded body above, united with the pads, grown by the courtyard
-  excess KiCad's libraries use -- 0.25 mm, 0.15 mm for a body under 2 mm,
-  0.5 mm on a connector, 1.0 mm on a BGA, which over 1014 corpus footprints
-  that draw both puts every side within 0.05 mm of the drawn courtyard on
-  61% of them. It contains what `check_assembly` grades, so a legal seed
-  keeps those bodies apart; before it, multichannel_mixer's radial caps (a
-  5 mm body on a 4 x 1.5 mm pad box) were packed into each other and every
-  seed graded NOT BUILDABLE. It is an input, not a grade: the graders, and
+  the graded body above, united with the pads, and no more. A library
+  courtyard stands a margin off its body, a spacing the board itself never
+  declared, so the estimate adds none. It is what `check_assembly` grades,
+  so a legal seed keeps those bodies apart; before it, multichannel_mixer's
+  radial caps (a 5 mm body on a 4 x 1.5 mm pad box) were packed into each
+  other and every seed graded NOT BUILDABLE. It is an input, not a grade: the graders, and
   two declared or locked poses judged against each other
   (`_Part.drawn_rect`), still read what the board draws.
 

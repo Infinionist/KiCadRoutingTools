@@ -190,7 +190,7 @@ Other useful skills:
 > /recommend-plane-mappings kicad_files/my_board.kicad_pcb   # Which nets get planes, on which layers
 > /diagnose-routing-failures my_board.kicad_pcb /tmp/route_output.txt  # Root-cause failed routes, get a retry command
 > /review-routed-board my_board_routed.kicad_pcb             # Post-route QA: DRC, connectivity, length match, GND vias
-> /plan-pcb-placement full kicad_files/my_board.kicad_pcb    # Group, place seeds, fast-route, review until clean, then route end to end
+> /plan-pcb-placement full kicad_files/my_board.kicad_pcb    # Group, place 12 seeds, fast-route the 6 cheapest, keep the best, route end to end
 ```
 
 See [Claude Skills](docs/claude-skills.md) for what each skill does and how they fit together.
@@ -833,7 +833,7 @@ KiCadRoutingTools/
     ├── recommend-stackup/    # Stackup review/recommendation skill
     ├── recommend-plane-mappings/  # Net-to-plane-layer assignment skill
     ├── diagnose-routing-failures/  # Failure root-cause and retry skill
-    ├── plan-pcb-placement/   # Place by function, fast-route seeds, review until clean, route; one verifier, report
+    ├── plan-pcb-placement/   # Place by function, fast-route seeds, keep the best, route; one verifier, report
     ├── review-routed-board/  # Post-route QA and sign-off skill
     └── stress-test-router/   # Batch stress-test on real-world boards + issue filing (dev/QA)
 ```
