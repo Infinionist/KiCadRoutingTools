@@ -1,3 +1,67 @@
+1239f2a2cee29a7d0b4977b113843b1b90d601f5 2026-10-22 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of 1abb3657..d9b20741 (363 commits, 336 non-merge) on grouped-placement,
+before it fast-forwards main for v0.23.7, plus the fix it produced (1239f2a2).
+The range holds the grouped placement flow (place_simple, groups, datasheet
+templates, judge_seeds, the rewritten placement tab), the movie3d tools and
+the removal of the old film tools (the plugin's movie recorder among them),
+and main's rounds through 416f58e0 merged in.
+
+METHOD. Read-only halves plus every gate.
+(A) Flags and kwargs: every argparse flag in py_router/, py_tools/ and
+  py_placer/ compared between the two commits; the engine entry points,
+  GridRouteConfig and the parser dataclasses compared; every routing and
+  fanout main() diffed; the whole kicad_routing_plugin diff read; wx controls
+  added and removed swept; every engine function the plugin imports checked.
+(B) Gates: all 69 tests/gui_parity gates on d9b20741, 69 PASS (the same three
+  as before -- test_966_unset_clearance, test_967_pad_geometry_coverage,
+  test_zero_diff_pair_width_gui -- run under KiCad's python directly).
+  test_gui_engine_parity: PARITY, copper sets identical (799 segments, 128
+  vias). After 1239f2a2 the QFN fanout gates (1195, 860, rotated, floor
+  parity, threaded) PASS again.
+
+IN RANGE, NO GAP:
+- route.py / route_diff.py --quick (engine kwarg `quick`): CLI-only, and
+  registered so in test_engine_kwarg_parity and test_manifest_plan_parity.
+- qfn_fanout --power-nets / --power-nets-widths: the tab takes them from the
+  route tab's fields; converter, plan executor and per-step reset carry them.
+- The one changed default, qfn_fanout --clearance (0.1 -> the board's Default
+  class): both fronts call resolve_qfn_clearance; the tab's
+  qfn_clearance_check is saved, restored, reset per step and set by plans.
+- batch_route(fix_drc_settings) is passed by the GUI; build_base_obstacle_map
+  (stamp_pads) is internal; GridRouteConfig's coupled_pair_clearances and
+  track_partner_clearances are filled in the engine from the .kicad_dru.
+- route.py's new passes (#1217 KiCad-dangling split, #162 dedup, the pour
+  re-audit, the exact-fill improvement gate) are inside batch_route with GUI
+  branches; no post-pass was added to a routing main.
+- The movie recorder is gone from every tab, settings_persistence and the
+  docs; an old saved make_movie_check is ignored on restore.
+- The GUI's Place / Place + Route run the same /plan-pcb-placement skill, so
+  place_simple, judge_seeds (--quick 2), quick_score and /plan-pcb-routing are
+  the same CLI calls; the candidates table ranks by quick_score.judge_key.
+- New tools (place_simple, judge_seeds, the movie tools, beautify_labels,
+  waive_locked_overlaps) are refused or no-ops by name in manifest_to_plan.
+- Parser fields Pad.copper_box, Pad.zone_connection,
+  Footprint.zone_connection and Zone.pad_connection / thermal_gap /
+  thermal_bridge_width are filled by both parse paths.
+
+FIXED:
+- 1239f2a2: the fanout tab titled the QFN engine's whole failed list "stubs
+  too close to neighbours", though it also holds pads left with no copper;
+  it now splits it as qfn_fanout's main does (bga_fanout.unserved_nets).
+
+OPEN (decisions or disclosure, not fixed):
+- The end-of-run pour re-grade (#1069): on the CLI's file branch, a run with
+  no oracle grades its pours on KiCad's own refill (_regrade_pour_fill); the
+  GUI grades them on the raster fill model. Copper is identical; only the
+  re-grade's tallies can differ (KiCad 10.0.0's refill can pour nothing).
+  The GUI has the staged-save hooks a GUI branch would need.
+- The GUI's Place instructions refuse a board with copper; the skill strips
+  routed copper first. Pre-existing; DECISION FOR ANDY.
+- compare_pcb_data does not compare Pad.copper_box or Zone.pad_connection /
+  thermal_gap / thermal_bridge_width, though both paths fill them.
+- Older OPEN items unchanged: the Planes tab ignores route_planes --layers;
+  Layer Costs order; the #1279 dangling-member warning is CLI-only.
+
 1abb36572c661331fee7328a1c106e3da6fca599 2026-10-16 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
 Audit of d5d6e116..6cfcc802 (194 commits, 133 non-merge), plus the four fixes
 it produced (6552e70f..5f197db2). The range holds:
