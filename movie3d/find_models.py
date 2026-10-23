@@ -55,6 +55,11 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+#: #937 registry: a prototype in its own directory, in no door; it reads a
+#: board and writes only movie3d/cache/found/, never a board. Read by
+#: krt_registry.py by AST.
+KRT_TOOL = {'scope': [], 'kind': 'utility'}
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 FOUND = os.path.join(HERE, 'cache', 'found')
