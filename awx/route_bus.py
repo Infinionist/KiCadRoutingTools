@@ -40,7 +40,8 @@ at the chain's sizes (resolve_rules: the routing CLIs' flags, an omitted one res
    turned back into the board's own frame. A bus net the run did not route, or left open, leaves as it came: none
    of the step's copper, its own put back.
 6. It is graded there: the nets handed on connected (check_connected), no violation on a bus net and the whole
-   board no worse than it came (check_drc, each board at its own project's floor).
+   board no worse than it came (check_drc, each board at its own project's floor; the rows of the board's .kicad_dru
+   length and skew rules are named, not counted -- the bus is laid untuned, #1363).
 7. Handed on only clean: OUT is the routed board, its routed nets protected in its project (#521: route.py's rip
    candidacy and the plane finalize leave them alone, as do the nets the board came with protected -- an earlier
    bus's), the open ones left to the chain's A* -- else OUT is the board as it came, and A* routes the whole bus.
@@ -611,11 +612,20 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
             + (f' -- {left_} piece(s) of their earlier copper left out, no longer clear' if left_ else ''))
 
     # 6. the grade: every bus net handed on connected, no violation on a bus net, and the whole board no worse than it
-    # came (a board the chain hands on carries its earlier steps' violations; each is graded at its own project's floor)
+    # came (a board the chain hands on carries its earlier steps' violations; each is graded at its own project's floor).
+    # The rows of the board's length rules (whole_route.LENGTH_ROWS) are named, not counted: the bus is laid untuned
+    # (#1363), and an unrouted net is never measured, so the board as it came would always read cleaner than any bus
+    length_rows = {}
+
     def drc(path, tag, *more):
-        lp = os.path.join(work, f'drc_{tag}.log')
-        wr.run([checker('check_drc.py'), path, '--clearance-margin', '0.1', '--max-print', '0', *more],
+        lp, jp = os.path.join(work, f'drc_{tag}.log'), os.path.join(work, f'drc_{tag}.json')
+        if os.path.exists(jp):
+            os.remove(jp)
+        wr.run([checker('check_drc.py'), path, '--clearance-margin', '0.1', '--max-print', '0', '--json', jp, *more],
                dict(os.environ), log_path=lp, own_process=True)
+        n, length_rows[tag] = wr.drc_count(jp)
+        if n is not None:
+            return n
         txt = open(lp, encoding='utf-8', errors='replace').read()
         m = re.search(r'FOUND (\d+) DRC VIOLATIONS', txt)
         return 0 if 'NO DRC VIOLATIONS' in txt else (int(m.group(1)) if m else None)
@@ -670,10 +680,16 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     v, c = wr.grade_counts(routed_pcb, set(nets))
     planes = plane_grade(pcb, board, routed_pcb, log)
     g = (f'BUS {src}->{dest} K={K} {grade.split(" ", 2)[2] if grade else ""} | on the board: vias={v} copper={c}mm '
-         f'connected={int(cc == 0)} drc={int(ok_drc)} (bus {d_bus}, board {d_out} vs {d_in} in) '
+         f'connected={int(cc == 0)} drc={int(ok_drc)} (bus {d_bus}, board {d_out} vs {d_in} in'
+         + (f', {length_rows["bus"]} length rows' if length_rows.get('bus') else '') + ') '
          + (f'planes={planes["out"]} vs {planes["in"]} in ' if planes and planes.get('out') is not None else '')
          + f'secs={int(time.time() - t0)}')
     summary['drc'] = dict(bus=d_bus, board=d_out, input=d_in)
+    if length_rows.get('bus'):
+        summary['length_rows'] = dict(bus=length_rows['bus'], board=length_rows.get('board'),
+                                      input=length_rows.get('input'))
+        log(f'  laid untuned: {length_rows["bus"]} row(s) of the board\'s length rules on the bus\'s nets, named, not '
+            f'counted (#1363): {os.path.join(work, "drc_bus.log")}')
     if planes:
         summary['planes'] = planes
     if joint_fanout:
@@ -1353,14 +1369,19 @@ def open_nets(conn_log):
 
 def drc_nets(drc_log):
     """the nets (short names) check_drc's log names in its violations: both sides of a line between two items, and
-    the net of a line naming one (the warnings after them are not read)"""
+    the net of a line naming one (the warnings after them are not read, nor the rows of the board's length rules,
+    whole_route.LENGTH_ROWS, which the grade does not count)"""
+    import whole_route as wr
     from fanout_from_plan import drc_side_net
-    out, found = set(), False
+    out, found, kind = set(), False, None
     for ln in open(drc_log, encoding='utf-8', errors='replace') if os.path.isfile(drc_log) else ():
         found = found or ln.startswith('FOUND ')
         if ln.startswith('WARNINGS'):
             break
-        if not found or not ln.startswith('  ') or ln.startswith('   '):
+        m = re.match(r'([A-Z][A-Z-]*) violations \(', ln)
+        if m:
+            kind = m.group(1).lower()
+        if not found or not ln.startswith('  ') or ln.startswith('   ') or kind in wr.LENGTH_ROWS:
             continue
         for side in ln.rstrip('\n').split(' <-> '):
             nm = drc_side_net(re.sub(r':\s*dist=.*$', '', side))

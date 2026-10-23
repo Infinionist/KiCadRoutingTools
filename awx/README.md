@@ -274,6 +274,12 @@ It is graded where it is written:
 - no DRC violation on a bus net;
 - the whole board no worse than it came.
 
+The rows of the board's `.kicad_dru` length and skew rules are named (the log,
+the BUS line's `length rows`, the summary's `length_rows`) and not counted:
+the bus is laid untuned, and an unrouted net is never measured, so the board
+as it came would always read cleaner than any bus. Tuning the lanes to those
+rules is #1363.
+
 It hands on what it laid connected, never nothing for the sake of a few nets:
 a net the whole route left open, and a bus net the grade finds open on the
 board or named in a violation of the bus's (or of the board's, when the board
