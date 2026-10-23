@@ -8,11 +8,8 @@ of the `awx/` whole-route bus router. The rest is Python that calls in here.
 **Current Version: 0.23.7** (the crate version in `Cargo.toml`)
 
 > **Release note:** the newest published release is
-> [v0.23.1](https://github.com/drandyhaas/KiCadRoutingTools/releases/tag/v0.23.1)
-> (2026-10-16), and its binaries are crate 0.23.1. Crate 0.23.2 to 0.23.7 (the
-> placement kernels) are not in a release yet: on a checkout that carries them,
-> `python3 build_router.py` builds from source, so it needs a Rust toolchain
-> (see [Building from source](#building-from-source)).
+> [v0.23.7](https://github.com/drandyhaas/KiCadRoutingTools/releases/tag/v0.23.7)
+> (2026-10-23), and its binaries are crate 0.23.7 (the placement kernels).
 >
 > A release's binaries are built from the crate at its tag, and `/VERSION` can
 > lead `Cargo.toml` (a Python-only release bumps only `/VERSION`), so a release
@@ -20,6 +17,7 @@ of the `awx/` whole-route bus router. The rest is Python that calls in here.
 >
 > | Release | Crate binaries |
 > |---|---|
+> | v0.23.7 | 0.23.7 |
 > | v0.23.1 | 0.23.1 |
 > | v0.23.0 | 0.23.0 |
 > | v0.22.0, v0.22.1 | 0.22.0 |
@@ -80,7 +78,7 @@ checks that it imports, in a fresh interpreter. In order:
 
 ```bash
 python3 build_router.py --from-source   # skip the download and build locally
-python3 build_router.py --tag v0.23.1   # download that release (skips 1 and 2; 3 still applies)
+python3 build_router.py --tag v0.23.7   # download that release (skips 1 and 2; 3 still applies)
 python3 build_router.py --clean         # remove target/ and every grid_router.so/.pyd copy
 ```
 
