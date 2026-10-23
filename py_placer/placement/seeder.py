@@ -899,7 +899,9 @@ def stamp_unlocked(board_file: str, refs: Sequence[str]) -> int:
     blocks, so nothing here can reach them.
     """
     from kicad_parser import iter_footprint_blocks
-    with open(board_file, 'r', encoding='utf-8') as f:
+    # newline='' both ways: only text is removed, so the board keeps its own
+    # line endings (make_unplaced verifies its output byte-for-byte nearby).
+    with open(board_file, 'r', encoding='utf-8', newline='') as f:
         content = f.read()
     want = set(refs)
     count = 0
@@ -920,6 +922,6 @@ def stamp_unlocked(board_file: str, refs: Sequence[str]) -> int:
             continue
         content = content[:start] + new_head + tail + content[end:]
         count += 1
-    with open(board_file, 'w', encoding='utf-8') as f:
+    with open(board_file, 'w', encoding='utf-8', newline='') as f:
         f.write(content)
     return count

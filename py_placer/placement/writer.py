@@ -270,8 +270,12 @@ def _rotate_pad_angles(fp_text: str, delta_rot: float) -> str:
     return _PAD_AT.sub(fix_pad, fp_text)
 
 
-#: A text node's own `(at x y [angle])`.
-_TEXT_AT = re.compile(r'\(at\s+([^\s()]+)\s+([^\s()]+)(?:\s+([^\s()]+))?\)')
+#: A text node's own `(at x y [angle] [unlocked])`. KiCad 6/7 write a text
+#: that does not keep upright as a fourth token, `(at 0 -1.85 90 unlocked)`
+#: (KiCad 8+ writes an `(unlocked yes)` node instead); the angle is a number,
+#: so the word is never read as one, and a rewrite puts it back.
+_TEXT_AT = re.compile(r'\(at\s+([^\s()]+)\s+([^\s()]+)(?:\s+(' + AT_NUM
+                      + r'))?(\s+unlocked)?\)')
 
 
 def _rotate_text_angles(fp_text: str, delta_rot: float, ref: str) -> str:
@@ -347,11 +351,14 @@ def _rewrite_text_ats(fp_text: str, ref: str, new_at, what: str) -> str:
                 # the block ships with its pads turned and its texts not.
                 raise SideFlipUnsupported(
                     f"{ref}: a text node has an `(at ...)` {what} "
-                    f"cannot parse -- expected two or three plain numbers. "
+                    f"cannot parse -- expected two or three plain numbers "
+                    f"and KiCad 6/7's optional `unlocked`. "
                     f"Refusing rather than rotating the pads and leaving the "
                     f"text where it was: {node[:120]!r}")
             continue
         rep = new_at(m.group(1), m.group(2), m.group(3))
+        if m.group(4):
+            rep = rep[:-1] + ' unlocked)'
         if rep != node[m.start():m.end()]:
             pieces.append((s + m.start(), s + m.end(), rep))
     if not pieces:
