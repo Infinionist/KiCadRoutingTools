@@ -720,6 +720,24 @@ cropped PNG per part. Markdown to stdout is the default (`--md`); `--json`
 prints the JSON instead, and `-o FILE` writes either to a file. The design
 brief is read as `board_brief.py` reads it (`--brief`, `--no-brief`).
 
+**The schematic.** The sheet reads the project's root schematic beside the
+board (`<board>.kicad_sch`, else the one `.kicad_pro`'s; `--schematic PATH`
+names another, `--no-schematic` reads none) and its whole sheet tree
+(KiCad 6+ `.kicad_sch`; a KiCad 5 `.sch` is reported, not read). Each
+footprint is matched to its symbol by the uuids of its `(path ...)`, so a
+part matches whatever its reference. The `## Schematic` section prints, per
+sheet, its **blocks** -- the parts drawn together (average linkage on the gap
+between their symbols' drawn boxes, cut at 25.4 mm) -- with the short notes
+drawn beside each ("RTC Clock Crystal"), and the parts drawn on their own.
+Each part's
+entry gives its sheet and block (`parts[].schematic` in the JSON). A sheet
+file that cannot be found, and a board part on no symbol, are named. On 239
+corpus boards against where their designers put the parts, how close two
+parts are drawn predicted how close they sit (median AUC 0.76) better than the
+netlist did (0.60), and a drawn block sat 0.20 as wide as random parts of its
+size, against 0.45 for netlist clusters of the same count. The plugin's
+Placement tab stages the tree beside its `input.kicad_pcb`.
+
 Exit 0 written; 2 an unreadable design brief.
 
 ## Rule-Area Writer (`add_rule_area.py`)

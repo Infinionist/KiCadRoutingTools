@@ -68,7 +68,12 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   (read `pile` and `has_copper` on its `JSON_SUMMARY` line; `poured_nets`
   names the nets a pour already serves) and
   `python3 -X utf8 py_tools/board_context.py <board> --md` (every part's value,
-  pin functions, nets by face, what each cap serves, `CROSSED` pin-order pairs).
+  pin functions, nets by face, what each cap serves, `CROSSED` pin-order pairs,
+  and, from the project's schematic, each sheet's drawn blocks with the notes
+  beside them). It finds the schematic beside
+  the board (`<board>.kicad_sch`); if its `## Schematic` section says none was
+  found and the project has one elsewhere, run it again with
+  `--schematic <root .kicad_sch>`.
 - **Read `references/part-roles.md` before you judge what a part is.** A
   prefix, a footprint name or pins named IN/OUT mislead: an RF amplifier
   reads as a regulator, a crystal's load cap as a decap.
@@ -194,10 +199,24 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
 - **Every part the board does not lock (and the intent does not seat in
   `fixed_poses[]`) is in exactly one group.** Fixed parts may be listed too:
   a connector in its interface's group anchors it.
-- **Group by function, not by sheet or by net count:** the power entry and its
-  conditioning, the core and its decaps, its clock, an interface with its
-  protection and series parts, signal conditioning, the user interface (LEDs
-  with their resistors, buttons). Five to eight groups suit a small board.
+- **Group by function:** the power entry and its conditioning, the core and
+  its decaps, its clock, an interface with its protection and series parts,
+  signal conditioning, the user interface (LEDs with their resistors,
+  buttons). Five to eight groups suit a small board. Never group by net count.
+- **Start from the schematic when `board_context` read one** (its
+  `## Schematic` section). The designer drew the functions there:
+  - **Sheets are the first cut.** Take each sheet as a group, put a small
+    sheet in the group it serves (a connector sheet with its interface), and
+    split a sheet that holds several functions (an MCU sheet with USB and
+    LEDs) along its blocks.
+  - **Keep each drawn block in one group.** A block is the parts drawn
+    together (a regulator with its caps, a crystal with its load caps, an LED
+    with its resistor). Split one only for a reason you write in the group's
+    `why`, such as a cap drawn beside the wrong chip.
+  - **Read the notes.** A note beside a block ("ESP32 3V3 LDO", "Buck
+    Converter (12v -> 5v)") says what the block is: use it for the group's
+    name and `why`, and for the template candidates (a buck or boost note
+    names a switching stage).
 - **A cap belongs with the IC whose supply pin it decouples.** A load or RC
   cap belongs with its crystal or its button.
 - **Crystals are claimed for you.** `place_simple` claims each passive
