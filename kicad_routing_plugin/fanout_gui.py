@@ -2096,6 +2096,8 @@ class FanoutTab(wx.Panel):
                 'fix_drc_settings': shared.get('fix_drc_settings', True),
                 # #581: recorded at the step boundary, as qfn_fanout records it.
                 'same_net_pad_clearance': shared.get('same_net_pad_clearance', -1.0),
+                # the part, for the completion message's failure split
+                'footprint_ref': footprint.reference,
             },
             fanout_kind='qfn',
         )
@@ -2326,13 +2328,13 @@ class FanoutTab(wx.Panel):
             msg += "\n" + cap_summary + "\n"
         if failed_nets:
             if fanout_kind == 'qfn':
-                msg += f"\nNets whose stubs are too close to neighbours ({len(failed_nets)}):\n"
+                unescaped, flagged = self._qfn_failure_split(failed_nets, tracks,
+                                                             vias, fanout_config or {})
+                msg += self._net_list("Failed nets, a pad left with no copper", unescaped)
+                msg += self._net_list("Nets whose stubs are too close to neighbours",
+                                      flagged)
             else:
-                msg += f"\nFailed nets ({len(failed_nets)}):\n"
-            for name in failed_nets[:8]:
-                msg += f"  - {name}\n"
-            if len(failed_nets) > 8:
-                msg += f"  ... and {len(failed_nets) - 8} more (see Log tab)\n"
+                msg += self._net_list("Failed nets", failed_nets)
             try:
                 from routing_diagnostics import (
                     suggest_bga_fanout_adjustments,
@@ -2362,6 +2364,33 @@ class FanoutTab(wx.Panel):
         # Callback
         if self.on_fanout_complete:
             self.on_fanout_complete()
+
+    @staticmethod
+    def _net_list(title, names):
+        """A completion message's list of nets: its title and count, eight
+        names, and how many more; '' for none."""
+        if not names:
+            return ""
+        out = f"\n{title} ({len(names)}):\n" + "".join(f"  - {n}\n" for n in names[:8])
+        if len(names) > 8:
+            out += f"  ... and {len(names) - 8} more (see Log tab)\n"
+        return out
+
+    def _qfn_failure_split(self, failed_nets, tracks, vias, fanout_config):
+        """(unescaped, flagged): the QFN engine's failed list split as
+        qfn_fanout's main splits it (`bga_fanout.unserved_nets`). A net is a
+        failure only while one of its pads has no copper; the rest escaped,
+        with stubs ending too close to a neighbour's. Without the part, every
+        name stays a failure."""
+        ref = fanout_config.get('footprint_ref')
+        fp = (self.pcb_data.footprints.get(ref)
+              if ref and getattr(self, 'pcb_data', None) is not None else None)
+        if fp is None:
+            return list(failed_nets), []
+        from bga_fanout import unserved_nets
+        unescaped = unserved_nets(fp, self.pcb_data, sorted(set(failed_nets)), tracks,
+                                  vias, fanout_config.get('track_width') or 0.0)
+        return unescaped, sorted(set(failed_nets) - set(unescaped))
 
     def _optimize_decoupling_caps(self, board, pcbnew, fanout_config):
         """Run the fanout-clearance cap repair on the live board (#130).
