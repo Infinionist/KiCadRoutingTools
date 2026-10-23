@@ -9,7 +9,7 @@ pairs on each of seeds 0-3).
 `QuenchState(estimate_courtyards=True)` -- which place_simple, fit_template
 and render_placement build -- reads `body.courtyard_sides_with_estimates`, so
 such a part's `rect` and `grade_rect` are its estimated courtyard (the graded
-body grown by the library's courtyard excess) wherever a drawn courtyard
+body and pads, no margin) wherever a drawn courtyard
 would be read: the anneal's overlap, the seat gate (`seeder.pose_ok`), the
 final legality. Two declared or locked poses are still judged against each
 other on what the board draws (`_Part.drawn_rect`), so no declared
@@ -98,9 +98,9 @@ def test_the_part_model(td):
     ok('a grading state (the default) seats C1 on its 4.04 x 1.5 pad box',
        wh(plain.parts['C1'].rect()) == (4.04, 1.5),
        wh(plain.parts['C1'].rect()))
-    ok('place_simple\'s state seats it on the 5.5 mm estimate, rect and '
-       'grade rect alike', wh(est.parts['C1'].rect()) == (5.5, 5.5)
-       and wh(est.parts['C1'].grade_rect()) == (5.5, 5.5),
+    ok('place_simple\'s state seats it on the 5.0 mm estimate (its body), '
+       'rect and grade rect alike', wh(est.parts['C1'].rect()) == (5.0, 5.0)
+       and wh(est.parts['C1'].grade_rect()) == (5.0, 5.0),
        (wh(est.parts['C1'].rect()), wh(est.parts['C1'].grade_rect())))
     ok('... and keeps the pad box for a declared-against-declared judgement',
        wh(est.parts['C1'].drawn_rect()) == (4.04, 1.5),
@@ -127,7 +127,7 @@ def test_the_seat_gate(td):
     ok('estimated courtyards: refused there', not pose_ok(est, 'C3', 10.0,
                                                           13.0, 0.0, set()))
     ok('... and accepted where the estimates clear by the clearance',
-       pose_ok(est, 'C3', 10.0, 10.0 + 5.5 + 0.26, 0.0, set()))
+       pose_ok(est, 'C3', 10.0, 10.0 + 5.0 + 0.26, 0.0, set()))
 
 
 def test_declared_against_declared(td):

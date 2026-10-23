@@ -366,11 +366,11 @@ def legality_findings(model) -> Dict[str, object]:
            # sheet/gate say NOT MEASURED rather than reporting "blocking: none"
            # on a board nothing looked at.
            'courtyard_census_error': None,
-           # #1300: [ref, basis, excess_mm] for each part the model seats on
+           # #1300: [ref, basis] for each part the model seats on
            # an ESTIMATED courtyard (it draws none); `oob_refs_courtyard`
            # measures those estimates.
            'estimated_courtyards': [
-               [e.ref, e.basis, e.excess_mm] for e in sorted(
+               [e.ref, e.basis] for e in sorted(
                    (getattr(getattr(model, 'state', None),
                             'courtyard_estimates', None) or {}).values())],
            'locked_refs': sorted(r for r, p in model.parts().items()
@@ -2770,7 +2770,7 @@ def main(argv=None):
                 # castellated module) or is a round pad's bbox corner.
                 'pad_copper_gating': fnd['oob_refs_pad_copper_gating'],
                 'courtyard': fnd['oob_refs_courtyard'],
-                # #1300: [ref, basis, excess_mm] of the parts whose
+                # #1300: [ref, basis] of the parts whose
                 # courtyard above is an ESTIMATE (they draw none)
                 'courtyard_estimated': fnd.get('estimated_courtyards', []),
                 # #962: footprint graphic copper past the outline

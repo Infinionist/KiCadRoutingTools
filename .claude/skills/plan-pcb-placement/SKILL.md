@@ -617,9 +617,8 @@ leaving that pose expensive.
        listed before it. A part much bigger than the drawn one (an IHLP
        inductor beside a 3 mm chip) leaves a long leg that no order fixes.
    - **A part with no courtyard** is fitted, and placed, on an estimated
-     courtyard: its .Fab body (else silk, else pads) with its pads, grown by
-     the library's courtyard excess (0.25 mm; 0.15 under an 0603, 0.5 on a
-     connector, 1.0 on a BGA; #1300). The run names it, and the render draws
+     courtyard: its .Fab body (else silk, else pads) with its pads, and no
+     margin round it (#1300). The run names it, and the render draws
      it dashed. Check that box against the part's real body. A custom pad (a power FET's drain, a
      printed antenna) is boxed round its own copper, even when that copper
      lies to one side of the pad.

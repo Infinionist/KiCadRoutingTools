@@ -8,11 +8,9 @@ bodies, while check_assembly gates the body.
 
 `body.estimated_courtyards` derives the courtyard such a part would have had:
 its occupancy -- what check_assembly grades it on (the .Fab body, else silk
-with the pads, else the pads, each united with the pads) -- grown on every
-side by the courtyard excess KiCad's library convention uses (KLC F5.3 /
-IPC-7351B nominal: 0.25 mm, 0.15 under an 0603, 0.5 on connectors, 1.0 on a
-BGA; `tests/measure_1300_courtyard_excess.py` is the measurement). It is a
-placement INPUT and never a grade: the graders keep reading what is drawn.
+with the pads, else the pads, each united with the pads) -- with no library
+courtyard margin round it, since the board declares none. It is a placement
+INPUT and never a grade: the graders keep reading what is drawn.
 
     python3 tests/test_1300_estimated_courtyard.py
 """
@@ -133,29 +131,19 @@ def test_who_gets_one_and_how_big(td):
           'and only those', sorted(est) == ['C1', 'C3', 'J1', 'R1', 'U1'],
           sorted(est))
     lbs = legality.part_local_bounds(pcb, path)
-    want = {'C1': (0.25, 'default'), 'C3': (0.25, 'default'),
-            'R1': (0.15, 'small'), 'J1': (0.5, 'connector'),
-            'U1': (1.0, 'bga')}
-    for ref, (mm, rule) in want.items():
+    for ref in ('C1', 'C3', 'R1', 'J1', 'U1'):
         e = est.get(ref)
         if e is None:
             continue
-        check(f'{ref}: the {rule} excess, {mm} mm',
-              (e.excess_mm, e.rule) == (mm, rule), (e.excess_mm, e.rule))
-        occ = lbs[ref].local
-        grown = tuple(round(v, 6) for v in (occ[0] - mm, occ[1] - mm,
-                                            occ[2] + mm, occ[3] + mm))
-        check(f'{ref}: the estimate is the graded occupancy grown by its '
-              f'excess on every side',
-              tuple(round(v, 6) for v in e.local) == grown,
-              (e.local, grown))
+        occ = tuple(round(v, 6) for v in lbs[ref].local)
+        check(f'{ref}: the estimate is the graded occupancy, no margin',
+              tuple(round(v, 6) for v in e.local) == occ, (e.local, occ))
         check(f'{ref}: on its own side, from the rung the grader reads',
               e.side == 'F' and e.basis == lbs[ref].source,
               (e.side, e.basis, lbs[ref].source))
     c1 = est['C1'].local
-    check('C1, the mixer cap: a 5.5 mm square round its 5 mm body, not its '
-          '4.0 x 1.5 mm pad box',
-          abs((c1[2] - c1[0]) - 5.5) < 1e-6 and abs((c1[3] - c1[1]) - 5.5)
+    check('C1, the mixer cap: its 5 mm body, not its 4.0 x 1.5 mm pad box',
+          abs((c1[2] - c1[0]) - 5.0) < 1e-6 and abs((c1[3] - c1[1]) - 5.0)
           < 1e-6, c1)
 
 
@@ -169,19 +157,19 @@ def test_never_a_grade(td):
           lbs['C1'].source == 'fab'
           and tuple(round(v, 6) for v in lbs['C1'].local)
           == (-2.5, -2.5, 2.5, 2.5), (lbs['C1'].source, lbs['C1'].local))
-    # Two caps whose BODIES are 0.3 mm apart: their estimates overlap by
-    # 0.2 mm, and the grade -- on the bodies -- has no pair.
+    # Two caps whose BODIES are 0.3 mm apart: the grade -- on the bodies --
+    # has no pair, and their estimates, being the bodies, leave them apart
+    # too: an estimate adds no spacing the board does not declare.
     path2 = _board(td, _radial('C1', 8, 6) + _radial('C3', 13.3, 6))
     pcb2 = parse_kicad_pcb(path2)
     g = legality.grade_body_overlap(pcb2, 0.2, pcb_file=path2)
     pairs = [(q.a, q.b, q.kind) for q in g['pairs']]
-    check('bodies 0.3 mm apart: no courtyard pair, though their estimates '
-          'overlap', not any(k == 'courtyard' for _a, _b, k in pairs),
-          pairs)
+    check('bodies 0.3 mm apart: no courtyard pair',
+          not any(k == 'courtyard' for _a, _b, k in pairs), pairs)
     est = body.estimated_courtyards(pcb2, path2)
     a, b = est['C1'].local, est['C3'].local
-    check('... and the estimates do overlap there (8 + 2.75 > 13.3 - 2.75)',
-          8 + a[2] > 13.3 + b[0], (a, b))
+    check('... and their estimates do not overlap (8 + 2.5 < 13.3 - 2.5)',
+          8 + a[2] < 13.3 + b[0], (a, b))
 
 
 def test_the_map_consumers_read(td):
@@ -207,7 +195,7 @@ def test_the_map_consumers_read(td):
           == {r: v for r, v in sides.items() if r != 'C1'})
     note = body.format_estimates(est, 'placement') or ''
     check('the NOTE names the count and each rung',
-          '5 footprint(s)' in note and 'fab +0.25 mm: C1, C3' in note
+          '5 footprint(s)' in note and 'fab: C1, C3' in note
           and 'pad_bbox' not in note, note)
     check('no estimates, no note', body.format_estimates({}) is None)
 
@@ -228,15 +216,14 @@ def test_tracked_board():
         return
     pcb = parse_kicad_pcb(path)
     est = body.estimated_courtyards(pcb, path)
-    rules = {}
-    for e in est.values():
-        rules.setdefault(e.rule, []).append(e.ref)
     check('esp_prog: 18 pad-bearing parts estimated', len(est) == 18,
           len(est))
-    check('esp_prog: the 0402s take 0.15, USB1/CON1/CON2 0.5',
-          {'R1', 'R2', 'R3', 'R4', 'C2', 'C4'} <= set(rules.get('small', ()))
-          and sorted(rules.get('connector', ())) == ['CON1', 'CON2', 'USB1'],
-          rules)
+    lbs = legality.part_local_bounds(pcb, path)
+    off = sorted(r for r, e in est.items()
+                 if tuple(round(v, 6) for v in e.local)
+                 != tuple(round(v, 6) for v in lbs[r].local))
+    check('esp_prog: every estimate is its part\'s graded occupancy', not off,
+          off)
 
 
 def main():

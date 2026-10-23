@@ -302,9 +302,9 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
   through the anneal's overlap term. Every weight is a flag (`--help`).
 - **A part that draws no courtyard** is seated on an estimated one (#1300,
   `body.estimated_courtyards`): its .Fab body, else its silk, else its pads,
-  united with its pads -- what `check_assembly` grades it on -- grown by the
-  courtyard excess KiCad's libraries use (0.25 mm; 0.15 mm under an 0603,
-  0.5 mm on a connector, 1.0 mm on a BGA). The anneal's overlap, the seat
+  united with its pads -- what `check_assembly` grades it on -- with no
+  library courtyard margin round it, since the board declares none. The
+  anneal's overlap, the seat
   gate and the final legality read it wherever they read a courtyard, so a
   legal seed keeps the graded bodies apart; a NOTE names the parts. Two
   declared or locked poses are still judged against each other on what the
@@ -1269,8 +1269,7 @@ python3 -X utf8 py_tools/render_placement.py placed.kicad_pcb --intent intent.js
 - A part that draws no courtyard is drawn, dashed, on the estimated
   courtyard `place_simple` seats it on (#1300), and
   `a_off_outline.courtyard` measures that estimate;
-  `a_off_outline.courtyard_estimated` lists those parts as `[ref, basis,
-  excess_mm]`.
+  `a_off_outline.courtyard_estimated` lists those parts as `[ref, basis]`.
 - `--clearance` defaults to the board's own Default net-class clearance, else
   its `min_clearance` constraint, else 0.25; the value used and its source are
   printed.

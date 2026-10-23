@@ -431,71 +431,23 @@ def board_bodies(pcb_data, pcb_file: Optional[str] = None
 # ---------------------------------------------------------------------------
 # #1300: the courtyard a part that draws none would have had
 # ---------------------------------------------------------------------------
-#: The courtyard EXCESS: how far a courtyard stands off the body and pads it
-#: encloses, by the KiCad library convention (KLC F5.3, which follows the
-#: IPC-7351B nominal density level). Measured rather than assumed
-#: (`tests/measure_1300_courtyard_excess.py`): over the 1014 distinct
-#: footprints of kicad_files/ and stress sets 1-10 that draw both a courtyard
-#: and a .Fab body, the courtyard's offset from bbox(fab U pads) has median
-#: 0.25 mm; 0.15 for a body under 2 mm (an 0402 and smaller: 53 footprints,
-#: median 0.15); 0.50 on connectors (178 `connector_affinity` footprints,
-#: median 0.50; 76 `edge_receptacle`, median 0.50); 1.0 on KiCad's stock
-#: BGAs. With these four rungs every side of the estimate lies within
-#: 0.05 mm of the drawn courtyard on 61% of those footprints (a flat 0.25:
-#: 44%), median error 0.
-COURTYARD_EXCESS_MM = 0.25
-COURTYARD_EXCESS_SMALL_MM = 0.15
-#: A body (united with its pads) whose longest side is under this is
-#: "smaller than an 0603" in KLC F5.3's sense: an 0603's pad box is 2.45 mm
-#: long, an 0402's 1.5 mm.
-COURTYARD_SMALL_BODY_MM = 2.0
-COURTYARD_EXCESS_CONNECTOR_MM = 0.5
-COURTYARD_EXCESS_BGA_MM = 1.0
-#: `part_class` names whose courtyard takes the connector excess.
-_CONNECTOR_CLASSES = ('connector_affinity', 'edge_receptacle')
-
-
 class CourtyardEstimate(NamedTuple):
-    """The courtyard a pad-bearing part that draws NONE would have had
-    (#1300): its occupancy -- what check_assembly's courtyard channel grades
-    for it (the .Fab body, else silk with the pads, else the pads, each
-    united with the pads) -- grown on every side by the library's courtyard
-    excess.
+    """The courtyard a pad-bearing part that draws NONE is seated on (#1300):
+    its occupancy -- what check_assembly's courtyard channel grades for it
+    (the .Fab body, else silk with the pads, else the pads, each united with
+    the pads) -- and no more. A library courtyard stands a margin off that
+    (KLC F5.3), a spacing the board itself never declared; the estimate only
+    keeps the bodies apart, which is what the grader gates.
 
     A placement INPUT, never a grade: check_assembly and KiCad keep grading
     what the library drew. Because it contains that occupancy, a placement
-    that keeps estimates clear keeps the graded bodies clear -- which is all
-    a drawn courtyard would have done. `local` is in the footprint's own
-    unrotated frame, like every bbox here; `basis` is the occupancy rung it
-    was grown from and `rule` the excess rung (`courtyard_excess`)."""
+    that keeps estimates clear keeps the graded bodies clear. `local` is in
+    the footprint's own unrotated frame, like every bbox here; `basis` is the
+    occupancy rung it was taken from."""
     ref: str
     side: str
     local: Bbox
-    excess_mm: float
-    rule: str
     basis: str
-
-
-def courtyard_excess(fp, ref: str, occupancy: Bbox) -> Tuple[float, str]:
-    """`(mm, rule)`: the courtyard excess a library would leave round this
-    part (`COURTYARD_EXCESS_MM`'s rungs, first match wins): 'bga' by the
-    footprint's item name, 'connector' by its `part_class`, 'small' when
-    the occupancy's longest side is under `COURTYARD_SMALL_BODY_MM`, else
-    'default'. Pose-independent: `classify_part` reads no coordinate."""
-    item = str(getattr(fp, 'footprint_name', '') or '').rsplit(':', 1)[-1]
-    if 'bga' in item.lower():
-        return COURTYARD_EXCESS_BGA_MM, 'bga'
-    try:
-        from placement.part_class import classify_part
-        cls = classify_part(fp, ref).name
-    except Exception:                                        # noqa: BLE001
-        cls = None
-    if cls in _CONNECTOR_CLASSES:
-        return COURTYARD_EXCESS_CONNECTOR_MM, 'connector'
-    if max(occupancy[2] - occupancy[0],
-           occupancy[3] - occupancy[1]) < COURTYARD_SMALL_BODY_MM:
-        return COURTYARD_EXCESS_SMALL_MM, 'small'
-    return COURTYARD_EXCESS_MM, 'default'
 
 
 def estimate_courtyard(fp, geom: Optional[BodyGeometry], side: str
@@ -514,10 +466,7 @@ def estimate_courtyard(fp, geom: Optional[BodyGeometry], side: str
     # its pads and whose drawn body falls through to silk -- and that silk is
     # where EasyEDA draws its "PCB edge" line: CM5_MINIMA_3's USB-C J101 reads
     # 15.0 mm wide on silk against an 8.0 mm part.
-    e, rule = courtyard_excess(fp, geom.ref, occ)
-    return CourtyardEstimate(geom.ref, side,
-                             (occ[0] - e, occ[1] - e, occ[2] + e, occ[3] + e),
-                             e, rule, geom.source)
+    return CourtyardEstimate(geom.ref, side, tuple(occ), geom.source)
 
 
 def estimated_courtyards(pcb_data, pcb_file: Optional[str] = None,
@@ -571,21 +520,20 @@ def courtyard_sides_with_estimates(pcb_data, pcb_file: str,
 def format_estimates(estimates: Dict[str, CourtyardEstimate],
                      label: str = 'placement') -> Optional[str]:
     """The one NOTE line a consumer prints for its estimated courtyards
-    (None when there are none): how many, and per occupancy rung and excess,
-    which parts -- so a reader sees what each was seated on."""
+    (None when there are none): how many, and per occupancy rung, which
+    parts -- so a reader sees what each was seated on."""
     if not estimates:
         return None
-    by: Dict[tuple, list] = {}
+    by: Dict[str, list] = {}
     for e in estimates.values():
-        by.setdefault((e.basis, e.excess_mm), []).append(e.ref)
+        by.setdefault(e.basis, []).append(e.ref)
     groups = '; '.join(
-        f"{basis} +{mm:g} mm: " + ', '.join(sorted(refs)[:10])
+        f"{basis}: " + ', '.join(sorted(refs)[:10])
         + (', ...' if len(refs) > 10 else '')
-        for (basis, mm), refs in sorted(by.items()))
+        for basis, refs in sorted(by.items()))
     return (f"  NOTE [{label}]: {len(estimates)} footprint(s) draw no "
-            f"courtyard and are seated on an ESTIMATED one, their body and "
-            f"pads grown by the library's courtyard excess (#1300) -- "
-            f"{groups}")
+            f"courtyard and are seated on an ESTIMATED one, what they occupy "
+            f"(body and pads, #1300) -- {groups}")
 
 
 class BodySeam(NamedTuple):

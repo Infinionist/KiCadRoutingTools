@@ -1192,8 +1192,8 @@ class QuenchState:
         # #1300: with `estimate_courtyards`, every pad-bearing part that
         # draws no courtyard enters this map with an ESTIMATED one -- the
         # occupancy check_assembly grades it on (its .Fab body, else silk,
-        # else pads, united with the pads) grown by the library's courtyard
-        # excess -- so `rect`, `grade_rect` and every seat test below see it
+        # else pads, united with the pads), with no margin round it -- so
+        # `rect`, `grade_rect` and every seat test below see it
         # where they would see a drawn courtyard. Before, such a part was
         # seated on its PAD box: on multichannel_mixer an electrolytic's
         # 4.0 x 1.5 mm pads stand in a 5 mm body, and every seed packed caps
