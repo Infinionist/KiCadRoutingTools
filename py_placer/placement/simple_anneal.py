@@ -1123,14 +1123,14 @@ def scatter(model, movable: List[str], seed: int = 0, clustered: bool = False,
     model.reprice_all()
 
 
-def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.0,
+def anneal(model, movable: List[str], *, moves: int = 11000,
            seed: int = 0, log=None, repair: bool = False, seats=None) -> Dict:
     """Anneal from the live poses and leave the best overlap-free placement
     seen applied, each part then held to the exact legality. With `repair`,
     a run that never came clean is first mended where it stands
     (`Annealer.repair`). Returns
     {'moves' (executed), 'seconds', 'loop_seconds', 'start', 'best',
-    'tracked_best', 't0', 'stats': {kind: (tried, kept)}, 'capped',
+    'tracked_best', 't0', 'stats': {kind: (tried, kept)},
     'reseated' (parts moved to their nearest legal pose afterwards),
     'repaired' (the run never came clean and `Annealer.repair` mended it)}."""
     a = Annealer(model, movable, seed=seed, seats=seats)
@@ -1147,7 +1147,7 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
     kinds = a.kinds()
     reach0 = a.span / 6.0
     late = int(BIG_UNTIL * moves)       # from here no group turns or swaps
-    run = {'capped': False, 'done': 0}  # `seconds` stops the loop early; moves executed
+    run = {'done': 0}                   # moves executed
     stats = {k: [0, 0] for k in kinds}
 
     def begin():
@@ -1159,9 +1159,6 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
     def loop(v, k0, k1):
         wts = [MOVES[k] if k0 < late or k not in BIG_GROUP_MOVES else 0.0 for k in kinds]
         for k in range(k0, k1):
-            if seconds and time.time() - t_start > seconds:
-                run['capped'] = True
-                return
             run['done'] += 1
             frac = k / moves
             T = t0 * (T_END / t0) ** frac
@@ -1243,10 +1240,10 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
         start = v['cur']
         loop(v, 0, moves)
     best, best_poses = v['best']
-    capped, done = run['capped'], run['done']
+    done = run['done']
     loop_seconds = time.time() - t_loop
     repaired = False
-    if repair and best_poses is None and not capped and a.repair(T_END) < CLEAN:
+    if repair and best_poses is None and a.repair(T_END) < CLEAN:
         best_poses, repaired = {r: a.pose(r) for r in a.mov}, True
     for r in a.mov:     # the QuenchState's own state, airwires and all
         pose = best_poses[r] if best_poses is not None else a.pose(r)
@@ -1278,6 +1275,6 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
     model.reprice_all()
     final = model.total()['cost']
     return {'moves': done, 'seconds': round(time.time() - t_start, 2), 'start': start,
-            'best': final, 'tracked_best': best, 't0': t0, 'capped': capped,
+            'best': final, 'tracked_best': best, 't0': t0,
             'reseated': reseated, 'repaired': repaired, 'loop_seconds': round(loop_seconds, 3),
             'stats': {kk: tuple(v) for kk, v in stats.items()}}
