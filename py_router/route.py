@@ -8475,6 +8475,52 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         except Exception as _wwe:                               # noqa: BLE001
             print(f"  (wide-net width disclosure skipped: {_wwe})")
 
+    # #1371: the via rows of the design_rules ledger describe the vias that
+    # SHIP. They were recorded per placement ATTEMPT -- a last-resort via the
+    # weld then rejected stayed a row, one placement counted several times,
+    # and the rung-1 via search (which ships small vias) recorded nothing.
+    # Replaced by a census of this run's shipped vias against the diameter
+    # each net asked for (config.net_via). Outermost run only, both fronts
+    # (the write model on the GUI, the written board on the CLI), like the
+    # width rows above.
+    if final_reconcile and not _ckpt_stop:
+        try:
+            from routing_common import new_via_shortfall, via_identity
+            from fab_tiers import (replace_via_rows,
+                                   escalation_summary as _es1371)
+            _vias1371 = None
+            if return_results:
+                _, _av1371 = _gui_write_model(results_data)
+                _vias1371 = [_v for _l in _av1371.values() for _v in _l]
+                _names1371 = {_n: _nn.name for _n, _nn in pcb_data.nets.items()}
+            elif output_file and os.path.isfile(output_file):
+                from kicad_parser import parse_kicad_pcb as _pk1371
+                _b1371 = _pk1371(output_file)
+                _vias1371 = _b1371.vias
+                _names1371 = {_n: _nn.name for _n, _nn in _b1371.nets.items()}
+            if _vias1371 is not None:
+                _ids1371 = {_nn.name: _n for _n, _nn in pcb_data.nets.items()}
+                _in1371 = {via_identity(_v, pcb_data.nets[_n].name)
+                           for _n, _lst in _orig_via_by_net.items()
+                           if _n in pcb_data.nets for _v in _lst}
+                _short1371 = new_via_shortfall(
+                    _vias1371, lambda _n: _names1371.get(_n, f"Net {_n}"),
+                    _in1371,
+                    lambda _nm: (config.net_via(_ids1371[_nm])[0]
+                                 if _nm in _ids1371 else None))
+                replace_via_rows(
+                    [(_ids1371[_nm], _nm, _r['requested_mm'], _r['sizes'])
+                     for _nm, _r in _short1371.items()],
+                    'via copper shipped under size')
+                _dr1371 = _es1371()
+                for _sm in list(_SUMMARY_SINK) + [summary]:
+                    if isinstance(_sm.get('design_rules'), dict):
+                        _keep = {k: v for k, v in _sm['design_rules'].items()
+                                 if k == 'unsupported_rules'}
+                        _sm['design_rules'] = dict(_dr1371, **_keep)
+        except Exception as _vre:                               # noqa: BLE001
+            print(f"  (via-size disclosure skipped: {_vre})")
+
     # ---- THE FLOOR THIS RUN SHIPS ------------------------------------------
     # Every summary measured min_clearance_used and design_rules when it was
     # BUILT, and pass 1's predates the plane finalize, whose fine-pitch taps

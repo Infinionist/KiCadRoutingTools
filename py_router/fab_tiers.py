@@ -928,6 +928,31 @@ def replace_track_rows(net_ids, shipped, site):
         })
 
 
+def replace_via_rows(shipped, site):
+    """#1371: make the ledger's via rows describe the vias that SHIP.
+
+    ``via_diameter`` rows are recorded per placement ATTEMPT (the last-resort
+    via-in-pad ladder, rescues, the plane-tap ladder, layer-swap pad vias), so
+    they name vias that never shipped (a tap the weld then rejected) and count
+    one placement several times, while the rung-1 via search ships small vias
+    and records nothing. Drop every ``via_diameter`` row and add one row per
+    (net, diameter) from the census of this run's shipped vias.
+    ``shipped`` is [(net_id, net_name, requested, {diameter: count}), ...],
+    from ``routing_common.new_via_shortfall``. Other kinds are untouched."""
+    _LEDGER['narrowed'] = [r for r in _LEDGER['narrowed']
+                           if r.get('kind') != 'via_diameter']
+    for nid, name, req, sizes in shipped or ():
+        for dia, n in sorted(sizes.items()):
+            if dia >= req - 1e-9:
+                continue
+            _LEDGER['narrowed'].append({
+                'net': int(nid), 'net_name': name, 'kind': 'via_diameter',
+                'requested': round(float(req), 4),
+                'delivered': round(float(dia), 4),
+                'site': site, 'count': int(n),
+            })
+
+
 def escalation_summary():
     """The per-run ledger as JSON-ready data (the JSON_SUMMARY ``design_rules``
     block). ``count`` is the number of recorded narrowings; ``fab_tier_escalations``

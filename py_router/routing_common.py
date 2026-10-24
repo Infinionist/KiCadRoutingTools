@@ -287,6 +287,46 @@ def new_copper_width_shortfall(segments, name_of, input_keys, requested_of):
     return out
 
 
+def via_identity(v, net_name):
+    """A via's geometry as a hashable key: net (by NAME, so a re-parsed
+    board's renumbered nets still match), position to 1 um and diameter. Equal
+    keys are the same barrel; a key the input board lacks is a via the run
+    laid (or re-laid)."""
+    return (net_name, round(v.x, 3), round(v.y, 3), round(v.size, 3))
+
+
+def new_via_shortfall(vias, name_of, input_keys, requested_of):
+    """Per net, the vias THIS run laid that ship smaller than the diameter
+    requested for the net (#1371), read off the shipped board rather than
+    recorded per placement attempt.
+
+    `vias` is the shipped copper (the written board, or the GUI's write
+    model); a via whose :func:`via_identity` is in `input_keys` was on the
+    input board and is not this run's. `requested_of(net_name)` is the
+    diameter asked for, or None for a net this report does not cover.
+
+    Returns {net_name: {requested_mm, min_mm, count, sizes}} for every net
+    with at least one new via more than 1 um under its request -- `count`
+    those vias, `sizes` {diameter: how many}."""
+    out: Dict[str, Dict] = {}
+    for v in vias:
+        if not v.net_id:
+            continue
+        name = name_of(v.net_id)
+        req = requested_of(name)
+        if req is None or via_identity(v, name) in input_keys:
+            continue
+        if v.size >= req - 1e-3:
+            continue
+        r = out.setdefault(name, {'requested_mm': round(float(req), 4),
+                                  'min_mm': None, 'count': 0, 'sizes': {}})
+        d = round(float(v.size), 4)
+        r['count'] += 1
+        r['sizes'][d] = r['sizes'].get(d, 0) + 1
+        r['min_mm'] = d if r['min_mm'] is None else min(r['min_mm'], d)
+    return out
+
+
 def resolve_net_ids(pcb_data: PCBData, net_names: List[str]) -> List[Tuple[str, int]]:
     """
     Resolve net names to (name, id) tuples.

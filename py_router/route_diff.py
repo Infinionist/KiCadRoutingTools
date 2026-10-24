@@ -2359,6 +2359,27 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
     except Exception:          # without re-reading logs
         pass
+    # #1371: the via rows describe the vias that SHIP (route.py's census):
+    # the placement ladders record per ATTEMPT, and a via the rung search or a
+    # diff-pair via laid at the fab floor recorded nothing at all.
+    try:
+        from routing_common import new_via_shortfall, via_identity
+        from fab_tiers import replace_via_rows
+        _nm1371 = {_n: _nn.name for _n, _nn in pcb_data.nets.items()}
+        _id1371 = {_nm: _n for _n, _nm in _nm1371.items()}
+        _in1371 = {(_nm1371.get(_t[0], f"Net {_t[0]}"), round(_t[1], 3),
+                    round(_t[2], 3), round(_t[3], 3))
+                   for _t in _input_vias962}
+        _short1371 = new_via_shortfall(
+            pcb_data.vias, lambda _n: _nm1371.get(_n, f"Net {_n}"), _in1371,
+            lambda _nm: (config.net_via(_id1371[_nm])[0]
+                         if _nm in _id1371 else None))
+        replace_via_rows(
+            [(_id1371[_nm], _nm, _r['requested_mm'], _r['sizes'])
+             for _nm, _r in _short1371.items()],
+            'via copper shipped under size')
+    except Exception as _vre:                                   # noqa: BLE001
+        print(f"  (via-size disclosure skipped: {_vre})")
     # #857: what this run delivered below a requested size (route.py's
     # key), when it delivered anything there.
     from fab_tiers import narrowed_summary
