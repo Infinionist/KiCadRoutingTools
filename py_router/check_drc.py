@@ -2812,6 +2812,13 @@ VIA_IN_PASTE_ACCEPTED = ('protected-via-in-paste', 'inherited-via-in-paste',
                          'undeclarable-via-in-paste')
 
 
+#: #1388: a rule that binds no net grades nothing, and "N rule(s)" read as
+#: graded and clean.
+_UNBOUND_RULE_NOTE = ("NOT GRADING: rule '{rname}' binds no net on this board "
+                      "(its condition names a class or net the board lacks, or a "
+                      "later rule takes every net it matches) -- it grades nothing")
+
+
 def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
     """Grade every `.kicad_dru` length window (#1313).
 
@@ -2880,10 +2887,12 @@ def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
                 'max_mm': rule.max_mm,
                 'excess_mm': round(abs(length - limit), 4),
             })
+    from kicad_dru import unbound_length_rules
+    unbound = [r.name for r in unbound_length_rules(rules, names, member)]
     summary = {'rules': len(rules), 'graded': graded,
                'out_of_range': sum(1 for v in violations
                                    if v['type'] == 'length-out-of-range'),
-               'unmeasured': unmeasured,
+               'unmeasured': unmeasured, 'unbound_rules': unbound,
                'not_graded': {k: {'reason': r, 'nets': n}
                               for k, (r, n) in undecided.items()}}
     if not quiet:
@@ -2895,6 +2904,8 @@ def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
         for rname, (why, nets) in undecided.items():
             print(f"  NOT GRADED: rule '{rname}' ({why}) -- {len(nets)} net(s) "
                   f"it may bind are not graded here; KiCad still grades them")
+        for rname in unbound:
+            print(f"  {_UNBOUND_RULE_NOTE.format(rname=rname)}")
         for n in notes:
             print(f"  .kicad_dru: {n}")
     return summary
@@ -3044,7 +3055,11 @@ def _pair_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
                 'limit_mm': rp.max_mm,
                 'gap_window': [gmin, gap.max]})
 
+    from kicad_dru import unbound_length_rules
+    unbound = [r.name for kind_rules in (skew_rules, unc_rules)
+               for r in unbound_length_rules(kind_rules, names, member)]
     summary = {'rules': len(rules),
+               'unbound_rules': unbound,
                'skew_graded': n_skew,
                'skew_out_of_range': sum(1 for v in violations
                                         if v['type'] == 'skew-out-of-range'),
@@ -3065,6 +3080,8 @@ def _pair_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
         for rname, (why, nn) in undecided.items():
             print(f"  NOT GRADED: rule '{rname}' ({why}) -- {len(nn)} net(s)/pair(s) "
                   f"it may bind are not graded here; KiCad still grades them")
+        for rname in unbound:
+            print(f"  {_UNBOUND_RULE_NOTE.format(rname=rname)}")
         for n in notes:
             print(f"  .kicad_dru: {n}")
     return summary

@@ -567,6 +567,17 @@ def _grade(a, doc):
         reasons.append('a component RAN and could not answer: '
                        + ', '.join(unknown))
     reasons += [r for r in (ungraded_bad, unknown_bad) if r]
+    # #1388: a component nothing asked for is UNEXAMINED and does not block --
+    # unless the BOARD declares what it grades (a diff-pair class with no rule
+    # to grade its pairs). A declaration nothing grades is a promise nobody
+    # checked, so it blocks DONE like the placement verifier's rule 5 does.
+    _comps = (score.get('components') or {}) if isinstance(score, dict) else {}
+    for _name in ungraded:
+        _c = _comps.get(_name)
+        if isinstance(_c, dict) and _c.get('declared'):
+            reasons.append(f'{_name}: the board DECLARES it '
+                           f'({", ".join(sorted(_c["declared"]))}) and nothing '
+                           f'grades it -- {_c.get("reason")}')
     # ONE rule for what a `blocking` is (`converge.blocking_defect`, #1075):
     # `false` is falsy, so it used to read as a clean board and exit DONE.
     from converge import blocking_defect
