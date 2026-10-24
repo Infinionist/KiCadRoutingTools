@@ -37,7 +37,11 @@ Trust nothing it told you. Measure it yourself, from the repo root.
    - `python3 -X utf8 py_router/check_drc.py <BOARD> --baseline <INPUT BOARD> --clearance-margin 0.1`: no real violations.
 5. **Declared classes.** Name every `ungraded` component as UNEXAMINED. If the
    board declares a class (diff pairs, impedance, length groups, power widths,
-   high-speed nets) and its component is ungraded, the verdict is FAIL. For
+   high-speed nets) and its component is ungraded, the verdict is FAIL. Power
+   widths the run asked of `route.py` are recorded with the board and graded by
+   `board_score` unprompted; a net-class `track_width` is not a spec (the router
+   discloses copper under it in `design_rules`), so it is not an ungraded
+   declaration. For
    declared diff pairs, length groups or high-speed nets, also run the
    `review-routed-board` skill's Steps 2–4 (length matching, return vias,
    impedance, diff pairs) and report them.

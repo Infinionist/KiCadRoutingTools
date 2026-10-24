@@ -582,7 +582,14 @@ for fine-pitch boards (#111/#115):**
   these are the size new objects are *drawn at*. Of these, only **clearance** is
   a DRC-enforced minimum. `track_width` and `via_diameter`/`drill` are **not** DRC
   floors — they are just defaults, so a board can (and the human originals do) use
-  a **smaller** via/track than the net-class nominal and still pass DRC.
+  a **smaller** via/track than the net-class nominal and still pass DRC. The
+  router honours a non-Default class's `track_width` and discloses copper that
+  ships under it (`design_rules`, "class-width copper shipped under width"), but
+  no DONE grader holds a board to it. **A width you REQUIRE of a net is a
+  request, not a class value:** `--power-nets` / `--power-nets-widths` records
+  it in the output's `kicad_routing_tools` records, and `board_score` /
+  `check_complete` then grade it with no flag (`--net-min-widths` adds patterns
+  for nets that were not asked of route.py). Declare the width you need there.
 - **Board Constraints** (`min_clearance`, `min_track_width`, `min_via_diameter`,
   `min_hole_to_hole`, `min_through_hole_diameter`): **these are the actual DRC
   floors.** `--design-rules` reads them from `design_settings.rules` and combines
