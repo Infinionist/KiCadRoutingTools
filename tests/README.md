@@ -110,8 +110,9 @@ Three things to know before you trust its output:
     half used to print a skip and pass, so it ran nowhere):
     `test_505_min_connection_clamp`, `test_505_gui_half_runs` and
     `test_engine_kwarg_parity_launch`.
-  - **No `ortools`.** The `test_622_*` tests that plan with CP-SAT skip
-    without it, and `requirements.txt` does not list it.
+  - **No `ortools`** (a local Python only). The `test_622_*` tests that plan
+    with CP-SAT skip without it. `requirements.txt` lists it -- the bus step
+    needs it (#1355) -- so the suite image installs it and runs them.
 
 The image is a clean checkout of HEAD (reproducible, and you can keep editing
 while it runs); `KICAD_SWEEP_DIRTY=1` ships the working tree instead and stamps

@@ -374,8 +374,9 @@ Validate routed boards against the *real* spec, with the right checker — most
     that does NOT apply to the pass/fail suite, which compares no numbers
     across runs.
     **One other kind of `run_all` self-skip is NOT about KiCad at all**: the
-    `test_622_*` tests that plan with CP-SAT skip without `ortools`, which
-    `requirements.txt` does not list. No image change moves it.
+    `test_622_*` tests that plan with CP-SAT skip without `ortools`. It is the
+    bus step's dependency, listed in `requirements.txt` (#1355), so the suite
+    image has it and runs them; a local Python without it still skips them.
     `tests/README.md` keeps the full list.
   - The image is a clean checkout of HEAD, so it is reproducible and you can
     keep editing while it runs; `KICAD_SWEEP_DIRTY=1` ships the working tree
