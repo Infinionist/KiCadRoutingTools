@@ -406,7 +406,7 @@ def _holes_outside(state, gate, ref: str, x: float, y: float,
     straddles the outline, as check_assembly's copper gate exempts its pad
     (`legality.pad_copper_overrun_mm`; #1297: rp2350's Teensy U8, 33)."""
     from kicad_parser import pad_drill_capsule
-    from .legality import _on_board, footprint_at_pose
+    from .legality import _on_board, _pad_has_no_copper, footprint_at_pose
     fp = (state.pcb_data.footprints or {}).get(ref)
     if fp is None:
         return 0, 0
@@ -418,7 +418,16 @@ def _holes_outside(state, gate, ref: str, x: float, y: float,
         (x1, y1), (x2, y2), r = pad_drill_capsule(p)
         pts = [(cx + r * math.cos(k * math.pi / 8), cy + r * math.sin(k * math.pi / 8))
                for cx, cy in {(x1, y1), (x2, y2)} for k in range(16)]
-        if getattr(p, 'castellated', False) and any(
+        # A castellated half-hole, or a copper-less NPTH drill (a mouse-bite
+        # perforation, a tooling hole cut into the edge): its centre lies ON
+        # the outline by design, so it straddles it while still touching the
+        # board (#1413). One verdict for every such drill: the same 0.5 mm hole
+        # on a slot's contour (a milled ring, on-board inside) and on the outer
+        # edge used to be judged differently. A hole wholly off the board is
+        # still past it.
+        if (getattr(p, 'castellated', False)
+                or (getattr(p, 'pad_type', '') == 'np_thru_hole'
+                    and _pad_has_no_copper(p))) and any(
                 _on_board(gate, px, py) for px, py in pts):
             continue
         if gate.points_overrun_mm(pts) > 1e-9:
