@@ -1615,10 +1615,13 @@ def _late_dangling_via_sweep1166(pcb_data, output_file, return_results,
                 print(f"  WARNING: dangling-via sweep (#1166): chose "
                       f"{len(removed)} segment(s) and {len(dropped)} via(s), "
                       f"found {n_s} and {n_v} in the written file")
+        _tails = _stats.get('tails', 0)
         print(f"  Dangling vias (#1166, end of run): removed {n_v} "
               f"via(s) joining fewer than two layers and {n_s} "
               f"segment(s) of the branches they ended, on "
-              f"{_stats.get('nets', 0)} net(s)")
+              f"{_stats.get('nets', 0)} net(s)"
+              + (f" ({_tails} of the segments were dead tails on finished "
+                 f"nets, #1372)" if _tails else ""))
         return n_s, n_v
     except Exception as _e:                                     # noqa: BLE001
         print(f"  (end-of-run dangling-via sweep skipped: "
