@@ -428,7 +428,10 @@ def _many_seeds(ap, a):
         if act.dest in skip or not act.option_strings:
             continue
         val = getattr(a, act.dest)
-        if val is not None:
+        if act.nargs == 0:      # a switch: its name alone
+            if val:
+                passed.append(act.option_strings[0])
+        elif val is not None:
             passed += [act.option_strings[0], str(val)]
     jobs = max(1, a.jobs or min(len(seeds), 4))
     runs = []
@@ -587,7 +590,8 @@ def _name_judged(a, seeds, summaries):
         print(f"  WARNING: {crowding_text(rec)}")
 
 
-def main(argv=None):
+def build_parser():
+    """The command line, also the one place the weights' defaults live."""
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('board', help='the board; the parts it locks stay put')
     ap.add_argument('out', help='the placed board to write')
@@ -618,6 +622,11 @@ def main(argv=None):
                     help='per mm past an intent decap limit it grades at error '
                          '(decaps.max_distance_mm, max_pin_distance_mm), measured as the '
                          'grade measures it (default 10; 0 leaves the limits unpriced)')
+    ap.add_argument('--repair-decaps', action='store_true', default=None,
+                    help='after the anneal, move each cap still past an intent decap limit to '
+                         'the nearest legal pose inside it, when that makes no other limit '
+                         'worse (default: off). Either way a limit still broken is WARNED, '
+                         'naming the rail, cap, pin and the distance reached')
     ap.add_argument('--group-weight', type=float, default=5.0,
                     help='per mm of gap in a group\'s tree over its members\' '
                          'courtyards (default 5)')
@@ -688,6 +697,11 @@ def main(argv=None):
                     help='with several seeds, how many run at once (default: one per '
                          'seed, at most 4)')
     ap.add_argument('--json', help='write the report here')
+    return ap
+
+
+def main(argv=None):
+    ap = build_parser()
     a = ap.parse_args(argv)
     starts = [f for f, v in (('--scattered', a.scattered), ('--clustered', a.clustered),
                              ('--anchored', a.anchored)) if v is not None]
@@ -901,6 +915,19 @@ def main(argv=None):
         state.apply_move(r, *pose)
     model.reprice_all()
     final = model.total()
+    # the intent's decap limits are a soft term, so the anneal can stop a
+    # fraction of a mm past one; --repair-decaps then moves each cap to the
+    # nearest legal pose inside its limit (#1382)
+    from placement import decap_repair
+    mended = None
+    if a.repair_decaps and movable:
+        def legal_at(r, x, y, rot):
+            if r in model.edge_seats:
+                return False
+            return (legal(state, r, x, y, rot)
+                    and state.intent_clear(r, state.parts[r].grade_rects(x, y, rot)))
+        mended = decap_repair.repair(model, movable, legal_at, seats=model.edge_seats)
+        final = model.total()
     t2 = time.time()
     # each template member's drift from its template pose, worst pad
     from placement.templates import pad_deviation
@@ -919,6 +946,20 @@ def main(argv=None):
         print(f"  NOTE: moved to the nearest legal pose after the anneal: {', '.join(res['reseated'])}")
     if illegal:
         print(f"  WARNING: no legal pose found for: {', '.join(illegal)}")
+    if mended is not None:
+        for m in mended['moved']:
+            print(f"  NOTE: decap {m['ref']} ({m['rail']}) moved {m['mm']:.2f} mm to "
+                  f"({m['to'][0]:g}, {m['to'][1]:g}, {m['to'][2]:g}) to meet its limit")
+        print(f"  decap repair: {mended['before']} limit(s) broken -> {mended['after']} "
+              f"({mended['seconds']} s)")
+    # what is still past an intent decap limit, named: rail, cap, pin, the
+    # distance reached against the limit (#1382, #1423)
+    resid = mended['stuck'] if mended is not None else decap_repair.residual(model)
+    for r in resid:
+        print(f"  WARNING: {decap_repair.residual_text(r)}"
+              + (f"; no legal pose of the cap got closer than {r['reach']:.2f} mm"
+                 if r.get('reach') is not None else
+                 "; it has no legal pose to try" if mended is not None else ''))
     if drift:
         print("  template drift (worst pad, mm): " + ', '.join(
             f"{d['ref']} {d['worst_mm']:.2f}" for d in drift))
@@ -964,6 +1005,7 @@ def main(argv=None):
               'illegal': illegal, 'refused': refused, 'estimate_fallback': fallback,
               'oversubscribed': model.edge_oversubscribed, 'claim_arity': model.claim_arity,
               'floorplan': fp, 'assembly': asm, 'bga_field': bga_field,
+              'decap_residual': resid, 'decap_repair': mended,
               'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'hints_saturated': saturated,
@@ -973,7 +1015,7 @@ def main(argv=None):
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
                                            'refused', 'oversubscribed', 'claim_arity', 'floorplan',
-                                           'assembly', 'bga_field', 'hints_saturated', 'estimate_fallback', 'seconds')}))
+                                           'assembly', 'bga_field', 'decap_residual', 'hints_saturated', 'estimate_fallback', 'seconds')}))
     return 4 if illegal or refused or model.edge_oversubscribed else 0
 
 
