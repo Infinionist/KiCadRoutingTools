@@ -360,6 +360,26 @@ def arity_text(rec):
             f"name the facing pads in `pads` so both read the same ones")
 
 
+def _bga_field(path):
+    """`placement.escape.ball_field_census` of the placed board at `path`:
+    the far-face parts under each ball grid's field (#1425); [] when none, or
+    when the board cannot be read back."""
+    from placement.escape import ball_field_census
+    try:
+        return ball_field_census(parse_kicad_pcb(path))
+    except (OSError, ValueError):
+        return []
+
+
+def _field_text(rec):
+    """'U1 (17x17 balls at 0.8 mm): 40 B.Cu part(s) centred under its ball
+    field, 26 in its outer 4 rows'."""
+    from placement.escape import ESCAPE_RINGS
+    return (f"{rec['bga']} ({rec['balls']} balls at {rec['pitch']:g} mm): {rec['parts']} "
+            f"{rec['face']} part(s) centred under its ball field, {rec['outer']} in its "
+            f"outer {ESCAPE_RINGS} rows (the rows a fan-out escapes through)")
+
+
 def _fp_text(fp):
     """'3 floorplan error(s) (decap_pin_distance)', '' when clean or absent."""
     e = (fp or {}).get('errors')
@@ -449,7 +469,10 @@ def _many_seeds(ap, a):
             ill = summary.get('illegal') or []
             start = summary.get('start')
             fpt = ', '.join(t for t in (_fp_text(summary.get('floorplan')),
-                                        _asm_text(summary.get('assembly'))) if t)
+                                        _asm_text(summary.get('assembly')),
+                                        *(f"{r['outer']} {r['face']} part(s) in {r['bga']}'s "
+                                          f"outer rows" for r in summary.get('bga_field') or ()
+                                          if r['outer'])) if t)
             print(f"  seed {s}{f' ({start})' if start in ('clustered', 'anchored') else ''}: "
                   f"cost {fin['cost']:.1f}, {summary['moves']} moves in "
                   f"{summary['seconds']['anneal']} s"
@@ -528,6 +551,9 @@ def _name_judged(a, seeds, summaries):
            # None not graded) against the board it was placed from
            'assembly': {str(s): (summaries[s].get('assembly') or {}).get('blocking')
                         for s in seeds if s in summaries},
+           # each placed seed's far-face parts under a ball field (#1425)
+           'bga_field': {str(s): summaries[s].get('bga_field') or []
+                         for s in seeds if s in summaries},
            'baseline': (os.path.abspath(a.board) if getattr(a, 'board', None)
                         else None)}
     path = os.path.join(os.path.dirname(a.out.format(seed=seeds[0])), 'judge.json')
@@ -922,6 +948,12 @@ def main(argv=None):
     # and its assembly, against the board it was placed from: report only
     asm = _assembly(a.out, a.board, a.intent)
     print(f"  assembly: {_asm_text(asm) or 'buildable'} (check_assembly --baseline)")
+    # the parts the placement stood on the far face of a ball grid, under its
+    # ball field (#1425): the rows a fan-out escapes through are the ones to
+    # count. Report only.
+    bga_field = _bga_field(a.out)
+    for rec in bga_field:
+        print(f"  {_field_text(rec)}")
     final.pop('per_group', None)
     final.pop('per_hint', None)
     report = {'final': final, 'moves': res['moves'], 'seed': a.seed,
@@ -931,7 +963,7 @@ def main(argv=None):
               'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
               'illegal': illegal, 'refused': refused, 'estimate_fallback': fallback,
               'oversubscribed': model.edge_oversubscribed, 'claim_arity': model.claim_arity,
-              'floorplan': fp, 'assembly': asm,
+              'floorplan': fp, 'assembly': asm, 'bga_field': bga_field,
               'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'hints_saturated': saturated,
@@ -941,7 +973,7 @@ def main(argv=None):
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
                                            'refused', 'oversubscribed', 'claim_arity', 'floorplan',
-                                           'assembly', 'hints_saturated', 'estimate_fallback', 'seconds')}))
+                                           'assembly', 'bga_field', 'hints_saturated', 'estimate_fallback', 'seconds')}))
     return 4 if illegal or refused or model.edge_oversubscribed else 0
 
 
