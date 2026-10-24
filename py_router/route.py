@@ -1872,6 +1872,28 @@ def _late_kicad_dangling_split1217(pcb_data, output_file, return_results,
         return 0
 
 
+def _unfinished_net_ids(routed_results, single_ended_nets, terminal_restores=None):
+    """Nets that still carry unfinished pads when the cleanup pipeline runs
+    (#473): they keep ALL their copper through its subtractive passes, because
+    their spurs are the landing sites the next chain step or rescue welds to.
+
+      * a routed net with failed pads (`failed_pads_info`);
+      * a net this run was asked to route that has no result at all;
+      * a rip victim put back PARTIALLY (#1427): the #134 last resort restores
+        the pieces that do not collide and leaves "the net PARTIAL for a later
+        reconnect pass" (`partial_restore_134`), and a terminal restore that
+        is only 'full_open' or an escape 'stub'. Their restored escape is the
+        landing site; the dead-end sweep read it as a spur and took it, and
+        the ball shipped bare.
+    """
+    out = {nid for nid, _r in routed_results.items()
+           if _r.get('failed_pads_info') or _r.get('partial_restore_134')}
+    out |= {nid for _nm, nid in single_ended_nets if nid not in routed_results}
+    out |= {nid for nid, how in (terminal_restores or {}).items()
+            if how in ('full_open', 'stub')}
+    return out
+
+
 def _late_orphan_sweep659(pcb_data, output_file, return_results, results_data,
                           protect_unfinished, keep_input_copper, skip_routing):
     """Sweep pad-less copper islands off the FINAL board (#659).
@@ -4771,10 +4793,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # through the dead-end sweep -- their spurs are the landing sites the
     # next chain step / rescue needs, and sweeping them each step eroded
     # failed nets across chains.
-    _protect_unfinished = {nid for nid, _r in routed_results.items()
-                           if _r.get('failed_pads_info')}
-    _protect_unfinished |= {nid for _nm, nid in single_ended_nets
-                            if nid not in routed_results}
+    _protect_unfinished = _unfinished_net_ids(
+        routed_results, single_ended_nets,
+        getattr(state, 'terminal_restores', None))
     _cleanup = None if (_ckpt_stop and not _ckpt_cleanup) else run_post_route_cleanup(
         results, pcb_data, sweep_scope_ids, config,
         protect_net_ids=_protect_unfinished,
