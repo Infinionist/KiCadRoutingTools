@@ -6,6 +6,7 @@ MPS (Maximum Planar Subset) net ordering.
 """
 from __future__ import annotations
 
+import os
 import math
 import difflib
 import fnmatch
@@ -242,6 +243,37 @@ def net_copper_length(pcb_data: PCBData, net_id: int,
         total += math.fsum(kicad_via_length(v, segments, pads, pcb_data)
                            for v in pcb_data.vias if v.net_id == net_id)
     return total
+
+
+#: The KiCad release `kicad_via_length` and `net_match_length` reproduce
+#: (#1432). LENGTH_DELAY_CALCULATION changed after it: 10.0.7 joins a via to
+#: every layer where a track ends anywhere inside the via pad (not only at its
+#: centre) and clips track length inside via pads, so a net whose length sits
+#: within about one via barrel of a window limit can grade on the other side
+#: of the one kicad-cli applies. Disclosed, not guessed at: nothing here has
+#: been measured against a release other than this one.
+LENGTH_MEASURE_CALIBRATED_TO = '10.0.0'
+
+
+def length_measure_note() -> str:
+    """One line saying which KiCad the length measure is calibrated to, and
+    -- when the installed kicad-cli is another release -- which one is
+    installed, so a verdict inside a via barrel of a limit is read as
+    uncertain rather than final."""
+    note = (f"lengths are measured as KiCad {LENGTH_MEASURE_CALIBRATED_TO} "
+            f"measures them (via layer span from track ends at the via "
+            f"centre)")
+    try:
+        from kicad_oracle import kicad_cli_version
+        have = kicad_cli_version()
+    except Exception:                                        # noqa: BLE001
+        have = None
+    if have and have != LENGTH_MEASURE_CALIBRATED_TO:
+        note += (f"; the installed kicad-cli is {have}, whose length DRC "
+                 f"also charges track ends inside the via pad and clips "
+                 f"track inside via pads -- a net within about one via "
+                 f"barrel of its limit may grade differently there")
+    return note
 
 
 def kicad_via_length(via: Via, segments, pads, pcb_data, tolerance: float = 1e-4) -> float:
@@ -1107,6 +1139,42 @@ def log_net_health(pcb_data: PCBData, log=print) -> Tuple[int, int, int]:
     return n_unroutable, n_offboard, n_parse
 
 
+_JUMPER_DECL_CACHE = {}
+
+
+def multipad_unconnected_to_route(pcb_data) -> dict:
+    """{net name: pad count} of the auto-named no-connect nets ('unconnected-*')
+    with >=2 pads that the wildcard must route (#1405).
+
+    Such a net is one footprint's same-number pads (a connector's shield or
+    mounting tabs, a reversible footprint's doubled pins). KiCad counts it
+    unconnected unless copper joins the pads or the footprint DECLARES them
+    jumpered (``duplicate_pad_numbers_are_jumpers`` / ``jumper_pad_groups``),
+    in which case the part itself is the conductor and nothing is routed.
+    Single-pad nets have nothing to join and are never returned.
+    """
+    cands = {}
+    for nid, net in pcb_data.nets.items():
+        nm = net.name or ''
+        if nid > 0 and nm.lower().startswith('unconnected-'):
+            pads = pcb_data.pads_by_net.get(nid, [])
+            if len(pads) >= 2:
+                cands[nm] = pads
+    if not cands:
+        return {}
+    from check_connected import read_jumper_declarations, pads_joined_inside_parts
+    path = getattr(pcb_data, 'source_path', '') or ''
+    decls = {}
+    if path and os.path.isfile(path):
+        key = (path, os.path.getmtime(path))
+        if key not in _JUMPER_DECL_CACHE:
+            _JUMPER_DECL_CACHE.clear()
+            _JUMPER_DECL_CACHE[key] = read_jumper_declarations(path)
+        decls = _JUMPER_DECL_CACHE[key]
+    return {nm: len(pads) for nm, pads in cands.items()
+            if not (decls and pads_joined_inside_parts(pads, decls))}
+
+
 def expand_net_patterns(pcb_data: PCBData, patterns: List[str],
                         exclude_unconnected: bool = True,
                         quiet: bool = False) -> List[str]:
@@ -1155,27 +1223,18 @@ def expand_net_patterns(pcb_data: PCBData, patterns: List[str],
     if exclude_unconnected:
         all_net_names = {name for name in all_net_names
                         if name and not name.lower().startswith('unconnected-')}
-        # #513 item 7: an 'unconnected-*' net with >=2 pads is NOT always a
-        # true no-connect -- reversible footprints (XIAO, ProMicro) get their
-        # doubled pin positions auto-named this way and the pads DO need a
-        # trace (klein_kb shipped 4 such nets open). But USB-shield tabs share
-        # the same shape and are correctly left unrouted (#479, joined by the
-        # connector shell) -- so warn with names rather than auto-route.
-        _multi_nc = []
-        for _nid, _net in pcb_data.nets.items():
-            _nm = _net.name or ''
-            if not _nm.lower().startswith('unconnected-'):
-                continue
-            _np = len(pcb_data.pads_by_net.get(_nid, []))
-            if _np >= 2:
-                _multi_nc.append((_nm, _np))
+        # #1405: an 'unconnected-*' net with >=2 pads (a reversible footprint's
+        # doubled pins, a connector's shield or mounting tabs) is joined by
+        # nothing unless its footprint DECLARES the pads jumpered -- KiCad
+        # counts it unconnected, so the wildcard routes it.
+        _multi_nc = multipad_unconnected_to_route(pcb_data)
+        all_net_names |= set(_multi_nc)
         if _multi_nc and not quiet:
-            _lst = ', '.join(f"'{n}' ({c} pads)" for n, c in sorted(_multi_nc)[:8])
-            print(f"WARNING: {len(_multi_nc)} 'unconnected-*' net(s) with >=2 pads "
-                  f"excluded from the wildcard: {_lst}. If these are a reversible "
-                  f"footprint's doubled pins they DO need a trace -- route them "
-                  f"explicitly by naming them in --nets. Shield/mounting tabs "
-                  f"joined mechanically can stay unrouted (#513 item 7).")
+            _lst = ', '.join(f"'{n}' ({c} pads)" for n, c in sorted(_multi_nc.items())[:8])
+            print(f"Note: {len(_multi_nc)} multi-pad 'unconnected-*' net(s) join the "
+                  f"wildcard: {_lst}. KiCad counts each one unconnected unless "
+                  f"its footprint declares the same-number pads jumpered "
+                  f"(#1405, #513 item 7).")
 
     known_net_names = unfiltered_net_names
     all_net_names = list(all_net_names)

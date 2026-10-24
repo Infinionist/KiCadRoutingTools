@@ -165,6 +165,26 @@ KICAD_DANGLING_TYPES = {"track_dangling"}
 _THERMAL_PAD_RE = re.compile(
     r"(?:\b(?:N?PTH|SMD)\s+)?\b[Pp]ad\s+(\S+)\s+\[[^\]]*\]\s+of\s+(\S+)")
 
+#: #1390: the error types of KiCad's LAST report that no channel of this
+#: comparator classifies ({type: count}). A type outside the copper, web,
+#: thermal and courtyard classes used to be dropped without a word, so a
+#: `track_width` error read `kicad=0 ... CONSISTENT`. Set by `run_kicad_drc`,
+#: read by `compare_board_data` right after `kicad_items_for` returns.
+LAST_UNCLASSIFIED = {}
+
+
+def unclassified_error_types(data):
+    """{type: count} of the error-severity violations in a kicad-cli report
+    that no class here grades."""
+    known = (KICAD_COPPER_TYPES | KICAD_WEB_TYPES | KICAD_THERMAL_TYPES
+             | KICAD_COURTYARD_TYPES | KICAD_DANGLING_TYPES)
+    out = {}
+    for v in data.get("violations", []):
+        t = v.get("type", "")
+        if t and t not in known and v.get("severity", "error") == "error":
+            out[t] = out.get(t, 0) + 1
+    return out
+
 MATCH_RADIUS_MM = 0.5
 
 
@@ -206,6 +226,8 @@ def run_kicad_drc(board: str):
             os.unlink(out_json)
         except OSError:
             pass
+    LAST_UNCLASSIFIED.clear()
+    LAST_UNCLASSIFIED.update(unclassified_error_types(data))
     return parse_kicad_report(data), None
 
 
@@ -938,9 +960,11 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
     requested = clearance
     if recorded is not None:
         clearance = recorded
+    LAST_UNCLASSIFIED.clear()
     kicad, err = kicad_items_for(board, clearance)
     if err:
         return {"board": label, "skip": err}
+    unclassified = dict(LAST_UNCLASSIFIED)
     # Min copper web (#406): split the web class out BEFORE baseline
     # subtraction and matching -- the positional subtraction pass is
     # type-blind, so pooling would let a baseline clearance item consume a
@@ -1178,6 +1202,8 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
             "courtyard": courtyard,
             # #962 D6: check_drc-only by construction (KiCad has no check)
             "via_in_paste": via_in_paste,
+            # #1390: KiCad error types no channel grades, never dropped
+            "kicad_unclassified": unclassified,
             "kicad_only_items": kicad_only, "checkdrc_only_items": cd_only}
 
 
@@ -1232,6 +1258,11 @@ def compare_board(board: str, label: str = None, clearance: float = None,
           f"matched={data['matched']} kicad_only={data['kicad_only']} checkdrc_only={data['checkdrc_only']}{ie_note} | "
           f"net-pairs: both={data['pairs_both']} kicad_only={data['pairs_kicad_only']} "
           f"checkdrc_only={data['pairs_checkdrc_only']} |{cw_note}  {data['verdict']}")
+    if data.get("kicad_unclassified"):
+        print("    NOT CLASSIFIED (KiCad errors this comparator does not "
+              "grade, so 'CONSISTENT' says nothing about them): "
+              + ", ".join(f"{t}={n}" for t, n in
+                          sorted(data["kicad_unclassified"].items())))
     for kv in data["kicad_only_items"]:
         print(f"    KICAD-ONLY  {kv['type']:16s} {sorted(kv['nets'])} @ {kv['pos']}  {kv.get('desc','')[:60]}")
     for cv in data["checkdrc_only_items"]:

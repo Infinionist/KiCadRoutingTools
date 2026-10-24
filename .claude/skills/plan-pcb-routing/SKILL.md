@@ -2471,7 +2471,14 @@ Key options:
   `matched` means the board's P/N skew is inside `--length-match-tolerance`.
   Where the pair has a hard skew budget, declare it as a `.kicad_dru`
   `(constraint skew (max ..) (within_diff_pairs))` rule: check_drc and
-  board_score grade it, as KiCad does
+  board_score grade it, as KiCad does. A board whose project declares a
+  diff-pair net class (a `diff_pair_gap`/`diff_pair_width` that differs from
+  Default's) needs such a rule: board_score only MEASURES a pair nothing
+  grades, and `check_complete` is INCOMPLETE until a rule binds it, e.g.
+  `(rule "pair skew" (condition "A.NetClass == '100ohm'") (constraint skew
+  (max 0.15mm) (within_diff_pairs)))` in `<board>.kicad_dru`. A rule whose
+  condition names a class or net the board lacks grades nothing, and check_drc
+  says `NOT GRADING`
 - `--swappable-nets "*rx*"` - Allow target swap optimization for memory lanes
 
 ### QFN/QFP Components (Perimeter Pads)

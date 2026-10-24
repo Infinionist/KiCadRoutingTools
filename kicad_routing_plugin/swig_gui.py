@@ -2344,12 +2344,15 @@ class RoutingDialog(wx.Dialog):
         # the list for connectivity checking
         self.all_nets = []
 
+        from net_queries import multipad_unconnected_to_route
+        multipad_nc = multipad_unconnected_to_route(self.pcb_data)
         for net_id, net in self.pcb_data.nets.items():
             name = net.name
             if not name:
                 continue
-            # Skip unconnected nets
-            if name.lower().startswith('unconnected-'):
+            # Skip no-connect nets, except the multi-pad ones nothing joins
+            # (#1405), which the CLI wildcard routes
+            if name.lower().startswith('unconnected-') and name not in multipad_nc:
                 continue
             # Skip nets with fewer than 2 pads
             if len(net.pads) < 2:

@@ -662,7 +662,11 @@ def ungraded_entries(parts: dict) -> list:
         [k for k, v in parts.items() if v.get('ran') is False]
         + (['assembly.courtyard_gating']
            if not (parts.get('assembly') or {}).get('courtyard_gating_armed')
-           else []))
+           else [])
+        # #1390: a .kicad_dru size rule check_drc could not model is a
+        # declaration nothing grades.
+        + (['undersized.dru_rules']
+           if (parts.get('undersized') or {}).get('ungraded_rules') else []))
 
 
 def baseline_problem(path: str):
@@ -760,12 +764,16 @@ def score_drc(root: str, board: str, clearance=None, sizes=None,
     if baseline:
         args += ['--baseline', baseline]
     rc, out = run_tool(root, 'check_drc.py', *args)
+    # #1390: .kicad_dru size rules check_drc could not model. The copper they
+    # bind is ungraded, whatever `undersized` says about the rest.
+    _unsz = sorted(set(re.findall(r"NOT GRADED \(size\): rule '([^']*)'", out)))
+    _size_extra = {'ungraded_rules': _unsz} if _unsz else {}
     if 'NO DRC VIOLATIONS FOUND' in out:
         return ({'ran': True, 'count': 0, 'by_type': {}, 'graded_at': _graded_at(out),
                  'graphic_grazes_unverified': _unverified_grazes(out),
                  'via_in_paste': {'ran': True, 'count': 0, 'by_type': {},
                                   'undeclarable': _undeclarable_vias(out)}},
-                {'ran': True, 'count': 0, 'by_type': {}},
+                {'ran': True, 'count': 0, 'by_type': {}, **_size_extra},
                 {'ran': True, 'count': 0, 'by_type': {}})
     if not _DRC_TOTAL.search(out):
         r = skipped(f'check_drc.py produced no summary (rc={rc})')
@@ -805,7 +813,8 @@ def score_drc(root: str, board: str, clearance=None, sizes=None,
              'pair_rules': pairs,
              'via_in_paste': {'ran': True, 'count': sum(vip.values()), 'by_type': vip,
                               'undeclarable': _undeclarable_vias(out)}},
-            {'ran': True, 'count': sum(size.values()), 'by_type': size},
+            {'ran': True, 'count': sum(size.values()), 'by_type': size,
+             **_size_extra},
             {'ran': True, 'count': sum(rule.values()), 'by_type': rule})
 
 
@@ -889,6 +898,34 @@ def score_floorplan(root: str, board: str, intent: str, tmp: str) -> dict:
             'warning_rules': sorted({str(v.get('rule')) for v in warns})}
 
 
+def declared_pair_classes(board: str, names: dict, pairs, member=None) -> dict:
+    """{class: ['P / N', ...]} -- the net classes the project declares for
+    differential pairs (#1388): a class other than Default whose
+    ``diff_pair_gap`` or ``diff_pair_width`` differs from Default's (KiCad
+    writes both keys into every class, so a value merely present declares
+    nothing), restricted to the pairs (KiCad's MatchDpSuffix couples) with a
+    member net in it. {} when the project declares none."""
+    try:
+        from list_nets import read_design_rules, net_class_memberships
+        dr = read_design_rules(board)
+        classes = dr.get('classes') or {}
+        base = classes.get('Default') or {}
+        decl = {c for c, v in classes.items() if c != 'Default'
+                and any(k in v and v[k] != base.get(k)
+                        for k in ('diff_pair_gap', 'diff_pair_width'))}
+        if not decl:
+            return {}
+        if member is None:
+            member = net_class_memberships(board, names, dr)
+    except Exception:                                        # noqa: BLE001
+        return {}
+    out = {}
+    for p, n in pairs:
+        for c in (member.get(p, set()) | member.get(n, set())) & decl:
+            out.setdefault(c, []).append(f'{names[p]} / {names[n]}')
+    return {c: sorted(v) for c, v in out.items()}
+
+
 def score_diff_pairs(board: str, drc: dict, pcb=None) -> dict:
     """Every differential pair on the board, graded on its copper (#1303).
 
@@ -946,24 +983,82 @@ def score_diff_pairs(board: str, drc: dict, pcb=None) -> dict:
               'no_coupled_copper': sorted(k for k, r in measured.items()
                                           if r['coupled_mm'] <= 0),
               'by_type': rows}
-    if not rules:
-        return dict(skipped('no .kicad_dru skew / diff_pair_uncoupled rule '
-                            'declares what the pairs must meet; measured, '
-                            'not graded'), **detail)
+    # #1388: a rule whose condition matches no net grades nothing, and
+    # "N rules, 0 violations" read as a graded, clean component. Only the
+    # rules that bind something count as declaring what the pairs must meet.
+    try:
+        from kicad_dru import unbound_length_rules
+        from list_nets import net_class_memberships
+        member = net_class_memberships(board, names)
+        unbound = [r for kind in ('skew', 'diff_pair_uncoupled')
+                   for r in unbound_length_rules(
+                       [x for x in rules if x.kind == kind], names, member)]
+    except Exception:                                        # noqa: BLE001
+        member, unbound = {}, []
+    if unbound:
+        detail['unbound_rules'] = [r.name for r in unbound]
+    live = [r for r in rules if all(r is not u for u in unbound)]
+    if not live:
+        why = ('no .kicad_dru skew / diff_pair_uncoupled rule declares what '
+               'the pairs must meet' if not rules else
+               f"the .kicad_dru rule(s) {', '.join(repr(r.name) for r in unbound)} "
+               f"bind no net on this board, so nothing declares what the pairs "
+               f"must meet")
+        # A declared pair class is a declaration the board makes: it is named
+        # (`declared`) so the completion check can refuse to call the board
+        # done on pairs nothing grades.
+        declared = declared_pair_classes(board, names, pairs, member)
+        if declared:
+            detail['declared'] = declared
+            why += ('; the project DECLARES diff-pair class(es) '
+                    + ', '.join(f"{c} ({len(v)} pair(s))"
+                                for c, v in sorted(declared.items())))
+        return dict(skipped(why + '; measured, not graded'), **detail)
     if (drc or {}).get('count') is None:
         # check_drc grades the rules; without its run the rows are unknown,
         # not zero.
         return {'ran': True, 'count': None, 'rules': len(rules), **detail,
                 'reason': 'check_drc did not grade the board'}
-    return {'ran': True, 'count': sum(rows.values()), 'rules': len(rules), **detail}
+    return {'ran': True, 'count': sum(rows.values()), 'rules': len(live), **detail}
+
+
+def declared_impedance_nets(board: str) -> list:
+    """Net names a routing step DECLARED an impedance for (#1389): the
+    sibling project's ``net_impedance`` records (``route.py --impedance``),
+    minus the ones recorded ``applied: false`` -- no width was solved for those,
+    so their copper carries no impedance promise (check_impedance skips them
+    the same way). [] when there are none or the records cannot be read."""
+    try:
+        from protected_nets import read_impedance_specs, pro_path_for_board
+        specs = read_impedance_specs(pro_path_for_board(board))
+    except Exception:                                        # noqa: BLE001
+        return []
+    return sorted(nm for nm, sp in specs.items() if sp.get('applied') is not False)
+
+
+def _glob_literal(name: str) -> str:
+    """``name`` as an fnmatch pattern that matches only itself (a net named
+    ``/DQ[0]`` would otherwise be a character class)."""
+    return re.sub(r'([*?\[])', r'[\1]', name)
 
 
 def score_impedance(root: str, board: str, nets, tmp: str) -> dict:
-    """check_impedance -- reference-plane continuity and declared-gap audit."""
-    if not nets:
-        return skipped('no --impedance-nets given; impedance is ungraded')
+    """check_impedance -- reference-plane continuity and declared-gap audit.
+
+    Graded: the nets named by ``--impedance-nets`` UNION every net the board's
+    project records an impedance declaration for (#1389) -- a declaration is a
+    promise the board makes whether or not the caller named it. `count` is the
+    nets that fail it: a reference-plane crossing, or a coplanar gap the
+    declaration promised and the copper does not have (the width was solved
+    ASSUMING it)."""
+    declared = declared_impedance_nets(board)
+    globs = list(nets or [])
+    globs += [_glob_literal(n) for n in declared]
+    if not globs:
+        return skipped('no --impedance-nets given and the project records no '
+                       'net impedance declaration; impedance is ungraded')
     out_json = os.path.join(tmp, 'impedance.json')
-    rc, out = run_tool(root, 'check_impedance.py', board, '--nets', *nets,
+    rc, out = run_tool(root, 'check_impedance.py', board, '--nets', *globs,
                        '--json', out_json)
     if not os.path.isfile(out_json):
         return skipped(f'check_impedance.py exited {rc}: {out.strip()[-200:]}')
@@ -978,11 +1073,23 @@ def score_impedance(root: str, board: str, nets, tmp: str) -> dict:
         # four whole runs on one board while blocking summed without the
         # component and the exit code read 0 (test-board run 5, journal [11]).
         return {'ran': True, 'count': None,
-                'reason': 'no routed nets matched --impedance-nets'}
-    return {'ran': True, 'count': int(tot.get('nets_with_crossing') or 0),
-            'nets_analyzed': tot.get('nets_analyzed'),
-            'crossings': tot.get('crossings'),
-            'segments_over_void': tot.get('segments_over_void')}
+                'reason': 'no routed nets matched ' + (
+                    '--impedance-nets' if nets else 'the recorded impedance '
+                    'declarations')}
+    rows = d.get('nets') or []
+    broken = sorted(r['net_name'] for r in rows
+                    if (r.get('length_no_ground_mm', 0.0)
+                        + r.get('length_gap_wrong_mm', 0.0)) > 0.01)
+    crossing = sorted(r['net_name'] for r in rows if r.get('crossings'))
+    out = {'ran': True, 'count': len(set(broken) | set(crossing)),
+           'nets_with_crossing': int(tot.get('nets_with_crossing') or 0),
+           'nets_broken_promise': broken,
+           'nets_analyzed': tot.get('nets_analyzed'),
+           'crossings': tot.get('crossings'),
+           'segments_over_void': tot.get('segments_over_void')}
+    if declared:
+        out['declared_nets'] = declared
+    return out
 
 
 def score_length(board: str, groups_file: str) -> dict:
@@ -1433,7 +1540,7 @@ def build_parser():
     g.add_argument('--min-via-drill', type=float, metavar='MM')
     g.add_argument('--size-margin', type=float, metavar='MM',
                    help='absolute tolerance on the size checks (default: exact floor)')
-    p.add_argument('--impedance-nets', nargs='+', metavar='GLOB',
+    p.add_argument('--impedance-nets', nargs='+', action='extend', metavar='GLOB',
                    help='route.py --nets glob syntax, SPACE separated; commas '
                         'inside a token are split too (a comma-joined list used '
                         'to become one impossible glob that silently matched '
@@ -1623,13 +1730,19 @@ def main():
         _worst = sorted(_dp['pairs'].items(),
                         key=lambda kv: -(kv[1].get('skew_mm') or 0))[:3]
         print(f"DIFF PAIRS: {len(_dp['pairs'])} measured"
-              + ('' if _dp.get('ran') else ' (not graded: no .kicad_dru skew / '
-                 'diff_pair_uncoupled rule)')
+              + ('' if _dp.get('ran') else
+                 ' (not graded: no .kicad_dru skew / diff_pair_uncoupled rule'
+                 + (' binds a net' if _dp.get('unbound_rules') else '') + ')')
               + "; largest skew: " + ', '.join(
                   f"{k} {v['skew_mm']:.3f}mm "
                   f"(coupled {v['coupled_mm']:.2f} of "
                   f"{max(v['length_p_mm'], v['length_n_mm']):.2f}mm)"
                   for k, v in _worst))
+        if _dp.get('declared'):
+            print(f"  DECLARED, NOT GRADED: the project declares diff-pair "
+                  f"class(es) {', '.join(sorted(_dp['declared']))} and no rule "
+                  f"grades their pairs -- add a .kicad_dru skew / "
+                  f"diff_pair_uncoupled rule")
         if _dp.get('no_coupled_copper'):
             print(f"  NO COUPLED COPPER (P and N never run side by side): "
                   f"{', '.join(_dp['no_coupled_copper'])}")

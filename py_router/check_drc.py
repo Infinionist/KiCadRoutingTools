@@ -2812,6 +2812,13 @@ VIA_IN_PASTE_ACCEPTED = ('protected-via-in-paste', 'inherited-via-in-paste',
                          'undeclarable-via-in-paste')
 
 
+#: #1388: a rule that binds no net grades nothing, and "N rule(s)" read as
+#: graded and clean.
+_UNBOUND_RULE_NOTE = ("NOT GRADING: rule '{rname}' binds no net on this board "
+                      "(its condition names a class or net the board lacks, or a "
+                      "later rule takes every net it matches) -- it grades nothing")
+
+
 def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
     """Grade every `.kicad_dru` length window (#1313).
 
@@ -2880,10 +2887,14 @@ def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
                 'max_mm': rule.max_mm,
                 'excess_mm': round(abs(length - limit), 4),
             })
+    from kicad_dru import unbound_length_rules
+    unbound = [r.name for r in unbound_length_rules(rules, names, member)]
+    from net_queries import LENGTH_MEASURE_CALIBRATED_TO
     summary = {'rules': len(rules), 'graded': graded,
+               'calibrated_to_kicad': LENGTH_MEASURE_CALIBRATED_TO,
                'out_of_range': sum(1 for v in violations
                                    if v['type'] == 'length-out-of-range'),
-               'unmeasured': unmeasured,
+               'unmeasured': unmeasured, 'unbound_rules': unbound,
                'not_graded': {k: {'reason': r, 'nets': n}
                               for k, (r, n) in undecided.items()}}
     if not quiet:
@@ -2895,6 +2906,11 @@ def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
         for rname, (why, nets) in undecided.items():
             print(f"  NOT GRADED: rule '{rname}' ({why}) -- {len(nets)} net(s) "
                   f"it may bind are not graded here; KiCad still grades them")
+        for rname in unbound:
+            print(f"  {_UNBOUND_RULE_NOTE.format(rname=rname)}")
+        if graded:
+            from net_queries import length_measure_note
+            print(f"  (length) {length_measure_note()}")
         for n in notes:
             print(f"  .kicad_dru: {n}")
     return summary
@@ -3044,7 +3060,11 @@ def _pair_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
                 'limit_mm': rp.max_mm,
                 'gap_window': [gmin, gap.max]})
 
+    from kicad_dru import unbound_length_rules
+    unbound = [r.name for kind_rules in (skew_rules, unc_rules)
+               for r in unbound_length_rules(kind_rules, names, member)]
     summary = {'rules': len(rules),
+               'unbound_rules': unbound,
                'skew_graded': n_skew,
                'skew_out_of_range': sum(1 for v in violations
                                         if v['type'] == 'skew-out-of-range'),
@@ -3065,6 +3085,8 @@ def _pair_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
         for rname, (why, nn) in undecided.items():
             print(f"  NOT GRADED: rule '{rname}' ({why}) -- {len(nn)} net(s)/pair(s) "
                   f"it may bind are not graded here; KiCad still grades them")
+        for rname in unbound:
+            print(f"  {_UNBOUND_RULE_NOTE.format(rname=rname)}")
         for n in notes:
             print(f"  .kicad_dru: {n}")
     return summary
@@ -4123,6 +4145,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         _size_rules = None
         try:
             from design_rules import DesignRules as _DR
+            from design_rules import SIZE_KINDS as _SZK
             _size_rules = _DR.from_project(pcb_data, pcb_file, fab_floor=fab,
                                            copper_layers=copper_layers)
             if not (_size_rules.board_min or _size_rules.rules):
@@ -4150,6 +4173,20 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             print(f"Size floors ({copper_count}-layer fab): track >= {eff_min_track}mm, "
                   f"via dia >= {eff_min_via_dia}mm, via drill >= {eff_min_via_drill}mm"
                   + ("; per-net board/rule minimums applied (#530)" if _size_rules else ""))
+            # #1390: a .kicad_dru size rule whose condition is not modelled
+            # (A.insideCourtyard(), ...) binds copper the minimums above
+            # know nothing about, and used to vanish: the clearance half got
+            # a note, the track_width half none, and KiCad's own DRC then
+            # reported errors this grader called clean.
+            if _size_rules is not None:
+                for _r in _size_rules.rules:
+                    if _r.unsupported and not _r.honoured:
+                        _sk = sorted(k for k in _r.constraints if k in _SZK)
+                        if _sk:
+                            print(f"  NOT GRADED (size): rule '{_r.name}' "
+                                  f"({', '.join(_sk)}): {_r.unsupported} -- "
+                                  f"the copper it binds is not graded here; "
+                                  f"KiCad still enforces it")
 
     # Helper to check if a net_id matches the filter patterns
     def net_matches_filter(net_id: int) -> bool:
@@ -6138,7 +6175,7 @@ if __name__ == "__main__":
                              f'Raises the floor, never lowers it.')
     parser.add_argument('--clearance-margin', type=float, default=0.05,
                         help='Fraction of clearance to use as tolerance (default: 0.05 = 5%%). Violations smaller than clearance*margin are ignored.')
-    parser.add_argument('--nets', '-n', nargs='+', default=None,
+    parser.add_argument('--nets', '-n', nargs='+', action='extend', default=None,
                         help='Optional net name patterns to focus on (fnmatch wildcards supported, e.g., "*lvds*")')
     parser.add_argument('--debug-lines', '-d', action='store_true',
                         help='Write debug lines to User.7 layer showing violation locations')
