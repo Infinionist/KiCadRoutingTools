@@ -40,6 +40,8 @@ TURN_PADS = 3
 
 
 def _rows_of(model, ls) -> List[Dict]:
+    if not ls:
+        return []
     T = model._lim._tether_terms
     fps = model.pcb.footprints
     out = []

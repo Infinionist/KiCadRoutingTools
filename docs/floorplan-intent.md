@@ -192,12 +192,12 @@ findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_z
 `mechanical_drift` (raised only when a `mechanical.json` is read, and
 settable to `error` only -- `warn` is refused, since the pose is a recorded
 fact),
-the twelve `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
+the thirteen `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
 `block_glob_literal`, `plan_fixed_outside_zone`, `plan_fixed_pose_conflict`,
 `plan_zone_overfull`,
 `plan_zone_crowded`, `plan_edge_overfull`, `plan_edge_crowded`,
 `plan_board_overfull`, `plan_board_crowded`, `plan_fixed_overlap`,
-`plan_fixed_overlap_budget`), `edge_connector_side` (settable to `warn`
+`plan_fixed_overlap_budget`, `plan_template_keepout`), `edge_connector_side` (settable to `warn`
 only -- `error` is refused, because the rule is advisory by design),
 `edge_oversubscribed` (raised by check_floorplan's grade and by
 `--plan-only`), plus seven more raised BESIDE a rule's own name —
@@ -217,8 +217,8 @@ Every name defaults to **error** except these, which default to **warn**:
 and `replicate_unresolved`, `template`, `template_unresolved` and
 `template_ground_return`,
 `keepout_allow_unresolved`,
-`intent_zone_overlap`, `fixed_pose_overlap_waived`, `plan_fixed_overlap` and
-the three `plan_*_crowded` findings and `edge_oversubscribed`;
+`intent_zone_overlap`, `fixed_pose_overlap_waived`, `plan_fixed_overlap`,
+`plan_template_keepout` and the three `plan_*_crowded` findings and `edge_oversubscribed`;
 `pins_to_edge` and
 `edge_connector_side` are always warn; `mechanical_drift` is warn for a
 move the anchor already reports and error for a turn. Writing
@@ -1138,6 +1138,15 @@ Two things read it:
   or on the other face is one finding naming the worst members; every
   template prints a line, and `--json` carries the readings as
   `templates[]`.
+- **A keep-out against a template** (`plan_template_keepout`, **warn** by
+  default, raised by `--plan-only`): a keep-out that binds a member but not
+  the chip (the chip's reference is in its `allow`, the member's is not)
+  forbids the template pose wherever the chip stands under it. Where the chip's
+  pose is known (locked in the board, or a `fixed_poses[]` entry) the member's
+  template pose is tested against the region and the finding says it lies
+  inside; otherwise it says the region admits the chip but binds the member.
+  `place_simple` names the same conflict for a placed chip, and a member left
+  past its `tolerance_mm`, in its report (`template_keepout`, `template_off`).
 - **The ground return** (`template_ground_return`, **warn** by default), on a
   row whose `kind` is `switching stage`. A member can sit exactly at its
   template pose and the template still be wrong: an output cap fitted with

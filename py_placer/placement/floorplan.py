@@ -6824,6 +6824,67 @@ def rule_template(ctx) -> Iterator[Violation]:
             expected={'tolerance_mm': tol})
 
 
+def template_keepout_findings(intent, parts, anchor_pose=None) -> List[Dict]:
+    """The intent's keep-outs against its datasheet templates (#1387): a
+    keep-out that binds a template MEMBER but not the template's anchor makes
+    the template pose forbidden wherever the anchor stands under it, and the
+    member is then carried (`simple.follow`) into the region it may not enter
+    -- or left off its template pose. Nothing else says so: the keep-out
+    admits the chip, the template places its support parts, and the drift is
+    only a WARN.
+
+    `parts` maps each ref to an object with `sides`, `ensure_rotation` and
+    `grade_rects` (a `quench.QuenchState`'s parts). `anchor_pose(ref)` gives
+    the anchor's `(x, y, rot)` where it is known (a placement, a locked or
+    declared pose), else None. Returns `[{'index', 'anchor', 'ref', 'keepout',
+    'forced', 'at'}]`: `forced` where the member's template pose for that
+    anchor pose lies inside the keep-out (`at` is the pose); else the keep-out
+    admits the anchor but not the member, so some anchor poses are refused
+    their own template."""
+    from .templates import member_target
+    out = []
+    for i, decl in enumerate(intent.templates):
+        a = decl['anchor']
+        A = parts.get(a)
+        if A is None or not intent.keepouts:
+            continue
+        free = {k['name'] for k in intent.keepouts} - {
+            k['name'] for k in keepouts_for_ref(intent.keepouts, a, A.sides)}
+        apose = anchor_pose(a) if anchor_pose is not None else None
+        for m in decl['members']:
+            P = parts.get(m['ref'])
+            if P is None:
+                continue
+            for k in keepouts_for_ref(intent.keepouts, m['ref'], P.sides):
+                if apose is not None:
+                    pose = member_target(apose, m)
+                    P.ensure_rotation(pose[2])
+                    if keepout_hit(k, P.grade_rects(*pose)):
+                        out.append({'index': i, 'anchor': a, 'ref': m['ref'],
+                                    'keepout': k['name'], 'forced': True,
+                                    'at': [round(v, 3) for v in pose]})
+                elif k['name'] in free:
+                    out.append({'index': i, 'anchor': a, 'ref': m['ref'],
+                                'keepout': k['name'], 'forced': False, 'at': None})
+    return out
+
+
+def template_keepout_text(f: Dict) -> str:
+    """One finding of `template_keepout_findings`, in words."""
+    if f['forced']:
+        return (f"keep-out {f['keepout']!r} binds {f['ref']}, a member of {f['anchor']}'s "
+                f"template, and the template puts {f['ref']} at "
+                f"({f['at'][0]:g}, {f['at'][1]:g}, {f['at'][2]:g}) for {f['anchor']}'s pose, "
+                f"inside it: the template pose is forbidden there, so {f['ref']} cannot "
+                f"stand on its template; add {f['ref']} to the keep-out's `allow`, or "
+                f"move {f['anchor']}")
+    return (f"keep-out {f['keepout']!r} admits {f['anchor']} but binds {f['ref']}, a member "
+            f"of its template: wherever {f['anchor']} stands with {f['ref']}'s template "
+            f"pose inside the region, {f['ref']} cannot be on the template; add "
+            f"{f['ref']} to the keep-out's `allow` if the region should hold the whole "
+            f"stage")
+
+
 def rule_pins_to_edge(ctx) -> Iterator[Violation]:
     """A part whose pad row faces the board outline with nothing beyond it.
 
@@ -7047,6 +7108,10 @@ _NON_RULE_SEVERITIES = frozenset({
     # far from the chip's is a claim about the template itself, which a
     # member exactly at its pose can still break. WARN by default.
     'template_ground_return',
+    # Raised by `plan_check`, beside `template`: a keep-out that binds a
+    # template member but not its anchor (`template_keepout_findings`). WARN
+    # by default, like the template it concerns.
+    'plan_template_keepout',
     # #959 (#1001). Raised by `grade` itself when `mechanical.json` is read:
     # a part that moved off (or turned away from) its declared mechanical
     # pose. WARN for a move the grade-time anchor already reports at ERROR
@@ -8900,6 +8965,26 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                          f"this is the policy's problem, not the plan's"),
                 measured={'utilisation': util1},
                 expected={'utilisation': '<= 1.0'}))
+    # 9. #1387: a keep-out that binds a template member but not its anchor.
+    #    The anchor's pose is known where it is locked in the board or
+    #    declared (`fixed_poses[]`): then the member's template pose is tested
+    #    against the region itself.
+    def _anchor_pose(ref):
+        f = _fx.get(ref)
+        if f is not None and f.get('rot') not in (None, 'unknown'):
+            return (float(f['x']), float(f['y']), float(f['rot']) % 360.0)
+        if ref in ctx.locked and ref in state.parts:
+            p = state.parts[ref]
+            return (p.x, p.y, p.rot)
+        return None
+    for f in template_keepout_findings(intent, state.parts, _anchor_pose):
+        out.append(Violation(
+            rule='plan_template_keepout',
+            severity=intent.severity_of('plan_template_keepout', WARN),
+            ref=f['ref'], block=ctx.owner.get(f['ref']),
+            message=f"templates[{f['index']}] ({f['anchor']}): " + template_keepout_text(f),
+            measured={k: f[k] for k in ('keepout', 'forced', 'at')},
+            expected={'allow': f['ref']}))
     out.sort(key=lambda v: v.sort_key())
     return out, measured
 

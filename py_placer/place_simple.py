@@ -274,6 +274,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
                   claim_limits=limits, claim_limit_weight=args.claim_limit_weight,
                   templates=tmpls, template_weight=args.template_weight)
     model.claim_arity = model_arity
+    model.tmpl_tolerance = {t['anchor']: t.get('tolerance_mm') for t in tmpls}
     # the unlocked parts the intent declares on an edge, seated there; an
     # edge that cannot hold all its declared parts together seats the most
     # that fit and records itself (`edge_oversubscribed`)
@@ -563,6 +564,9 @@ def _name_judged(a, seeds, summaries):
            # None not graded) against the board it was placed from
            'assembly': {str(s): (summaries[s].get('assembly') or {}).get('blocking')
                         for s in seeds if s in summaries},
+           # each placed seed's template members past their tolerance (#1387)
+           'template_off': {str(s): summaries[s].get('template_off') or []
+                            for s in seeds if s in summaries},
            # each placed seed's far-face parts under a ball field (#1425)
            'bga_field': {str(s): summaries[s].get('bga_field') or []
                          for s in seeds if s in summaries},
@@ -944,7 +948,8 @@ def main(argv=None):
     for i, (anc, m) in enumerate(model.tmpl):
         P = state.parts[m['ref']]
         _mean, worst = pad_deviation(P, (P.x, P.y, P.rot), model.template_target(i))
-        drift.append({'anchor': anc, 'ref': m['ref'], 'worst_mm': round(worst, 3)})
+        drift.append({'anchor': anc, 'ref': m['ref'], 'worst_mm': round(worst, 3),
+                      'tolerance_mm': model.tmpl_tolerance.get(anc)})
     # a refused declared pose is the intent's, the same in every seed: it is
     # reported apart (`refused`), not counted against the seed (#1297)
     illegal = [r for r in movable if not ok(r)]
@@ -970,6 +975,22 @@ def main(argv=None):
     if drift:
         print("  template drift (worst pad, mm): " + ', '.join(
             f"{d['ref']} {d['worst_mm']:.2f}" for d in drift))
+    # a member left past its template's tolerance is check_floorplan's
+    # `template` WARN, which does not move the judge: say so here (#1387)
+    off = [d for d in drift if d['tolerance_mm'] is not None
+           and d['worst_mm'] > d['tolerance_mm'] + 1e-6]
+    if off:
+        print("  WARNING: off its datasheet template past the tolerance: " + ', '.join(
+            f"{d['ref']} ({d['anchor']}) {d['worst_mm']:.2f} mm > {d['tolerance_mm']:g}"
+            for d in off) + "; check_floorplan grades this a WARN (unless the intent's "
+            "`severity` promotes `template`), so the judge ranks the seed no lower for it")
+    # a keep-out that binds a template member but not its chip forbids the
+    # template pose where the chip stands (#1387)
+    tk = [f for f in floorplan.template_keepout_findings(
+        intent, state.parts, lambda r: (state.parts[r].x, state.parts[r].y, state.parts[r].rot))
+        if f['forced']]
+    for f in tk:
+        print(f"  WARNING: {floorplan.template_keepout_text(f)}")
     # an `apart` hint whose groups still touch prices the least gap over all
     # their member pairs, 0 at any pose where they touch: a flat
     # weight x APART_MM that steered nothing (#1330)
@@ -1015,14 +1036,15 @@ def main(argv=None):
               'decap_residual': resid, 'decap_repair': mended,
               'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
-              'hints_saturated': saturated,
+              'hints_saturated': saturated, 'template_keepout': tk,
+              'template_off': off,
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
     if a.json:
         json.dump(report, open(a.json, 'w', encoding='utf-8'), indent=1)
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
                                            'refused', 'oversubscribed', 'claim_arity', 'floorplan',
-                                           'assembly', 'bga_field', 'decap_residual', 'hints_saturated', 'estimate_fallback', 'seconds')}))
+                                           'assembly', 'bga_field', 'template_off', 'decap_residual', 'hints_saturated', 'estimate_fallback', 'seconds')}))
     return 4 if illegal or refused or model.edge_oversubscribed else 0
 
 
