@@ -9488,6 +9488,14 @@ For differential pair routing, use route_diff.py:
     # negative rail (-12V, -5V) is read as an unknown option and argparse exits
     # 2 before this line's result is ever used.
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
+    __import__("cli_nets").refuse_unusable_inputs(parser, args)  # #1410
+    if args.power_nets and args.power_nets_widths and \
+            len(args.power_nets) != len(args.power_nets_widths):
+        # Checked here so the CLI answers with a usage error (the engine's own
+        # ValueError stays as the GUI's guard).
+        parser.error(f"--power-nets ({len(args.power_nets)}) and "
+                     f"--power-nets-widths ({len(args.power_nets_widths)}) "
+                     f"must have the same length")
     # #530: --clearance-ceiling is the clamp switch (#439 used the PRESENCE of
     # --clearance). Given -> non-Default classes are capped at min(class, ceiling)
     # and the output .kicad_pro clamps them to the routed floor. Omitted -> honor

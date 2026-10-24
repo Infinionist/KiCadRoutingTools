@@ -2791,6 +2791,7 @@ Examples:
                            enforce_fab_floors, count_copper_layers_in_file)
     add_fab_tier_args(parser)
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
+    __import__("cli_nets").refuse_unusable_inputs(parser, args)  # #1410
     # #530: --clearance-ceiling is the clamp switch (see route.py). Given ->
     # non-Default classes capped at min(class, ceiling) + writeback clamps.
     # Omitted -> honor classes: base = --clearance, else the board Default
