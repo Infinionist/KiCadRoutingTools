@@ -3371,8 +3371,27 @@ def _bezier_to_segments(p0, p1, p2, p3, num_segments: int = 16):
     return list(zip(pts, pts[1:]))
 
 
-def _circle_to_segments(cx, cy, r, num_segments: int = 64):
-    """Circle -> closed ring of line segments."""
+#: Chord sag allowed on an Edge.Cuts arc or circle (#1404). Copper is cleared
+#: against the LINEARISED outline, and a chord lies inside its arc: on a convex
+#: edge (a round cutout, a rounded corner seen from the copper side) the
+#: polygon is that sag FARTHER from the copper than the true edge, so a track
+#: the router thought exactly at the edge floor sat up to the sag inside it
+#: (KiCad: 0.1980 against 0.2000 with the 5 um default). 0.5 um keeps the
+#: model inside the sub-micron slack the grid-tie epsilon and KiCad's own
+#: reporting resolution leave.
+EDGE_CHORD_EPS = 0.0005
+
+
+def _circle_to_segments(cx, cy, r, num_segments: int = 64,
+                        chord_eps: float = 0.0):
+    """Circle -> closed ring of line segments. With `chord_eps` the ring has
+    as many segments as keep the chord sag at or under it (never fewer than
+    `num_segments`, at most 2048)."""
+    if chord_eps and r > 0:
+        max_step = 2.0 * math.acos(max(-1.0, min(1.0, 1.0 - chord_eps / r)))
+        if max_step > 0:
+            num_segments = max(num_segments,
+                               min(2048, int(math.ceil(2 * math.pi / max_step))))
     pts = [(cx + r * math.cos(2 * math.pi * k / num_segments),
             cy + r * math.sin(2 * math.pi * k / num_segments))
            for k in range(num_segments + 1)]
@@ -3400,7 +3419,8 @@ def _collect_edge_cuts_segments(content: str) -> List[Tuple[Tuple[float, float],
         sx, sy = float(m.group(1)), float(m.group(2))
         mx, my = float(m.group(3)), float(m.group(4))
         ex, ey = float(m.group(5)), float(m.group(6))
-        segments.extend(_arc_to_segments((sx, sy), (mx, my), (ex, ey)))
+        segments.extend(_arc_to_segments((sx, sy), (mx, my), (ex, ey),
+                                         chord_eps=EDGE_CHORD_EPS))
 
     # gr_rect - expand to 4 line segments
     rect_pattern = r'\(gr_rect\s+\(start\s+([\d.-]+)\s+([\d.-]+)\)\s+\(end\s+([\d.-]+)\s+([\d.-]+)\)' + _GR_ELEMENT_GAP + r'\(layer\s+"Edge\.Cuts"\)'
@@ -3436,7 +3456,8 @@ def _collect_edge_cuts_segments(content: str) -> List[Tuple[Tuple[float, float],
         cx, cy, ex, ey = (float(v) for v in m.groups())
         r = math.hypot(ex - cx, ey - cy)
         if r > 1e-6:
-            segments.extend(_circle_to_segments(cx, cy, r))
+            segments.extend(_circle_to_segments(cx, cy, r,
+                                                chord_eps=EDGE_CHORD_EPS))
 
     # Footprint-embedded Edge.Cuts (#304): reversible split keyboards draw
     # per-LED cutout windows as fp_lines on Edge.Cuts inside the LED
@@ -3498,14 +3519,16 @@ def _collect_footprint_edge_segments_by_ref(content: str):
         for m in re.finditer(r'\(fp_arc\s+\(start\s+([\d.-]+)\s+([\d.-]+)\)\s+\(mid\s+([\d.-]+)\s+([\d.-]+)\)\s+\(end\s+([\d.-]+)\s+([\d.-]+)\)'
                              + gap + r'\(layer\s+"Edge\.Cuts"\)', block, re.DOTALL):
             g = [float(v) for v in m.groups()]
-            for p1, p2 in _arc_to_segments((g[0], g[1]), (g[2], g[3]), (g[4], g[5])):
+            for p1, p2 in _arc_to_segments((g[0], g[1]), (g[2], g[3]), (g[4], g[5]),
+                                           chord_eps=EDGE_CHORD_EPS):
                 out.append((to_g(*p1), to_g(*p2)))
         for m in re.finditer(r'\(fp_circle\s+\(center\s+([\d.-]+)\s+([\d.-]+)\)\s+\(end\s+([\d.-]+)\s+([\d.-]+)\)'
                              + gap + r'\(layer\s+"Edge\.Cuts"\)', block, re.DOTALL):
             cx, cy, ex, ey = (float(v) for v in m.groups())
             r = math.hypot(ex - cx, ey - cy)
             if r > 1e-6:
-                for p1, p2 in _circle_to_segments(cx, cy, r):
+                for p1, p2 in _circle_to_segments(cx, cy, r,
+                                                  chord_eps=EDGE_CHORD_EPS):
                     out.append((to_g(*p1), to_g(*p2)))
         # fp_curve: without it a footprint-embedded curved edge never reaches
         # the chainer, so the outline cannot close and the true extent is
@@ -9789,14 +9812,16 @@ def _extract_board_contours_from_pcbnew(board, to_mm, include_footprints=True,
             segs.extend(_arc_to_segments(
                 (to_mm(start.x), to_mm(start.y)),
                 (to_mm(mid.x), to_mm(mid.y)),
-                (to_mm(end.x), to_mm(end.y))
+                (to_mm(end.x), to_mm(end.y)),
+                chord_eps=EDGE_CHORD_EPS
             ))
         elif shape_type == getattr(pcbnew, 'SHAPE_T_CIRCLE', getattr(pcbnew, 'S_CIRCLE', -1)):
             c = drawing.GetCenter()
             e = drawing.GetEnd()
             r = math.hypot(to_mm(e.x) - to_mm(c.x), to_mm(e.y) - to_mm(c.y))
             if r > 1e-6:
-                segs.extend(_circle_to_segments(to_mm(c.x), to_mm(c.y), r))
+                segs.extend(_circle_to_segments(to_mm(c.x), to_mm(c.y), r,
+                                                chord_eps=EDGE_CHORD_EPS))
         elif shape_type == getattr(pcbnew, 'SHAPE_T_BEZIER', getattr(pcbnew, 'S_CURVE', -1)):
             p0, p3 = drawing.GetStart(), drawing.GetEnd()
             c1, c2 = drawing.GetBezierC1(), drawing.GetBezierC2()
