@@ -2512,7 +2512,7 @@ if __name__ == "__main__":
     enable_utf8_console()  # cp1252-safe non-ASCII prints (issue #152)
     parser = argparse.ArgumentParser(description='Check PCB for track connectivity (disconnected routes)')
     parser.add_argument('pcb', help='Input PCB file')
-    parser.add_argument('--nets', '-n', nargs='+', default=None,
+    parser.add_argument('--nets', '-n', nargs='+', action='extend', default=None,
                         help='Net name patterns to check (fnmatch wildcards supported, e.g., "*lvds*")')
     parser.add_argument('--component', '-C',
                         help='Check all nets connected to this component (e.g., U1)')

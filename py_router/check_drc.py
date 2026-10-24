@@ -6138,7 +6138,7 @@ if __name__ == "__main__":
                              f'Raises the floor, never lowers it.')
     parser.add_argument('--clearance-margin', type=float, default=0.05,
                         help='Fraction of clearance to use as tolerance (default: 0.05 = 5%%). Violations smaller than clearance*margin are ignored.')
-    parser.add_argument('--nets', '-n', nargs='+', default=None,
+    parser.add_argument('--nets', '-n', nargs='+', action='extend', default=None,
                         help='Optional net name patterns to focus on (fnmatch wildcards supported, e.g., "*lvds*")')
     parser.add_argument('--debug-lines', '-d', action='store_true',
                         help='Write debug lines to User.7 layer showing violation locations')

@@ -1355,7 +1355,7 @@ def build_parser():
     g.add_argument('--min-via-drill', type=float, metavar='MM')
     g.add_argument('--size-margin', type=float, metavar='MM',
                    help='absolute tolerance on the size checks (default: exact floor)')
-    p.add_argument('--impedance-nets', nargs='+', metavar='GLOB',
+    p.add_argument('--impedance-nets', nargs='+', action='extend', metavar='GLOB',
                    help='route.py --nets glob syntax, SPACE separated; commas '
                         'inside a token are split too (a comma-joined list used '
                         'to become one impossible glob that silently matched '
