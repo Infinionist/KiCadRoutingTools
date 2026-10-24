@@ -70,8 +70,8 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
 <dt>tooth / berth</dt><dd>where a lane escapes at the source (tooth) and arrives at the destination (berth): the end of its escape stub, just outside the array. A surface stub fixes the layer the lane starts or ends on. A stub that ends in a via (a <b>via end</b>) leaves the layer to the solve.</dd>
 <dt>trunk</dt><dd>a straight line from the source array's pad box through the destination's. Lanes that arrive on the destination's facing side end on it.</dd>
 <dt>ring</dt><dd>a road round the destination, outside its pads and the parts hugging it. A lane whose berth is on another side of the destination leaves the trunk and rides a ring to it.</dd>
-<dt>cut</dt><dd>(two meanings) the point on the destination's far side where the two rings meet, which decides which way round each lane goes (<a href="#frame">the frame</a>); and a "not this combination" rule sent back to CP-SAT after a later stage found a plan that cannot be drawn (<a href="#sec-loop">the loop</a>).</dd>
-<dt>u</dt><dd>a lane's route coordinate: distance along the trunk from its tooth, then along its ring to its berth. Every crossing and layer change is a position in <code>u</code>.</dd>
+<dt>cut</dt><dd>(two meanings) the point where an array's outline is unrolled into one order: the destination's, away from its facing side, where its two rings meet and which decides which way round each lane goes, and the source's, on its far face (<a href="#frame">the frame</a>); and a "not this combination" rule sent back to CP-SAT after a later stage found a plan that cannot be drawn (<a href="#sec-loop">the loop</a>).</dd>
+<dt>u</dt><dd>a lane's route coordinate: distance along the trunk from its tooth (or from the end of its lead-in, for a tooth on the source's far side), then along its ring to its berth. Every crossing and layer change is a position in <code>u</code>.</dd>
 <dt>crossing</dt><dd>a pair of lanes whose order is swapped between source and destination. They must pass through each other, so at that point they sit on different layers.</dd>
 <dt>via</dt><dd>a layer change. Vias are what the discrete plan tries to minimise. Every via is a through via.</dd>
 <dt>convex</dt><dd>a region with no dents, holes or separate pieces: every point between two allowed points is allowed too. An LP's region always is, which is why the LP finds the best answer overall and not just the best nearby (<a href="#sec-lp">section 2</a>).</dd>
@@ -113,9 +113,9 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
 <!-- ======================= 1. CP-SAT ======================= -->
 <h3 id="ends">0a &nbsp; Ends and fanout: the ends decide the braid (<code>fanout_from_plan.py</code>, <code>whole_ends.py</code>)</h3>
 <p>Before any solver runs, the fanout decides where every lane <i>leaves</i> the source BGA (its <b>tooth</b>) and where it <i>arrives</i> at the destination (its <b>berth</b>), including which layer it is on at each end. Those choices fix the whole puzzle: the <b>order</b> of teeth around the source and of berths around the destination decides which pairs must cross, and the end layers decide what each crossing costs. That is why the fanout is not a separate chore. <code>whole_ends</code> scores candidate ends by the vias the resulting braid would need (an estimate from the ends alone), and the fanout lays the cheapest, then judges what it actually laid. Crowded ends found later by the audit come back here as feedback.</p>
-<p>The ends are chosen from a <b>menu</b> of ways out of each ball. With the <b>escape fanout</b> (<code>route_bus</code>'s <code>escape</code> mode) the menu is the human's: every netted ball of both arrays is first <b>dog-boned</b> (a short stub to a via on a diagonal gap point, <code>dogbone_arrays.py</code>), an outer ball with a clear way out is left on the surface, and a lane may then leave its ball's via on any routing layer: half a pitch onto a ball line, a sidestep to a line beside it, or onto an empty street through the array (<code>escape_plan.py</code>). An array an earlier bus already routed through is planned <i>whole</i> each round with the new bus, its other nets and plane balls included (<code>joint_escape.py</code>).</p>
+<p>The ends are chosen from a <b>menu</b> of ways out of each ball. With the <b>escape fanout</b> (<code>route_bus</code>'s <code>escape</code> mode) the menu is the human's: every netted ball of both arrays is first <b>dog-boned</b> (a short stub to a via on a diagonal gap point, <code>dogbone_arrays.py</code>), an outer ball with a clear way out is left on the surface, and a lane may then leave its ball's via on any routing layer: half a pitch onto a ball line, a sidestep to a line beside it, or onto an empty street through the array (<code>escape_plan.py</code>). An array an earlier bus already routed through is planned <i>whole</i> each round with the new bus, its other nets and plane balls included (<code>joint_escape.py</code>). The bus step has two other modes. <code>joint</code> also fans out the arrays' other nets and plane balls: the bus is laid round a via site kept free in every other ball, and the rest are planned together round it in one CP-SAT model, plane balls sharing drop vias or strapped to a neighbour. <code>plain</code> fans out the bus alone.</p>
 <div class="card">
-  <p style="margin-top:0">Five lanes leave the source (left, fixed order) and must be given berths at the destination (right). Press a <b>&#8645;</b> button to swap two neighbouring berths, and click a <b>layer badge</b> to flip an end's layer. The counters give the crossings your choice forces and the <i>minimum</i> vias for them (found exactly, as in 1a). Then press <b>Best ends</b>: it tries all 120 berth orders for the layers you set, which is what the fanout's ends model does with its escape menus.</p>
+  <p style="margin-top:0">Five lanes leave the source (left, fixed order) and must be given berths at the destination (right). Press a <b>&#8645;</b> button to swap two neighbouring berths, and click a <b>layer badge</b> to flip an end's layer. The counters give the crossings your choice forces and the <i>minimum</i> vias for them (found exactly, as in 1a). Then press <b>Best ends</b>: it tries all 120 berth orders for the layers you set. That is a brute-force version of the choice the ends model makes from its escape menus, which are far too big to try in full (<a href="#ends-search">0b</a>).</p>
   <svg id="eSvg" viewBox="0 0 800 260"></svg>
   <div class="row"><button id="eBest" class="primary">Best ends</button><button id="eRev">Reverse berths</button><button id="eLay">New layers</button><button id="eId">Same order</button>
    <span class="stat">crossings: <b id="eCross">0</b></span><span class="stat">minimum vias: <b id="eVias">0</b></span></div>
@@ -140,7 +140,7 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
    <li>On more than two layers the estimate and the search loop run in the router's Rust core (<code>ends_kernel.py</code>), forming the same numbers in the same order as the Python, so both walk the same states.</li>
   </ul></details>
 </div>
-<p><b>Why a local search here, when the rest of the pipeline uses CP-SAT and an LP.</b> The search starts from the fanout's own greedy choice of berths (every berth clear of the others), or on a re-plan from the previous round's, and improves it by the moves above. CP-SAT is still used, but as the final judge rather than the search: the best few ends the search reaches are re-ranked on the exact route (<code>best_exact</code>). The ends are hard to put in one exact model, for three reasons:</p>
+<p><b>Why a local search here, when the rest of the pipeline uses CP-SAT and an LP.</b> The search starts from the fanout's own greedy choice of berths (every berth clear of the others), from CP-SAT's joint ends on an escape fanout (below), or on a re-plan from the previous round's, and improves it by the moves above. CP-SAT is still used, but as the final judge rather than the search: the best few ends the search reaches are re-ranked on the exact route (<code>best_exact</code>). The ends are hard to put in one exact model, for three reasons:</p>
 <ul>
  <li><b>Scoring one choice of ends is itself a solve.</b> What a set of ends really costs is the via count of the route they force, and that is the whole CP-SAT solve of section 1: seconds to tens of seconds for each candidate. A model that chose the ends and the route together would be that solve with every lane's menu of exits added to it. So the search steers by an <b>estimate</b> that takes milliseconds and is exact in its parts: on each layer, the crossings a lane must leave the layer for are a permutation graph, whose least cover is found exactly by a chain.</li>
  <li><b>Much of what the fanout can lay is a check, not an equation</b>: two exits that conflict, another net's copper between a pair's tips, a move the fanout refused. A search simply skips such a move, where a model would need each one written as a constraint.</li>
@@ -149,25 +149,26 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
 <p>What it gives up is a proof. CP-SAT proves the fewest vias <i>for the ends it is given</i>, and the LP the best geometry for that plan, but nothing proves the ends themselves are the best. The search stops at a local optimum. The kicks and the exact re-ranking make a poor one less likely, but do not rule it out.</p>
 <p><b>Where CP-SAT does choose the ends.</b> On the escape fanout, before any local search, one CP-SAT model picks every lane's tooth and berth together from the same menus (the <b>joint ends</b>): one choice per lane and end, the same conflicts, and two lanes whose orders differ round the boxes crossing on different layers. It counts the fanout's vias and <b>ten vias a crossing</b>, so it puts crossings first: the local search's objective prices a crossing at a hundredth of a via, and on a dense bus it bought stacks back with crossings the solve could then not place. Whichever ends are chosen are then put to the <b>solve's check</b>: the bench they would make is built in memory and the whole solve (section 1) is run on it under its strict rules. If it finds no plan, the crowded lanes are priced and the ends are searched again (up to four times). The ends model also chooses the <b>cut</b> on the destination's far side, which is where <a href="#frame">the frame</a> takes over.</p>
 
-<h3 id="frame">0c &nbsp; The frame: one road per lane, the destination unrolled (<code>whole_frame.py</code>)</h3>
+<h3 id="frame">0c &nbsp; The frame: one road per lane, both arrays unrolled (<code>whole_frame.py</code>)</h3>
 <p>The ends are points round two arrays, but both solvers want each lane to be <b>one road with one coordinate</b>. The frame builds those roads from the board alone.</p>
 <p><b>One lane, worked through.</b> Take a lane whose berth is on the destination's <i>far</i> side, facing away from the source. It leaves its tooth and runs along the <b>trunk</b>, the straight line from the source's pad box to the destination's. In front of the destination it reaches the <b>arrival line</b> (<code>H0</code>). There it leaves the trunk onto the <b>north ring</b>, a road round the destination outside its pads, follows it round the corner and down the far side, and drops into its berth (lane D in the figure below). Its route coordinate <code>u</code> is how far it has come: 32 mm along the trunk, then 23.7 mm along the ring, so <code>u</code> runs from 0 to 55.7. A lane whose berth faces the source never leaves the trunk at all. Every crossing and every via the solve places is a position in <code>u</code>.</p>
-<p><b>Which way round</b> is decided by the <b>cut</b>, one point on the destination's outline away from the facing side. Berths on one side of the cut go round the north, the others round the south. Now <b>unroll</b> the destination: cut its outline there and straighten it into a line. The berths stand in one order, north to south. Unroll the source the same way (its outline cut on its own far side) and the teeth stand in one order too. <b>Two lanes cross exactly when those two orders disagree.</b> Everything the solve needs to know about who crosses whom is in those two lists, so moving the cut changes the crossings, and with them the vias. It also changes how far each lane rides round.</p>
+<p><b>Which way round</b> is decided by the <b>cut</b>, one point on the destination's outline away from the facing side. Berths on one side of the cut go round the north, the others round the south. Now <b>unroll</b> the destination: cut its outline there and straighten it into a line. The berths stand in one order, north to south. <b>Two lanes cross exactly when that order and the teeth's disagree.</b></p>
+<p><b>The source is unrolled too</b>, from a cut on its own <i>far</i> face, but it has no rings. A tooth on its facing face starts on the trunk. A tooth on its north or south face runs along that face and joins the trunk past the corner, and its <code>u</code> counts that run. A tooth on its far face cannot be carried by the trunk at all (the trunk's columns stand across that stretch), so it goes straight out of the face and round the corner on a <b>lead-in</b>: north of the source's cut round the north, south of it round the south, then on as a side face's lane. On each side the lane launched first rides outermost. So the teeth stand in one order too, north to south, and the source's cut decides which way a far-face tooth goes round. Everything the solve needs to know about who crosses whom is in those two lists: moving either cut changes the crossings, and with them the vias. It also changes how far each lane rides round.</p>
 <div class="card">
-  <p style="margin-top:0">Nine lanes leave the source (left) and berth on all four sides of the destination (right). <b>Click a grey dot</b> on the destination's outline to put the cut there. Below the board, the two unrolled orders: a pair of lines that crosses there is a pair of lanes that crosses on the board. <b>Click a lane</b> (or its chip below) to see its <code>u</code>.</p>
-  <svg id="fSvg" viewBox="0 0 900 505"></svg>
-  <div class="row"><button id="fFar" class="primary">Cut at the far side's widest gap</button><button id="fFew">Fewest crossings</button><button id="fShort">Shortest ride</button>
+  <p style="margin-top:0">Nine lanes leave all four faces of the source (left) and berth on all four sides of the destination (right). <b>Click a grey dot</b> on the destination's outline, or on the source's far face, to put that array's cut there. A dashed stretch is a lead-in. Below the board, the two unrolled orders: a pair of lines that crosses there is a pair of lanes that crosses on the board. <b>Click a lane</b> (or its chip below) to see its <code>u</code>.</p>
+  <svg id="fSvg" viewBox="0 0 900 515"></svg>
+  <div class="row"><button id="fFar" class="primary">Default cuts</button><button id="fFew">Fewest crossings</button><button id="fShort">Shortest ride</button>
    <span class="stat">crossings <b id="fX">-</b></span><span class="stat">ride <b id="fR">-</b> mm</span><span class="stat">north ring <b id="fN">-</b> &middot; trunk <b id="fW">-</b> &middot; south ring <b id="fS">-</b></span></div>
   <div class="log" id="fLog" style="min-height:56px"></div>
 </div>
-<p>The ends model makes this choice, not the frame: it scores the ends at each candidate cut and keeps the best (<a href="#ends">0a</a>). Crossings are cheap only when the two lanes can be on different layers there, so fewer crossings usually means fewer vias, and a cut that winds lanes round the far side can win even though they ride further. A lane winding round the destination to arrive from the far side is what a human layout often does too.</p>
+<p><b>Default cuts</b> puts them where the code does without the ends model's say: the destination's at the middle of the widest gap between its far side's berths, the source's at the gap between its far-face teeth with the fewest crossings. In the real run the ends model chooses the destination's cut: it scores the ends at each candidate cut and keeps the best (<a href="#ends">0a</a>). Crossings are cheap only when the two lanes can be on different layers there, so fewer crossings usually means fewer vias, and a cut that winds lanes round the far side can win even though they ride further. A lane winding round the destination to arrive from the far side is what a human layout often does too.</p>
 <details><summary>What the real frame does beyond this toy</summary>
 <ul>
  <li><b>The flow frame first.</b> The bus step turns the board a whole number of quarter turns so the source-to-destination direction points along +x (<code>flow_frame.py</code>: exact on the 0.1 mm lattice, and turned back after). A board whose differential pairs have the other chirality is also turned over in memory. So the trunk always runs west to east, and the destination's <i>west</i> face is the one facing the source.</li>
  <li><b>The trunk</b> is one straight line from the source's pad box centre through the destination's. The faces are the pad boxes' own, grown to where the stubs end.</li>
  <li><b>The rings</b> go round the destination's <b>hull</b>: its pads, the berths, and other parts' pads within a lane's reach of them. Their lanes stack outward in berth order, the lane that berths first innermost. A part standing in that stack is passed on the inside when the ring's lanes fit between it and the destination, and gone round when they do not. Each ring starts outside the destination's corner, stepped back along the trunk until it clears the hull (<code>Hk</code>).</li>
  <li><b><code>u</code></b> is the distance along the trunk's spine, then along the ring's spine. A lane's sideways moves are not counted, which is why its copper is longer than its <code>u</code>. Placing it sideways is the geometry's job (<a href="#sec-lp">section 2</a>).</li>
- <li><b>The source is unrolled the same way.</b> Its teeth are ordered round its pad box from a cut on its far face (<code>src_cut</code>: the gap between teeth that crosses the fewest lanes). A tooth on the source's far face goes round the source's corner on a <b>lead-in</b> and joins the trunk beside the side face. A far-face tooth still inside the array has no way round, and the fanout is told to free it.</li>
+ <li><b>The source's side</b> (<code>perim_s</code>, <code>src_cut</code>, <code>lead_ins</code>): a lead-in leaves its tooth straight out of the far face, runs along it and turns the corner on a 45-degree chamfer, the lanes of a side nesting a lane's room apart and outside any copper in their way (a part's pad, another net's via or track on the lead-in's layer). A far-face tooth still inside the array has no way round, and the fanout is told to free it. The ends model prices a far-face tooth past any via count, so a lane takes one only when it has no other way out.</li>
  <li><b>The cut</b> rides from the ends model to the frame in the fanout's plan file (<code>dest_cut</code>), so the model and the solve unroll the destination at the same point. Without it the frame takes the middle of the widest gap between the far face's berths. A cut off the far face (the <b>winding cut</b>) is taken only when its ends predict fewer vias and beat the far cut's objective by a via.</li>
  <li><b>Several destinations</b> (one source fanning out to two parts): the trunk runs to the first, and each other part's lanes leave it on a <b>branch</b> of their own, outside the first one's ring.</li>
 </ul></details>
@@ -213,15 +214,16 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
   </ul></details>
 </div>
 
-<h3>1b &nbsp; Where along the trunk: time-window constraints</h3>
+<h3>1b &nbsp; Where along <code>u</code>: time-window constraints</h3>
 <p>Booleans decide <i>who</i> crosses. Integers decide <i>where</i>. Each crossing gets an integer position <code>t</code> in <code>u</code> (on a grid of a fifth of a lane pitch), limited to a window: the stretch where both lanes exist, clear of a pair's end connector, and for two lanes on the same ring short of the earlier one's berth. A lane's crossings along it must be at least a lane pitch apart (less for a lane sweeping steeply across the others). That is the <code>AddNoOverlap</code> constraint on optional intervals in <code>whole_solve.py</code>. Layer changes are positions in <code>u</code> too, with rooms of their own:</p>
 <ul>
  <li>a change keeps a via's room from its own lane's crossings, and a single lane's change keeps a change's room from both its ends (a pair's, its <b>dive room</b>);</li>
- <li>no change in a band along the source's facing side, where the teeth stand and the lanes have not spread yet;</li>
+ <li>no change in a band along the source's facing side, where the teeth stand and the lanes have not spread yet (on two layers, no crossing there either; a lane allowed to change at its own tooth is not held by it);</li>
  <li>a lane leaving the surface may change layer right at its stub's end only where a via there is measured clear of every other net's copper on every layer;</li>
  <li>two neighbouring lanes' changes are staggered along <code>u</code>, so their vias clear the via-to-via rule;</li>
  <li>no change where the lane's reference passes within a via's reach of another part's pad (the <b>built-in via cuts</b>, on the rings too).</li>
 </ul>
+<p>Inside its window, nothing in the objective prices where a crossing or a change stands: every place costs the same once the vias are minimal. So CP-SAT tends to leave them where its search first put them, often at the window's start, just past the teeth, and the geometry and the audits then judge whether there is room there.</p>
 <div class="card">
   <p style="margin-top:0">Drag the blue bars. Green rails are the allowed windows. The bottom lane is the trunk, where overlaps show up red. <b>Solve</b> tries the orderings of the four crossings and places each as early as its window allows. Raise the pitch until no ordering fits: that is what "infeasible" means, and it is the situation that becomes a <b>cut</b> in section 3.</p>
   <svg id="nov" viewBox="0 0 760 250"></svg>
@@ -393,7 +395,7 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
  <li><b>The rounds stop at the first clean lay.</b> A round whose plan lays connected and DRC-clean ends the run, whether or not its loop passed or its solve was proved. A later round could only move the ends its audits named, which the lay already went round.</li>
  <li>Otherwise a round that leaves nets open feeds the next fanout (<a href="#audit">4c</a>), up to the round limit. Every round is graded, and the best (fewest open nets, then fewest vias) is the run's board. When no round laid anything, a <b>last resort</b> plans only part of the lanes, the ones the rounds named left out.</li>
 </ul>
-<p><b>On a real board</b> the bus step (<code>route_bus.py</code>) wraps this. It finds the buses between pairs of ball arrays (or takes them from <code>--bus SRC:DEST[:MODE[:LAYERS]]</code>, each with its own fanout mode, <code>joint</code>, <code>escape</code> or <code>plain</code>, and its own routing layers), strips the bus's old copper, fans out, turns the board into the flow frame, runs the whole route and turns the copper back. It then grades the board where it is written: every bus net connected, no DRC violation on a bus net, the whole board no worse than it came. A net left open, or named in a violation, goes back as it came, for the rest of the routing chain. The nets handed on are protected in the board's project and their tracks and vias <b>locked</b>, so the later routing steps route round them and never rip them up. Several buses are routed in turn, each on the board the one before handed on.</p>
+<p><b>On a real board</b> the bus step (<code>route_bus.py</code>) wraps this. It finds the buses between pairs of ball arrays (or takes them from <code>--bus SRC:DEST[:MODE[:LAYERS]]</code>, each with its own fanout mode, <code>joint</code>, <code>escape</code> or <code>plain</code>, and its own routing layers), strips the bus's old copper, fans out, turns the board into the flow frame, runs the whole route and turns the copper back. It then grades the board where it is written: every bus net connected, no DRC violation on a bus net, the whole board no worse than it came. The board's length and skew rules are named but not counted, because the bus is laid untuned. A net left open, or named in a violation, goes back as it came, for the rest of the routing chain. The nets handed on are protected in the board's project and their tracks and vias <b>locked</b>, so the later routing steps route round them and never rip them up. Several buses are routed in turn, each on the board the one before handed on.</p>
 
 <h2 id="summary">5 &nbsp; Side by side</h2>
 <table>
@@ -436,7 +438,7 @@ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
    {t:['Ends +','fanout'],f:'fanout_from_plan.py',c:'#8a94a8',d:'Chooses each net\'s <b>tooth</b> (escape at the source BGA) and <b>berth</b> (escape at the destination) from the fanout\'s escape menus with the whole route\'s ends model, then lays them and judges what it laid. On the escape fanout CP-SAT makes the first choice (the joint ends) and every choice is put to the solve\'s check. <code>whole_ends</code> also picks the <b>cut</b> on the destination\'s far side. Crowded ends and open nets found later come back here as feedback, and the fanout re-chooses <i>incrementally</i>.'},
    {t:['Frame','trunk + rings'],f:'whole_frame.py',c:'#8a94a8',d:'<b>One road per lane.</b> A straight trunk from the source\'s pad box through the destination\'s, and a ring round each side of the destination, meeting at the cut. Both arrays\' outlines unrolled into two orders, whose disagreements are the crossings. Each lane\'s route is one coordinate, <code>u</code>.'},
    {t:['CP-SAT','solve'],f:'whole_solve.py',c:'#6a3fc4',d:'<b>The discrete plan.</b> One model decides every crossing, its position in <code>u</code>, every layer change and, on more than two layers, every run\'s layer. Minimises vias with a proof where it can; a round\'s first solve keeps an unproved plan rather than none. Takes in cuts from the LP and audits, plus history congestion.'},
-   {t:['HiGHS LP','geometry'],f:'whole_geo.py',c:'#0f8a7a',d:'<b>The continuous geometry.</b> Takes the fixed order and layers and finds each lane\'s sideways offset at each column with one joint LP (trunk + both rings). Elastic hard rows: what it has to pay is written as cuts for the solve. Run as the dual through HiGHS IPM.'},
+   {t:['HiGHS LP','geometry'],f:'whole_geo.py',c:'#0f8a7a',d:'<b>The continuous geometry.</b> First the relayer moves each via end\'s run onto the layer the solve chose. Then the LP takes the fixed order and layers and finds each lane\'s sideways offset at each column with one joint LP (trunk + both rings). Elastic hard rows: what it has to pay is written as cuts for the solve. Run as the dual through HiGHS IPM.'},
    {t:['Polish','xy per round'],f:'whole_polish.py',c:'#8a94a8',d:'Meets the audit\'s measures in board xy with small vertex moves, an LP per round, keeping the best state any round reached. When a lane has no room on its side of an island, it is flipped to the other side and sent back to the geometry.'},
    {t:['Snap','to grid'],f:'whole_snap.py',c:'#8a94a8',d:'Lands the planned lines on the router\'s own grid, the pairs first as the pair router moves, then the singles, so what is audited is what the router can draw.'},
    {t:['Audit','gate / lint'],f:'whole_gate.py',c:'#c07a00',d:'Checks the plan against the router\'s own rules, nothing waived. "Hot" places become <b>history</b> for the next solve, and unfixable ones become <b>cuts</b>. Crowded ends (exit 4) go through <code>whole_feedback</code> back to the fanout.'},
@@ -1033,22 +1035,36 @@ function simplex(cost,rows){
   $('#eLay').onclick=()=>{seed++;const keep=bp;init();bp=keep;draw()};
   init();bp=[3,0,4,1,2];draw();
 })();
-/* ================= 0c. the frame: trunk, rings, the destination unrolled ================= */
+/* ================= 0c. the frame: trunk, rings, both arrays unrolled ================= */
 (function(){
   const svg=$('#fSvg');
   // the destination's pad box, the source's, the arrival line H0, the rings' first offset and pitch; 10 px = 1 mm
-  const X0=560,Y0=150,X1=700,Y1=290,SX0=60,SX1=200,SY0=130,SY1=310,H0X=520,D0=16,PIT=11,PER=560,SC=10;
+  const X0=560,Y0=150,X1=700,Y1=290,SX0=60,SX1=200,SY0=130,SY1=310,H0X=520,D0=16,PIT=11,PER=560,SPER=640,SC=10,TS=SX1+10;
   const cols=['#d9483b','#2f6fd0','#0f8a7a','#c07a00','#8a3fc4','#d4589a','#5b8c1a','#1d7fa6','#7a5230'];
   // each lane's berth as an arc clockwise from the destination's north-west corner (north face 0-140, far face
-  // 140-280, south face 280-420, facing face 420-560); its tooth's place north to south on the source's face
-  const L=[250,320,210,170,40,100,520,470,380].map((a,i)=>({n:'ABCDEFGHI'[i],a,t:i,c:cols[i]}));
-  const ty=i=>140+i*20;
+  // 140-280, south face 280-420, facing face 420-560), and its tooth as an arc clockwise from the SOURCE's north-west
+  // corner (north face 0-140, facing face 140-320, south face 320-460, far face 460-640)
+  const BER=[250,320,210,170,40,100,520,470,380],TOO=[590,50,100,180,210,240,270,380,510];
+  const L=BER.map((a,i)=>({n:'ABCDEFGHI'[i],a,s:TOO[i],c:cols[i]}));
   const bxy=a=>a<140?[X0+a,Y0]:a<280?[X1,Y0+a-140]:a<420?[X1-(a-280),Y1]:[X0,Y1-(a-420)];
+  const txy=a=>a<140?[SX0+a,SY0]:a<320?[SX1,SY0+a-140]:a<460?[SX1-(a-320),SY1]:[SX0,SY1-(a-460)];
   const face=a=>a<140?'N':a<280?'E':a<420?'S':'W';
-  const FN={N:'north',E:'far',S:'south',W:'facing'};
-  const cand=[];{const s=L.map(l=>l.a).filter(a=>a<420).sort((p,q)=>p-q),pts=[0,...s,420];for(let i=0;i<pts.length-1;i++)cand.push((pts[i]+pts[i+1])/2)}
-  let cut=0,sel='D';
+  const sface=a=>a<140?'N':a<320?'E':a<460?'S':'W';
+  const FN={N:'north',E:'far',S:'south',W:'facing'},SFN={N:'north',E:'facing',S:'south',W:'far'};
+  const gaps=(arcs,lo,hi)=>{const pts=[lo,...arcs.filter(a=>a>=lo&&a<hi).sort((p,q)=>p-q),hi],o=[];for(let i=0;i<pts.length-1;i++)o.push({c:(pts[i]+pts[i+1])/2,w:pts[i+1]-pts[i]});return o};
+  const cand=gaps(BER,0,420).map(g=>g.c),scand=gaps(TOO,460,640).map(g=>g.c);
+  let cut=0,scut=0,sel='D';
   const ringOf=(a,c)=>a>=420?'W':(a<c?'N':'S');
+  // the source side: a facing-face tooth starts on the trunk; a side face's runs along its face; a far-face tooth goes
+  // round the corner on its side of the source's cut on a lead-in (not counted in u)
+  const sideOf=(t,cs)=>{const f=sface(t);return f==='E'?'T':f==='W'?(t>cs?'N':'S'):f};
+  const skey=(t,cs)=>(t-cs+SPER)%SPER;            // the source unrolled from its cut, clockwise: north first
+  function start(l,cs,d){const [tx,ty]=txy(l.s),sd=sideOf(l.s,cs),f=sface(l.s),k=d*(2-Math.SQRT2);
+    if(sd==='T')return{lead:null,run:[[tx,ty]],ex:tx};
+    const y=sd==='N'?SY0-d:SY1+d;
+    if(f!=='W')return{lead:null,run:[[tx,ty],[tx,y],[TS,y]],ex:tx};
+    const lead=sd==='N'?[[tx,ty],[SX0-d,ty],[SX0-d,SY0-d+k],[SX0-d+k,SY0-d],[SX0,SY0-d]]:[[tx,ty],[SX0-d,ty],[SX0-d,SY1+d-k],[SX0-d+k,SY1+d],[SX0,SY1+d]];
+    return{lead,run:[[SX0,y],[TS,y]],ex:SX0}}
   // a lane's road from H0: round its ring at offset d to the point across from its berth, then into the berth
   function road(a,d,c_){const [bx,by]=bxy(a),f=face(a),r=ringOf(a,c_),k=d*(2-Math.SQRT2);
     if(r==='W')return[[H0X,by],[X0,by]];
@@ -1063,75 +1079,95 @@ function simplex(cost,rows){
     if(f==='E')return p.concat([[X1+d,by],[bx,by]]);
     p.push([X1+d,Y0-d+k],[X1+d-k,Y0-d]);return p.concat([[bx,Y0-d],[bx,by]])}
   const len=p=>{let s=0;for(let i=1;i<p.length;i++)s+=Math.hypot(p[i][0]-p[i-1][0],p[i][1]-p[i-1][1]);return s};
-  function plan(c_){
+  function plan(c_,cs){
+    // the source's stacks: on each side the lane launched first (outermost) the furthest out
+    const sN=L.filter(l=>sideOf(l.s,cs)==='N').sort((p,q)=>skey(p.s,cs)-skey(q.s,cs)),sS=L.filter(l=>sideOf(l.s,cs)==='S').sort((p,q)=>skey(p.s,cs)-skey(q.s,cs));
+    const sd={};sN.forEach((l,i)=>sd[l.n]=D0+(sN.length-1-i)*PIT);sS.forEach((l,i)=>sd[l.n]=D0+i*PIT);
     const N=L.filter(l=>ringOf(l.a,c_)==='N').sort((p,q)=>p.a-q.a),S_=L.filter(l=>ringOf(l.a,c_)==='S').sort((p,q)=>q.a-p.a);
     const d={};N.forEach((l,k)=>d[l.n]=D0+k*PIT);S_.forEach((l,k)=>d[l.n]=D0+k*PIT);
     const out={};
-    for(const l of L){const r=road(l.a,d[l.n]||0,c_),path=[[SX1,ty(l.t)]].concat(r),rg=ringOf(l.a,c_);
-      out[l.n]={path,rg,uT:(H0X-SX1)/SC,uR:rg==='W'?(X0-H0X)/SC:len(road(l.a,D0,c_).slice(0,-1))/SC,cu:len(path)/SC}}
-    // north to south across the trunk at H0: the destination's outline unrolled from the cut, counter-clockwise
+    for(const l of L){const st=start(l,cs,sd[l.n]||0),r=road(l.a,d[l.n]||0,c_),rg=ringOf(l.a,c_);
+      const trunk=st.run.concat([r[0]]),path=st.run.concat(r),all=(st.lead||[]).concat(path);
+      out[l.n]={st,trunk,path,rg,uT:(H0X-st.ex)/SC,uR:rg==='W'?(X0-H0X)/SC:len(road(l.a,D0,c_).slice(0,-1))/SC,cu:len(all)/SC}}
+    const lau=L.slice().sort((p,q)=>skey(p.s,cs)-skey(q.s,cs));
+    // north to south across the trunk at H0: the destination's outline unrolled from its cut, counter-clockwise
     const ord=L.slice().sort((p,q)=>((c_-p.a+PER)%PER)-((c_-q.a+PER)%PER));
-    let x=0;for(let i=0;i<L.length;i++)for(let j=i+1;j<L.length;j++)if(ord.indexOf(L[i])>ord.indexOf(L[j]))x++;
-    return{out,ord,x,ride:L.reduce((s,l)=>s+out[l.n].cu,0),nN:N.length,nS:S_.length}}
+    let x=0;for(let i=0;i<L.length;i++)for(let j=i+1;j<L.length;j++){const A=lau[i],B=lau[j];if(ord.indexOf(A)>ord.indexOf(B))x++}
+    return{out,lau,ord,x,ride:L.reduce((s,l)=>s+out[l.n].cu,0),nN:N.length,nS:S_.length,sN:sN.length,sS:sS.length}}
   const pl=(p,at)=>S('polyline',Object.assign({points:p.map(q=>q.join(',')).join(' '),fill:'none','stroke-linejoin':'round','stroke-linecap':'round'},at),svg);
+  function yAt(p,x){for(let i=1;i<p.length;i++){const [a,b]=[p[i-1],p[i]];if(Math.abs(b[0]-a[0])<1e-9)continue;
+      const t=(x-a[0])/(b[0]-a[0]);if(t>=-1e-9&&t<=1+1e-9)return a[1]+t*(b[1]-a[1])}return p[p.length-1][1]}
   function draw(){
-    svg.innerHTML='';const P=plan(cut);
+    svg.innerHTML='';const P=plan(cut,scut);
     // the two arrays
-    S('rect',{x:SX0,y:SY0,width:SX1-SX0,height:SY1-SY0,rx:6,fill:'#eef1f8',stroke:'#a9b0be'},svg);T(svg,(SX0+SX1)/2,SY0-8,'source',{'text-anchor':'middle',fill:'#5b6577'});
+    S('rect',{x:SX0,y:SY0,width:SX1-SX0,height:SY1-SY0,rx:6,fill:'#eef1f8',stroke:'#a9b0be'},svg);T(svg,(SX0+SX1)/2,(SY0+SY1)/2+4,'source',{'text-anchor':'middle',fill:'#5b6577'});
     S('rect',{x:X0,y:Y0,width:X1-X0,height:Y1-Y0,rx:6,fill:'#eef1f8',stroke:'#a9b0be'},svg);T(svg,(X0+X1)/2,(Y0+Y1)/2+4,'destination',{'text-anchor':'middle',fill:'#5b6577'});
     T(svg,X0+6,(Y0+Y1)/2+40,'facing',{fill:'#a9b0be','font-size':11});T(svg,X1-6,(Y0+Y1)/2+40,'far',{fill:'#a9b0be','font-size':11,'text-anchor':'end'});
+    T(svg,SX0+6,SY1-8,'far',{fill:'#a9b0be','font-size':11});T(svg,SX1-6,SY1-8,'facing',{fill:'#a9b0be','font-size':11,'text-anchor':'end'});
     // the trunk and H0
     S('line',{x1:(SX0+SX1)/2,y1:(SY0+SY1)/2,x2:(X0+X1)/2,y2:(Y0+Y1)/2,stroke:'#cfd5e0','stroke-width':14,'stroke-linecap':'round',opacity:.55},svg);
     T(svg,330,(SY0+SY1)/2+30,'trunk',{fill:'#8a94a8','font-size':12});
     S('line',{x1:H0X,y1:48,x2:H0X,y2:388,stroke:'#8a94a8','stroke-dasharray':'5 4'},svg);T(svg,H0X,42,'H0',{'text-anchor':'middle',fill:'#5b6577','font-size':12,'font-weight':700});
     // the crossings on the trunk: where two lanes' straight runs to their places at H0 meet
-    const seg=l=>P.out[l.n].path.slice(0,2);
+    const seg=l=>P.out[l.n].trunk.slice(-2);
     for(let i=0;i<L.length;i++)for(let j=i+1;j<L.length;j++){const [a,b]=seg(L[i]),[c,e]=seg(L[j]);
       const den=(b[0]-a[0])*(e[1]-c[1])-(b[1]-a[1])*(e[0]-c[0]);if(Math.abs(den)<1e-9)continue;
       const t=((c[0]-a[0])*(e[1]-c[1])-(c[1]-a[1])*(e[0]-c[0]))/den;if(t<=0||t>=1)continue;
       S('circle',{cx:a[0]+t*(b[0]-a[0]),cy:a[1]+t*(b[1]-a[1]),r:5,fill:'#fff',stroke:'#1d2330','stroke-width':1.5},svg)}
-    // the lanes
-    for(const l of L){const o=P.out[l.n],on=l.n===sel;
-      const g=pl(o.path,{stroke:l.c,'stroke-width':on?6:3,opacity:sel&&!on?.5:.95,style:'cursor:pointer'});
-      g.addEventListener('click',()=>{sel=l.n;draw()})}
+    // the lanes: a lead-in dashed
+    for(const l of L){const o=P.out[l.n],on=l.n===sel,at={stroke:l.c,'stroke-width':on?6:3,opacity:sel&&!on?.5:.95,style:'cursor:pointer'};
+      const g=pl(o.path,at);g.addEventListener('click',()=>{sel=l.n;draw()});
+      if(o.st.lead){const h=pl(o.st.lead,Object.assign({},at,{'stroke-dasharray':on?'9 6':'6 5'}));h.addEventListener('click',()=>{sel=l.n;draw()})}}
     // teeth and berths
-    for(const l of L){S('circle',{cx:SX1,cy:ty(l.t),r:5,fill:l.c},svg);T(svg,SX1-12,ty(l.t)+4,l.n,{'text-anchor':'end','font-weight':700,fill:l.c,'font-size':12});
+    for(const l of L){const [tx,ty]=txy(l.s),f=sface(l.s);S('circle',{cx:tx,cy:ty,r:5,fill:l.c},svg);
+      const dx=f==='E'?-12:f==='W'?12:0,dy=f==='N'?18:f==='S'?-9:4;
+      T(svg,tx+dx,ty+dy,l.n,{'text-anchor':f==='E'?'end':f==='W'?'start':'middle','font-weight':700,fill:l.c,'font-size':12});
       const [bx,by]=bxy(l.a);S('rect',{x:bx-5,y:by-5,width:10,height:10,fill:l.c,stroke:'#fff'},svg)}
-    // the selected lane's u: at its tooth, at H0, at its berth
-    if(sel){const o=P.out[sel],p=o.path;
+    // the selected lane's u: where it starts, at H0, at its berth
+    if(sel){const o=P.out[sel],p=o.trunk;
       const lab=(x,y,s,anc)=>{const t=T(svg,x,y,s,{'font-size':11,'font-weight':700,fill:'#1d2330','text-anchor':anc||'middle'});t.setAttribute('paint-order','stroke');t.setAttribute('stroke','#fff');t.setAttribute('stroke-width',4)};
-      for(let k=0;k*20<=H0X-SX1;k++){const x=SX1+k*20,y=p[0][1]+(p[1][1]-p[0][1])*(x-SX1)/(H0X-SX1);S('line',{x1:x,y1:y-5,x2:x,y2:y+5,stroke:'#1d2330','stroke-width':1.5},svg)}
-      lab(SX1+16,p[0][1]-9,'u = 0','start');lab(H0X-6,p[1][1]-9,'u = '+o.uT.toFixed(0),'end');
-      const q=p[p.length-1];lab(q[0]+(q[0]>=X1?44:0),q[1]+(q[1]>=Y1?-12:(q[0]>=X1?4:-10)),'u = '+(o.uT+o.uR).toFixed(1))}
-    // the cut and the places it may stand
+      for(let x=o.st.ex;x<=H0X+1e-9;x+=20){const y=yAt(p,x);S('line',{x1:x,y1:y-5,x2:x,y2:y+5,stroke:'#1d2330','stroke-width':1.5},svg)}
+      lab(o.st.ex+16,yAt(p,o.st.ex)-9,'u = 0','start');lab(H0X-6,p[p.length-1][1]-9,'u = '+o.uT.toFixed(0),'end');
+      const q=o.path[o.path.length-1];lab(q[0]+(q[0]>=X1?44:0),q[1]+(q[1]>=Y1?-12:(q[0]>=X1?4:-10)),'u = '+(o.uT+o.uR).toFixed(1))}
+    // the two cuts and the places each may stand
+    const diamond=(x,y)=>S('path',{d:`M${x} ${y-10}L${x+10} ${y}L${x} ${y+10}L${x-10} ${y}Z`,fill:'#e3a008',stroke:'#1d2330','stroke-width':1.5},svg);
+    const dot=(x,y,fn)=>{const g=S('circle',{cx:x,cy:y,r:6,fill:'#c3c9d6',stroke:'#fff','stroke-width':1.5,style:'cursor:pointer'},svg);g.addEventListener('click',fn)};
     for(const c of cand){const [x,y]=bxy(c);
-      if(c===cut){S('path',{d:`M${x} ${y-10}L${x+10} ${y}L${x} ${y+10}L${x-10} ${y}Z`,fill:'#e3a008',stroke:'#1d2330','stroke-width':1.5},svg);
-        T(svg,x+(face(c)==='E'?16:0),y+(face(c)==='N'?-14:face(c)==='S'?24:4),'cut',{'font-weight':700,fill:'#8a5a00','text-anchor':face(c)==='E'?'start':'middle'})}
-      else{const g=S('circle',{cx:x,cy:y,r:6,fill:'#c3c9d6',stroke:'#fff','stroke-width':1.5,style:'cursor:pointer'},svg);g.addEventListener('click',()=>{cut=c;draw()})}}
+      if(c===cut){diamond(x,y);T(svg,x+(face(c)==='E'?16:0),y+(face(c)==='N'?-14:face(c)==='S'?24:4),'cut',{'font-weight':700,fill:'#8a5a00','text-anchor':face(c)==='E'?'start':'middle'})}
+      else dot(x,y,()=>{cut=c;draw()})}
+    for(const c of scand){const [x,y]=txy(c);
+      if(c===scut){diamond(x,y);T(svg,x-16,y+4,'cut',{'font-weight':700,fill:'#8a5a00','text-anchor':'end'})}
+      else dot(x,y,()=>{scut=c;draw()})}
     // the two orders, unrolled
-    const Yt=412,Yb=468,cx=k=>130+k*80;
+    const Yt=420,Yb=476,cx=k=>130+k*80;
     T(svg,20,Yt+4,'teeth',{fill:'#5b6577','font-size':12});T(svg,20,Yb+4,'berths',{fill:'#5b6577','font-size':12});
-    T(svg,20,Yt+18,'north→south',{fill:'#a9b0be','font-size':10});T(svg,20,Yb+18,'from the cut',{fill:'#a9b0be','font-size':10});
-    for(const l of L){const k=P.ord.indexOf(l);S('line',{x1:cx(l.t),y1:Yt+9,x2:cx(k),y2:Yb-9,stroke:l.c,'stroke-width':l.n===sel?4:2.5},svg)}
+    T(svg,20,Yt+18,'from its cut',{fill:'#a9b0be','font-size':10});T(svg,20,Yb+18,'from its cut',{fill:'#a9b0be','font-size':10});
+    for(const l of L){S('line',{x1:cx(P.lau.indexOf(l)),y1:Yt+9,x2:cx(P.ord.indexOf(l)),y2:Yb-9,stroke:l.c,'stroke-width':l.n===sel?4:2.5},svg)}
     const chip=(x,y,l)=>{const g=S('g',{style:'cursor:pointer'},svg);S('rect',{x:x-13,y:y-10,width:26,height:20,rx:5,fill:l.c,stroke:l.n===sel?'#1d2330':'none','stroke-width':2},g);
       T(g,x,y+5,l.n,{'text-anchor':'middle',fill:'#fff','font-weight':700,'font-size':12});g.addEventListener('click',()=>{sel=l.n;draw()})};
-    for(const l of L)chip(cx(l.t),Yt,l);P.ord.forEach((l,k)=>chip(cx(k),Yb,l));
-    const grp=(a,b,s)=>{if(b<a)return;S('line',{x1:cx(a)-14,y1:Yb+15,x2:cx(b)+14,y2:Yb+15,stroke:'#8a94a8'},svg);T(svg,(cx(a)+cx(b))/2,Yb+27,s,{'text-anchor':'middle',fill:'#5b6577','font-size':11})};
-    grp(0,P.nN-1,'north ring');grp(P.nN,L.length-P.nS-1,'trunk');grp(L.length-P.nS,L.length-1,'south ring');
+    P.lau.forEach((l,k)=>chip(cx(k),Yt,l));P.ord.forEach((l,k)=>chip(cx(k),Yb,l));
+    const grp=(a,b,s,y,ty)=>{if(b<a)return;S('line',{x1:cx(a)-14,y1:y,x2:cx(b)+14,y2:y,stroke:'#8a94a8'},svg);T(svg,(cx(a)+cx(b))/2,ty,s,{'text-anchor':'middle',fill:'#5b6577','font-size':11})};
+    grp(0,P.sN-1,'north side',Yt-15,Yt-20);grp(P.sN,L.length-P.sS-1,'facing face',Yt-15,Yt-20);grp(L.length-P.sS,L.length-1,'south side',Yt-15,Yt-20);
+    grp(0,P.nN-1,'north ring',Yb+15,Yb+27);grp(P.nN,L.length-P.nS-1,'trunk',Yb+15,Yb+27);grp(L.length-P.nS,L.length-1,'south ring',Yb+15,Yb+27);
     // the numbers
     $('#fX').textContent=P.x;$('#fR').textContent=P.ride.toFixed(0);$('#fN').textContent=P.nN;$('#fW').textContent=L.length-P.nN-P.nS;$('#fS').textContent=P.nS;
     const by=L.filter(l=>l.a<420).sort((p,q)=>p.a-q.a),lo=by.filter(l=>l.a<cut).pop(),hi=by.find(l=>l.a>cut);
-    let m=`The cut stands on the destination's <b>${FN[face(cut)]}</b> side, between ${lo?'berth '+lo.n:'the north-west corner'} and ${hi?'berth '+hi.n:'the south-west corner'}. ${P.x} crossing${P.x===1?'':'s'}, ${P.ride.toFixed(0)} mm of copper in all.`;
-    if(sel){const o=P.out[sel],lname=o.rg==='W'?'it ends on the trunk':`then ${o.uR.toFixed(1)} mm round the ${o.rg==='N'?'north':'south'} ring`;
-      m+=`<br>Lane <b>${sel}</b>: <code>u</code> runs ${o.uT.toFixed(0)} mm along the trunk from its tooth to H0, ${lname}`+(o.rg==='W'?`, ${o.uR.toFixed(0)} mm on to its berth`:'')+`. Its copper, sideways moves included, is ${o.cu.toFixed(1)} mm: <code>u</code> counts only the way along.`}
+    const fw=L.filter(l=>sface(l.s)==='W').sort((p,q)=>p.s-q.s),slo=fw.filter(l=>l.s<scut).pop(),shi=fw.find(l=>l.s>scut);
+    let m=`The destination's cut stands on its <b>${FN[face(cut)]}</b> side, between ${lo?'berth '+lo.n:'the north-west corner'} and ${hi?'berth '+hi.n:'the south-west corner'}; the source's on its far face, between ${slo?'tooth '+slo.n:'the south-west corner'} and ${shi?'tooth '+shi.n:'the north-west corner'}. ${P.x} crossing${P.x===1?'':'s'}, ${P.ride.toFixed(0)} mm of copper in all.`;
+    if(sel){const o=P.out[sel],l=L.find(z=>z.n===sel),f=sface(l.s),side=sideOf(l.s,scut);
+      const how=f==='E'?'its tooth faces the destination, so it starts on the trunk':f==='W'?`its tooth is on the source's far face, so a lead-in (dashed) takes it round the source's ${side==='N'?'north':'south'} corner, and <code>u</code> starts where the lead-in ends`:`its tooth is on the source's ${SFN[f]} face, and <code>u</code> counts its run along that face too`;
+      const lname=o.rg==='W'?'it ends on the trunk':`then ${o.uR.toFixed(1)} mm round the ${o.rg==='N'?'north':'south'} ring`;
+      m+=`<br>Lane <b>${sel}</b>: ${how}. <code>u</code> runs ${o.uT.toFixed(0)} mm along the trunk to H0, ${lname}`+(o.rg==='W'?`, ${o.uR.toFixed(0)} mm on to its berth`:'')+`. Its copper, sideways moves included, is ${o.cu.toFixed(1)} mm: <code>u</code> counts only the way along.`}
     $('#fLog').innerHTML=m}
-  const best=(key)=>{let b=null,bk=null;for(const c of cand){const P=plan(c),k=key(P);if(bk===null||k[0]<bk[0]-1e-9||(Math.abs(k[0]-bk[0])<1e-9&&k[1]<bk[1])){b=c;bk=k}}return b};
-  const far=()=>{const s=L.map(l=>l.a).filter(a=>a>=140&&a<280).sort((p,q)=>p-q),pts=[140,...s,280];let w=-1,c=210;
-    for(let i=0;i<pts.length-1;i++)if(pts[i+1]-pts[i]>w){w=pts[i+1]-pts[i];c=(pts[i]+pts[i+1])/2}return c};
-  $('#fFar').onclick=()=>{cut=far();draw()};
-  $('#fFew').onclick=()=>{cut=best(P=>[P.x,P.ride]);draw()};
-  $('#fShort').onclick=()=>{cut=best(P=>[P.ride,P.x]);draw()};
-  cut=far();draw();
+  const both=key=>{let b=null,bk=null;for(const c of cand)for(const cs of scand){const k=key(plan(c,cs));if(bk===null||k[0]<bk[0]-1e-9||(Math.abs(k[0]-bk[0])<1e-9&&k[1]<bk[1])){b=[c,cs];bk=k}}return b};
+  // the code's own cuts: the destination's at its far side's widest gap (the ends model may choose another), the
+  // source's at the gap between its far-face teeth with the fewest crossings, the widest on a tie
+  const far=()=>{let b=null;for(const g of gaps(BER,140,280))if(!b||g.w>b.w)b=g;return b.c};
+  const srcFor=c=>{let b=null,bx=0;for(const g of gaps(TOO,460,640)){const x=plan(c,g.c).x;if(!b||x<bx||(x===bx&&g.w>b.w)){b=g;bx=x}}return b.c};
+  $('#fFar').onclick=()=>{cut=far();scut=srcFor(cut);draw()};
+  $('#fFew').onclick=()=>{[cut,scut]=both(P=>[P.x,P.ride]);draw()};
+  $('#fShort').onclick=()=>{[cut,scut]=both(P=>[P.ride,P.x]);draw()};
+  cut=far();scut=srcFor(cut);draw();
 })();
 
 /* ================= 4a. polish ================= */
@@ -1330,7 +1366,7 @@ function simplex(cost,rows){
 (function(){
   const N=5,M=7,names='ABCDE',cols=['#d9483b','#2f6fd0','#0f8a7a','#c07a00','#8a3fc4'];
   const INST=[32,61,80,56,71];                       // seeds whose plain local search gets stuck a via above the best
-  const svg=$('#kSvg'),X0=110,X1=560,Yl=i=>34+i*52,Ys=j=>26+j*44;
+  const svg=$('#kSvg'),X0=110,X1=560,Yl=i=>50+i*52,Ys=j=>42+j*44;
   let ii=0,sl,SL,bp,start0,K,moves,kicks,fails,sel_=null,timer=null,optShown=null,ALL=null;
   function cross(o){const cur=[...Array(N).keys()],out=[];let ch=true;while(ch){ch=false;for(let i=0;i<N-1;i++)if(o[cur[i]]>o[cur[i+1]]){out.push({a:cur[i],b:cur[i+1]});[cur[i],cur[i+1]]=[cur[i+1],cur[i]];ch=true}}return out}
   function minVias(cr,el){let best=1e9;const last=sl.slice();
