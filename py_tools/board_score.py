@@ -958,12 +958,43 @@ def score_diff_pairs(board: str, drc: dict, pcb=None) -> dict:
     return {'ran': True, 'count': sum(rows.values()), 'rules': len(rules), **detail}
 
 
+def declared_impedance_nets(board: str) -> list:
+    """Net names a routing step DECLARED an impedance for (#1389): the
+    sibling project's ``net_impedance`` records (``route.py --impedance``),
+    minus the ones recorded ``applied: false`` -- no width was solved for those,
+    so their copper carries no impedance promise (check_impedance skips them
+    the same way). [] when there are none or the records cannot be read."""
+    try:
+        from protected_nets import read_impedance_specs, pro_path_for_board
+        specs = read_impedance_specs(pro_path_for_board(board))
+    except Exception:                                        # noqa: BLE001
+        return []
+    return sorted(nm for nm, sp in specs.items() if sp.get('applied') is not False)
+
+
+def _glob_literal(name: str) -> str:
+    """``name`` as an fnmatch pattern that matches only itself (a net named
+    ``/DQ[0]`` would otherwise be a character class)."""
+    return re.sub(r'([*?\[])', r'[\1]', name)
+
+
 def score_impedance(root: str, board: str, nets, tmp: str) -> dict:
-    """check_impedance -- reference-plane continuity and declared-gap audit."""
-    if not nets:
-        return skipped('no --impedance-nets given; impedance is ungraded')
+    """check_impedance -- reference-plane continuity and declared-gap audit.
+
+    Graded: the nets named by ``--impedance-nets`` UNION every net the board's
+    project records an impedance declaration for (#1389) -- a declaration is a
+    promise the board makes whether or not the caller named it. `count` is the
+    nets that fail it: a reference-plane crossing, or a coplanar gap the
+    declaration promised and the copper does not have (the width was solved
+    ASSUMING it)."""
+    declared = declared_impedance_nets(board)
+    globs = list(nets or [])
+    globs += [_glob_literal(n) for n in declared]
+    if not globs:
+        return skipped('no --impedance-nets given and the project records no '
+                       'net impedance declaration; impedance is ungraded')
     out_json = os.path.join(tmp, 'impedance.json')
-    rc, out = run_tool(root, 'check_impedance.py', board, '--nets', *nets,
+    rc, out = run_tool(root, 'check_impedance.py', board, '--nets', *globs,
                        '--json', out_json)
     if not os.path.isfile(out_json):
         return skipped(f'check_impedance.py exited {rc}: {out.strip()[-200:]}')
@@ -978,11 +1009,23 @@ def score_impedance(root: str, board: str, nets, tmp: str) -> dict:
         # four whole runs on one board while blocking summed without the
         # component and the exit code read 0 (test-board run 5, journal [11]).
         return {'ran': True, 'count': None,
-                'reason': 'no routed nets matched --impedance-nets'}
-    return {'ran': True, 'count': int(tot.get('nets_with_crossing') or 0),
-            'nets_analyzed': tot.get('nets_analyzed'),
-            'crossings': tot.get('crossings'),
-            'segments_over_void': tot.get('segments_over_void')}
+                'reason': 'no routed nets matched ' + (
+                    '--impedance-nets' if nets else 'the recorded impedance '
+                    'declarations')}
+    rows = d.get('nets') or []
+    broken = sorted(r['net_name'] for r in rows
+                    if (r.get('length_no_ground_mm', 0.0)
+                        + r.get('length_gap_wrong_mm', 0.0)) > 0.01)
+    crossing = sorted(r['net_name'] for r in rows if r.get('crossings'))
+    out = {'ran': True, 'count': len(set(broken) | set(crossing)),
+           'nets_with_crossing': int(tot.get('nets_with_crossing') or 0),
+           'nets_broken_promise': broken,
+           'nets_analyzed': tot.get('nets_analyzed'),
+           'crossings': tot.get('crossings'),
+           'segments_over_void': tot.get('segments_over_void')}
+    if declared:
+        out['declared_nets'] = declared
+    return out
 
 
 def score_length(board: str, groups_file: str) -> dict:
