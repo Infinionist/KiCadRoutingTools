@@ -63,7 +63,9 @@ a list of exclusions only implies `*`. A pattern without a sheet path (`GND`,
 so the plain spelling works on a sheet-qualified board. A `!`-name that is
 itself a net on the board is that net (an active-low signal), and `\!` escapes
 the `!`. `unconnected-*` nets are left out of a wildcard; name one to route
-it.
+it. A multi-pad one (a connector's shield or mounting tabs) is an open net to
+`check_connected` and `board_score` until it is routed or its footprint
+declares the pads jumpered, so name those.
 
 **Placement blocks** (`route.py` only) route the nets of one block -- a
 schematic sheet, a KiCad group, an IC and its decaps:

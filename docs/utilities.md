@@ -779,7 +779,12 @@ Unrouted detection is based on whether a net is actually covered by a copper
 zone, not a hard-coded name list — a power net (GND, +3V3, …) with no plane on
 this board *is* reported as unrouted. Same-net pads whose copper overlaps (e.g.
 a castellated module's co-located through-hole + SMD pad pair) count as
-connected even with no track between them.
+connected even with no track between them, and so do same-number pads of a
+footprint that declares them jumpered (`duplicate_pad_numbers_are_jumpers yes`,
+or a `jumper_pad_groups` group). An auto-named `unconnected-*` net with two or
+more pads (a connector's shield or mounting tabs) is an open net like any other,
+as KiCad's DRC counts it (#1405): the wildcard leaves it out of routing, so name
+it in `--nets` to route it.
 
 ### Usage
 

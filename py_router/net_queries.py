@@ -1172,10 +1172,12 @@ def expand_net_patterns(pcb_data: PCBData, patterns: List[str],
         if _multi_nc and not quiet:
             _lst = ', '.join(f"'{n}' ({c} pads)" for n, c in sorted(_multi_nc)[:8])
             print(f"WARNING: {len(_multi_nc)} 'unconnected-*' net(s) with >=2 pads "
-                  f"excluded from the wildcard: {_lst}. If these are a reversible "
-                  f"footprint's doubled pins they DO need a trace -- route them "
-                  f"explicitly by naming them in --nets. Shield/mounting tabs "
-                  f"joined mechanically can stay unrouted (#513 item 7).")
+                  f"excluded from the wildcard: {_lst}. KiCad counts each one "
+                  f"unconnected (and so do check_connected and board_score, "
+                  f"#1405) unless the footprint declares its same-number pads "
+                  f"jumpered -- route them by naming them in --nets (a "
+                  f"reversible footprint's doubled pins, shield or mounting "
+                  f"tabs alike; #513 item 7).")
 
     known_net_names = unfiltered_net_names
     all_net_names = list(all_net_names)
