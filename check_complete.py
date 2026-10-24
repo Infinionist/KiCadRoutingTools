@@ -146,14 +146,18 @@ def kicad_hole_clearance(board, value, timeout=3600):
     """KiCad's own copper-to-hole grade of ``board`` at ``value`` mm (#1198).
 
     A staged copy (the board and its siblings) whose project declares
-    ``min_hole_clearance = value`` at error severity, through kicad-cli with
-    zones refilled -- KiCad refills before fab, and the stored fill was poured
-    at whatever value the chain lowered the rule to. KiCad's hole_clearance
-    covers every hole: via drills, PTH barrels and NPTH, which check_drc's hole
-    arms (NPTH only) do not.
+    ``min_hole_clearance = value`` at error severity, through kicad-cli on the
+    fill AS SHIPPED (#1370): a delivered fill was poured at whatever value the
+    chain lowered the rule to, and re-pouring it at the authored value here
+    graded copper nobody ships. KiCad's hole_clearance covers every hole: via
+    drills, PTH barrels and NPTH, which check_drc's hole arms (NPTH only) do
+    not.
 
-    -> ``{'count': N, 'min_actual': mm or None}``, or ``{'error': why}`` when
-    kicad-cli is missing or produced no report. Never raises."""
+    -> ``{'count': N, 'min_actual': mm or None, 'items': [...]}`` where each
+    item is ``{'key': (...), 'actual': mm}`` naming the violating pair (the
+    kinds and positions of its two items, so the same pair on another board
+    has the same key); or ``{'error': why}`` when kicad-cli is missing or
+    produced no report. Never raises."""
     import re
     import tempfile
     from copy_board import copy_board
@@ -185,7 +189,7 @@ def kicad_hole_clearance(board, value, timeout=3600):
         try:
             r = subprocess.run([cli, 'pcb', 'drc', '--format', 'json',
                                 '--units', 'mm', '--severity-all',
-                                '--refill-zones', '--output', out, dst],
+                                '--output', out, dst],
                                capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return {'error': f'kicad-cli timed out after {timeout:g} s'}
@@ -200,6 +204,7 @@ def kicad_hole_clearance(board, value, timeout=3600):
         shutil.rmtree(tmp, ignore_errors=True)
     actual = []
     count = 0
+    items = []
     for v in report.get('violations', []):
         if v.get('type') != 'hole_clearance' or v.get('severity') != 'error':
             continue
@@ -207,7 +212,48 @@ def kicad_hole_clearance(board, value, timeout=3600):
         m = re.search(r'actual\s+(-?[0-9.]+)\s*mm', v.get('description') or '')
         if m:
             actual.append(float(m.group(1)))
-    return {'count': count, 'min_actual': min(actual) if actual else None}
+        # What kind of pair it is (track-via, pad-NPTH pad, ...). KiCad does
+        # not report the same pairs on two runs of ONE board -- it keeps one of
+        # several overlapping violations, and a re-run of an identical file
+        # shares barely half its tracks -- so the pair itself cannot be matched
+        # across boards; its kind can.
+        kinds = tuple(sorted(
+            (re.match(r'[A-Za-z]+(?: pad)?', it.get('description') or '')
+             or [''])[0] for it in v.get('items') or ()))
+        items.append({'kinds': kinds,
+                      'actual': float(m.group(1)) if m else None})
+    return {'count': count, 'min_actual': min(actual) if actual else None,
+            'items': items}
+
+
+def _unmatched_by_reference(board_items, ref_items):
+    """The board's violations the reference does NOT break in kind, at least
+    as badly (#1370).
+
+    ``reference_too`` used to compare the two boards' MINIMUM distances. A
+    reference with one pad on a hole at 0.0 mm then excused every violation
+    of a board whose copper the reference never had: track-to-via pairs
+    against pad-to-hole ones, a different set of items. A violation is the
+    reference's too only when the reference breaks the same KIND of pair
+    (its two items' kinds) at a distance no larger than the board's worst of
+    that kind. Returns the board's violations that fail that."""
+    ref = {}
+    for it in ref_items or ():
+        a = it.get('actual')
+        if a is not None:
+            ref[it['kinds']] = min(a, ref.get(it['kinds'], a))
+    worst = {}
+    for it in board_items or ():
+        a = it.get('actual')
+        if a is not None:
+            worst[it['kinds']] = min(a, worst.get(it['kinds'], a))
+    out = []
+    for it in board_items or ():
+        k = it['kinds']
+        r = ref.get(k)
+        if it.get('actual') is None or r is None or r > worst[k] + _MIN_TOL:
+            out.append(it)
+    return out
 
 
 def fab_floor_integrity(board, authored_from, hole_grader=None, timeout=3600):
@@ -353,12 +399,20 @@ def fab_floor_integrity(board, authored_from, hole_grader=None, timeout=3600):
         else:
             row['reference_violations'] = rg['count']
             row['reference'] = rg.get('min_actual')
-        if rg.get('count') and row['on_board'] is not None \
-                and row['reference'] is not None \
-                and row['on_board'] >= row['reference'] - _MIN_TOL:
-            reference_too.append(row)
-        else:
-            relaxed.append(row)
+        # #1370: the reference excuses a violation only on the SAME pair, at
+        # least as badly. Without the pairs of both boards the reference
+        # cannot be compared, which counts against the board.
+        if not rg.get('error') and rg.get('count') \
+                and g.get('items') and rg.get('items') is not None:
+            left = _unmatched_by_reference(g['items'], rg['items'])
+            row['not_in_reference'] = len(left)
+            if not left:
+                reference_too.append(row)
+                continue
+            lefts = [i['actual'] for i in left if i.get('actual') is not None]
+            if lefts:
+                row['on_board'] = min(lefts)
+        relaxed.append(row)
     # #1160: the Default CLASS clearance, declared vs declared (no measured
     # counterpart: clearance is pairwise). Counted only when an automatic
     # descent lowered it -- the board's project carries the writeback's
