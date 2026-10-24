@@ -1165,13 +1165,16 @@ def _match_net_names(pcb_data, globs):
     if not includes:
         includes = ["*"]
     names = []
+    from net_queries import multipad_unconnected_to_route
+    multipad_nc = multipad_unconnected_to_route(pcb_data)
     for net in pcb_data.nets.values():
         if not net.net_id or not net.name:
             continue
         # CLI parity: expand_net_patterns drops KiCad no-connect nets
-        # ('unconnected-*') from every selection; the plan executor must not
-        # hand the net panel nets the CLI would never route.
-        if net.name.lower().startswith('unconnected-'):
+        # ('unconnected-*') from every selection EXCEPT the multi-pad ones
+        # nothing joins (#1405); the plan executor must not hand the net panel
+        # nets the CLI would never route, nor hold back ones it would.
+        if net.name.lower().startswith('unconnected-') and net.name not in multipad_nc:
             continue
         # Sheet-path aware, like the CLI's expand_net_patterns (#493): an
         # unqualified '!GND' must exclude the board's '/GND'.
