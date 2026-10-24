@@ -56,10 +56,16 @@ class TestOneDistance(unittest.TestCase):
             self.assertTrue(all(v == 0.0 for v in others.values()), others)
 
     def test_another_edges_overhang_is_not_the_declared_edges(self):
-        r = rect_past_east(0.0, north_over=1.7524)
-        amount, others = courtyard_overhang_past(GEO, r, 'east')
+        # on a rectangular board: flush with the east edge, 1.7524 mm past
+        # the north one (the summed reading booked that to the east band)
+        rect_pcb = os.path.join(ROOT, 'kicad_files', 'esp_prog.kicad_pcb')
+        geo = geometry_for(Holder(), parse_kicad_pcb(rect_pcb), rect_pcb)
+        b = geo.bounds
+        r = (b[2] - 6.0, b[1] - 1.7524, b[2], b[1] + 4.0)
+        amount, others = courtyard_overhang_past(geo, r, 'east')
         self.assertAlmostEqual(amount, 0.0, places=4)
         self.assertAlmostEqual(others['north'], 1.7524, places=4)
+        self.assertGreater(courtyard_overhang(geo, r), 1.7)
 
     def test_inside_reads_zero(self):
         amount, others = courtyard_overhang_past(GEO, rect_past_east(-2.0), 'east')
