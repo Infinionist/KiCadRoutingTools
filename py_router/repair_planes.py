@@ -1354,10 +1354,12 @@ def repair_planes(
     # locked copper included -- a candidate blocker. If protection cannot be
     # read, say so and rip nothing this run (the tap fails over its other
     # candidates, as it does for a protected blocker).
-    from protected_nets import protection_map
+    # The effective set (#1395): a net the route step's main pass made
+    # rippable by naming it EXACTLY stays rippable for this finalize.
+    from protected_nets import effective_protection_map
     _protection_read = True
     try:
-        _prot_names = protection_map(pcb_data)
+        _prot_names = effective_protection_map(pcb_data)
     except Exception as e:
         _protection_read = False
         _prot_names = {}

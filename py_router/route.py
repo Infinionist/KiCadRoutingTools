@@ -3475,7 +3475,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # KiCad-LOCKED copper are excluded unconditionally (no override).
         if existing_rippable:
             from protected_nets import (protection_map, filter_rippable_names,
-                                        stash_rip_overrides)
+                                        stash_rip_overrides, rip_override_names)
             _prot = protection_map(pcb_data, input_file)
             # Override source: the RAW --nets patterns when main() passed
             # them -- expansion turns a glob into exact names, which made
@@ -3485,7 +3485,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             _rip_overrides = (list(rip_existing_nets)
                               + list(net_name_patterns
                                      if net_name_patterns is not None
-                                     else (net_names or [])))
+                                     else (net_names or []))
+                              # #1395: overrides an enclosing step stashed on
+                              # this pcb_data (a nested sub-run is passed none
+                              # of the patterns itself)
+                              + sorted(rip_override_names(pcb_data)))
             # Run-6 z2 fix: stash for the in-run ladders too.
             stash_rip_overrides(pcb_data, _rip_overrides)
             if _prot:
@@ -3636,12 +3640,19 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 continue
             _pe_auto.append(_nid)
         if _pe_auto:
-            from protected_nets import protection_map, filter_rippable_names
+            from protected_nets import (protection_map, filter_rippable_names,
+                                        rip_override_names)
             _pe_prot = protection_map(pcb_data, input_file)
             if _pe_prot:
+                # + the overrides an enclosing step stashed on this pcb_data
+                # (#1395): a nested sub-run is handed neither --nets nor
+                # --rip-existing-nets, but the board it runs on remembers
+                # which nets the operator named exactly.
                 _pe_keep = set(filter_rippable_names(
                     [pcb_data.nets[n].name for n in _pe_auto], _pe_prot,
-                    override_patterns=list(rip_existing_nets or []) + _pe_caller_pats,
+                    override_patterns=(list(rip_existing_nets or [])
+                                       + _pe_caller_pats
+                                       + sorted(rip_override_names(pcb_data))),
                     context="pre-existing rip candidacy"))
                 _pe_auto = [n for n in _pe_auto
                             if pcb_data.nets[n].name in _pe_keep]
