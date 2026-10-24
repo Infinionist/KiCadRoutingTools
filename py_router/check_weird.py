@@ -658,6 +658,41 @@ def stacked_copper_over_model(segs_by_net, vias_by_net, net_name):
     return findings
 
 
+def close_same_net_via_pairs(vias_by_net, is_new, hole_to_hole, net_name):
+    """Same-net via pairs whose drills sit closer than `hole_to_hole` (edge to
+    edge) where at least one via is new this run (#1414).
+
+    A route's own vias are not spaced from one another when the guarded
+    re-route (#230) cannot connect, and the flawed path used to ship with
+    nothing said. check_drc grades the pair as VIA-DRILL-HOLE and KiCad
+    grades hole-to-hole; this names it before the write. `is_new(via)` says
+    whether the run laid the via; `net_name` is a net_id -> str callable.
+    Returns dicts with net, the two centres, sizes/drills, centre distance,
+    the drill gap and the floor."""
+    out = []
+    if not hole_to_hole or hole_to_hole <= 0:
+        return out
+    for nid in sorted(vias_by_net):
+        vs = vias_by_net[nid]
+        for i in range(len(vs)):
+            a = vs[i]
+            for b in vs[i + 1:]:
+                if not (is_new(a) or is_new(b)):
+                    continue
+                cc = math.hypot(a.x - b.x, a.y - b.y)
+                gap = cc - (a.drill or 0.0) / 2.0 - (b.drill or 0.0) / 2.0
+                if gap < hole_to_hole - 1e-6:
+                    out.append({'net': net_name(nid),
+                                'via_a': [round(a.x, 4), round(a.y, 4)],
+                                'via_b': [round(b.x, 4), round(b.y, 4)],
+                                'size_drill_a': [a.size, a.drill],
+                                'size_drill_b': [b.size, b.drill],
+                                'centre_distance_mm': round(cc, 4),
+                                'drill_gap_mm': round(gap, 4),
+                                'floor_mm': hole_to_hole})
+    return out
+
+
 def via_support_parts(v, net_segs, net_pads, net_zones, copper_layers):
     """WHICH copper reaches via ``v``'s barrel, split so a caller can re-derive
     the support after removing segments (#1063: collapse_strict_redundant must

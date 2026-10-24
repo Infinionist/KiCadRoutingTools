@@ -5121,6 +5121,34 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         if len(stacked_copper_findings) > 8:
             print(f"  {RED}... and {len(stacked_copper_findings) - 8} more{RESET}")
 
+    # ---- CLOSE SAME-NET VIAS (#1414) ----------------------------------------
+    # A leg whose guarded re-route (#230) cannot connect ships its flawed path
+    # with two own vias under the drill hole-to-hole floor. Name every such
+    # pair this run laid; check_drc grades it as VIA-DRILL-HOLE.
+    close_via_findings = []
+    try:
+        from check_weird import close_same_net_via_pairs
+        _new_via_ids = {id(_v) for _r0 in results
+                        for _v in _r0.get('new_vias', [])}
+        close_via_findings = close_same_net_via_pairs(
+            _vias_by_net, lambda _v: id(_v) in _new_via_ids,
+            config.hole_to_hole_clearance,
+            lambda _n: (pcb_data.nets[_n].name if _n in pcb_data.nets
+                        else f"Net {_n}"))
+    except Exception as _cve:
+        print(f"  (close-via check failed: {_cve})")
+    if close_via_findings:
+        print(f"\n{RED}WARNING: {len(close_via_findings)} same-net via pair(s) "
+              f"closer than the {config.hole_to_hole_clearance} mm drill "
+              f"hole-to-hole floor (the guarded re-route could not connect; "
+              f"check_drc grades VIA-DRILL-HOLE):{RESET}")
+        for _f in close_via_findings[:8]:
+            print(f"  {RED}{_f['net']}: ({_f['via_a'][0]}, {_f['via_a'][1]}) "
+                  f"and ({_f['via_b'][0]}, {_f['via_b'][1]}), drills "
+                  f"{_f['drill_gap_mm']} mm apart{RESET}")
+        if len(close_via_findings) > 8:
+            print(f"  {RED}... and {len(close_via_findings) - 8} more{RESET}")
+
     _zones_by_net: Dict[int, list] = {}
     for _z in getattr(pcb_data, 'zones', []) or []:
         _zones_by_net.setdefault(_z.net_id, []).append(_z)
@@ -5850,6 +5878,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # the via dedup (additive; KiCad's DRC never flags same-net stacks,
         # so this key is the only disclosure).
         summary['stacked_copper'] = stacked_copper_findings
+    if close_via_findings:
+        # #1414: own vias under the drill hole-to-hole floor, laid by this
+        # run (additive; check_drc's VIA-DRILL-HOLE is the matching grade).
+        summary['close_same_net_vias'] = close_via_findings
     summary['oracle_check'] = oracle_check
     if oracle_open:
         # Oracle summary: KiCad's own open-link counts for this run's scope
