@@ -1528,6 +1528,13 @@ class DifferentialTab(wx.Panel):
                 edge_clearance=_cfg.get('board_edge_clearance'),
                 # #581: recorded as route_diff.py records it
                 same_net_pad_clearance=_cfg.get('same_net_pad_clearance'))
+        else:
+            # The tool records (protected pairs, impedance, same-net pad
+            # clearance) are not DRC floors: an unchecked box must not void
+            # them (#1415, as route_diff.py --no-fix-drc-settings).
+            from .gui_utils import persist_live_tool_records
+            persist_live_tool_records(
+                board, _cfg.get('same_net_pad_clearance'))
 
         return tracks_added, vias_added, tracks_removed
 

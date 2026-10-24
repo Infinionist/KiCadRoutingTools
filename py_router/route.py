@@ -10104,9 +10104,9 @@ For differential pair routing, use route_diff.py:
     # clearances/sizes we just routed to, so a manual DRC only flags genuine
     # problems instead of stock-default noise (issue #160). Only edits the
     # .kicad_pro, never the .kicad_pcb, so the board's KiCad version is preserved.
-    if not args.no_fix_drc_settings and not args.skip_routing \
-            and not _gate_reverted \
-            and args.output_file and os.path.isfile(args.output_file):
+    _wrote_output = (not args.skip_routing and not _gate_reverted
+                     and args.output_file and os.path.isfile(args.output_file))
+    if not args.no_fix_drc_settings and _wrote_output:
         try:
             import clearance_ledger
             eff_clearance = clearance_ledger.effective(args.clearance)
@@ -10122,9 +10122,12 @@ For differential pair routing, use route_diff.py:
                 **drc_fix_kwargs(args))
         except Exception as e:
             print(f"  (skipped DRC-settings fix: {e})")
+    if _wrote_output:
         # #521: record this step's protection-worthy nets (matched groups) and
         # impedance declarations in the output project so later chain steps
         # refuse to rip the former and redo the latter at the same widths.
+        # Independent of the DRC-floor writeback (#1415): --no-fix-drc-settings
+        # keeps the floors from being lowered, it must not void the records.
         try:
             from protected_nets import (consume_protection_candidates,
                                         consume_impedance_specs,

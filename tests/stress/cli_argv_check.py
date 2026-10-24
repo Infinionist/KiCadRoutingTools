@@ -239,6 +239,16 @@ def _power_nets_count_mismatch(ns, cwd):
                 f"must have the same length")
 
 
+def _route_power_nets_count_mismatch(ns, cwd):
+    # route.py: widths may be omitted (the engine then sizes the power nets
+    # itself); given, they must pair one to one with the nets (#1410).
+    pn = list(getattr(ns, 'power_nets', None) or [])
+    pw = list(getattr(ns, 'power_nets_widths', None) or [])
+    if pn and pw and len(pn) != len(pw):
+        return (f"--power-nets ({len(pn)}) and --power-nets-widths ({len(pw)}) "
+                f"must have the same length")
+
+
 def _repair_count_mismatch(ns, cwd):
     if ns.nets and ns.plane_layers and len(ns.nets) != len(ns.plane_layers):
         return "when both --nets and --plane-layers are given, counts must match"
@@ -274,7 +284,7 @@ def _cap_intent_unreadable(ns, cwd):
 POST_PARSE = {
     'route.py': (_fab_overrides_missing, _output_twice, _route_group_empty,
                  _keep_away, _route_force_reroute_unscoped, _route_group_sources,
-                 _net_clearances_unreadable),
+                 _route_power_nets_count_mismatch, _net_clearances_unreadable),
     'route_diff.py': (_keep_away, _fab_overrides_missing, _output_twice,
                       _net_clearances_unreadable),
     'route_planes.py': (_fab_overrides_missing, _output_twice,
@@ -314,6 +324,7 @@ REFUSAL_SITES = {
         'if _kae': ('argv', '_keep_away'),
         '--force-reroute requires an explicit net':
             ('argv', '_route_force_reroute_unscoped'),
+        '--power-nets (': ('argv', '_route_power_nets_count_mismatch'),
         '--component matched no footprint on this':
             ('board', "the board's footprint references"),
         # parse_sources is the argument half; block_refs, in the same try,

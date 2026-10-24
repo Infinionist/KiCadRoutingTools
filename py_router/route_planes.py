@@ -4817,8 +4817,9 @@ Examples:
 
     # Make the output project's KiCad DRC constraints consistent with the routed
     # clearances/sizes (issue #160); only edits the .kicad_pro, never the board.
-    if not args.no_fix_drc_settings and not args.dry_run \
-            and args.output_file and os.path.isfile(args.output_file):
+    _wrote_output = (not args.dry_run and args.output_file
+                     and os.path.isfile(args.output_file))
+    if not args.no_fix_drc_settings and _wrote_output:
         try:
             import clearance_ledger
             eff_clearance = clearance_ledger.effective(args.clearance)
@@ -4860,9 +4861,11 @@ Examples:
                 **drc_fix_kwargs(args))
         except Exception as e:
             print(f"  (skipped DRC-settings fix: {e})")
+    if _wrote_output:
         # #581: record an ACTIVE same-net pad via clearance in the output's
         # project so every later chain step keeps its vias off same-net pads
-        # too. After fix_project_for_output so the .kicad_pro exists.
+        # too. After fix_project_for_output so the .kicad_pro exists; written
+        # even under --no-fix-drc-settings (#1415).
         try:
             from protected_nets import (persist_same_net_pad_clearance,
                                         pro_path_for_board)

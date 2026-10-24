@@ -4475,6 +4475,13 @@ class RoutingDialog(wx.Dialog):
                 edge_clearance=config.get('board_edge_clearance'),
                 # #581: recorded as route.py records --same-net-pad-clearance
                 same_net_pad_clearance=config.get('same_net_pad_clearance'))
+        else:
+            # The tool records (protected nets, impedance, same-net pad
+            # clearance) are not DRC floors: an unchecked box must not void
+            # them (#1415, as route.py --no-fix-drc-settings).
+            from .gui_utils import persist_live_tool_records
+            persist_live_tool_records(
+                board, config.get('same_net_pad_clearance'))
 
     def _add_via_to_board(self, board, via, get_layer_id):
         """Add a via to the pcbnew board."""

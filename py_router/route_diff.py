@@ -3106,8 +3106,9 @@ Examples:
     # Make the output project's DRC design rules consistent with the floors we
     # just routed to (issue #160), mirroring route.py, so a manual DRC in KiCad
     # flags only genuine problems instead of stock-default noise.
-    if not args.no_fix_drc_settings and not args.skip_routing \
-            and args.output_file and os.path.isfile(args.output_file):
+    _wrote_output = (not args.skip_routing and args.output_file
+                     and os.path.isfile(args.output_file))
+    if not args.no_fix_drc_settings and _wrote_output:
         try:
             import clearance_ledger
             eff_clearance = clearance_ledger.effective(args.clearance)
@@ -3124,10 +3125,13 @@ Examples:
                 **drc_fix_kwargs(args))
         except Exception as e:
             print(f"  (skipped DRC-settings fix: {e})")
+    if _wrote_output:
         # #521: record this step's protection-worthy nets (routed diff pairs,
         # matched groups) and impedance declarations in the output project so
         # later steps refuse to rip the former and redo the latter at the same
-        # widths.
+        # widths. Independent of the DRC-floor writeback (#1415):
+        # --no-fix-drc-settings keeps the floors from being lowered, it must
+        # not void the records.
         try:
             from protected_nets import (consume_protection_candidates,
                                         consume_impedance_specs,
