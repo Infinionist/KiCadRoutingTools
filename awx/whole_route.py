@@ -1671,6 +1671,15 @@ def main():
     ap.add_argument('--inproc', action='store_true',
                     help='every stage in this process rather than each in its own')
     a = ap.parse_args()
+    # (before the run is spent: its solves and fanouts plan with ortools, each stage failing in a log of its own
+    # without it, #1355)
+    sys.path.insert(0, PYR)
+    from startup_checks import StartupCheckError, check_bus_dependencies
+    try:
+        check_bus_dependencies()
+    except StartupCheckError as e:
+        print(f'whole_route: {e}', file=sys.stderr)
+        sys.exit(2)
     global INPROC
     INPROC = a.inproc
     if a.loop:

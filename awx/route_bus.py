@@ -1458,6 +1458,13 @@ def main():
         ap.error('OUT is needed, and --src and --dest go together')
     if a.bus and a.src is not None:
         ap.error('--bus names the buses: no --src/--dest with it')
+    # (before the run is spent: without ortools every stage that plans fails in a log of its own, #1355)
+    from startup_checks import StartupCheckError, check_bus_dependencies
+    try:
+        check_bus_dependencies()
+    except StartupCheckError as e:
+        print(f'route_bus: {e}', file=sys.stderr)
+        sys.exit(2)
     try:
         buses = [parse_bus(b) for b in a.bus] if a.bus else None
     except ValueError as e:

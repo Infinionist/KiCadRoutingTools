@@ -2035,9 +2035,8 @@ channels first, and the other escapes leave round it.
    summary, exit codes by outcome); the GUI calling the same function on a
    worker thread; the wiring CLAUDE.md asks for (plan executor action,
    `reset_params_to_defaults`, settings persistence, `manifest_to_plan`,
-   `test_cli_postpass_coverage`, a parity gate); ortools optional in
-   `deps_check`; the `lane_search` and `pair_search` crate changes' release
-   binaries.
+   `test_cli_postpass_coverage`, a parity gate); the `lane_search` and
+   `pair_search` crate changes' release binaries.
 10. **The gate.** The full chain with and without the step on the corpus's
     array-pair DDR boards (allwinner_h3_ddr3, zynq_ad9364, orangecrab, keks,
     ulx5m_gatemate, sechzig): unrouted plus broken nets and real DRC not
