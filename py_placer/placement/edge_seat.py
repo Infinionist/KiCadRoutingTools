@@ -480,11 +480,14 @@ def seats(state, pcb, pcb_file, intent, movable, crowded=None
             continue
         cls = c.get('class') or classify_part(pcb.footprints[ref], ref).name
         if cls not in SEATED_CLASSES:
+            # The row IS the declaration: `rule_edge_connector` grades the
+            # edge of every row whatever its class, so a row the seat skipped
+            # shipped a part the grade failed (#1384). Seated as a
+            # connector_affinity part would be; said so.
             what = (f"declared class {cls}" if c.get('class')
                     else cls or 'no part class')
             notes.append(f"{ref} is declared on the {c['edge']} edge but is not an edge part "
-                         f"({what}): placed as any other part")
-            continue
+                         f"by class ({what}): seated there as declared")
         entries.append(c)
     if not entries:
         return out, notes, unseated
