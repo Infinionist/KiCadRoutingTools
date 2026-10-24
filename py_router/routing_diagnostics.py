@@ -982,12 +982,21 @@ def static_boxin_hint(result, config, pcb_data=None, *, return_verdict=False):
             grid_advice = (f"--grid-step {finer:g} scoped to just the failing nets "
                            f"via --nets (board-global it is ~{cells / 1e6:.0f}M "
                            f"cells/layer and may exhaust memory)")
+    # A suggested clearance / track is only ever NARROWER than the run's own
+    # (#1394): advising 0.15 to a run already at 0.09 / 0.0762 asked for a
+    # wider clearance and track, the opposite of the lever.
+    narrower = []
+    if config.clearance > 0.15:
+        narrower.append("--clearance 0.15")
+    if config.track_width > 0.15:
+        narrower.append("--track-width 0.15")
+    advice = " ".join([grid_advice] + narrower)
     return _ret(
         f"Hint: search exhausted after only {iters} iterations with no rippable "
         f"blockers - the start/target pads are boxed in by static obstacles "
         f"(neighboring pads + clearance), not by congestion. For fine-pitch "
         f"parts try a finer grid and/or smaller clearance/track, e.g. "
-        f"{grid_advice} --clearance 0.15 --track-width 0.15 "
+        f"{advice} "
         f"(current: grid {config.grid_step:g}, clearance {config.clearance:g}, "
         f"track {config.track_width:g} mm)",
         # The same decision as data: the iteration count it was made on and

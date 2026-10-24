@@ -3111,10 +3111,13 @@ side effect, not about the one the hint names. And on a board with pours, the
 retry's `--nets` carries the poured nets too (#1032).
 
 **The hint's suggested values are an EXAMPLE, not a derivation — read its
-`(current: ...)` tail.** On a board already routing at 0.15/0.15 the box-in hint
-recommends `--clearance 0.15 --track-width 0.15`, the values already in force,
-so the only novel token in the whole sentence is the grid. The tail is what
-tells you that, and the grid alone is not a lever (see below).
+`(current: ...)` tail.** The box-in hint suggests a clearance or track only when
+it is narrower than the run's own (`0.15` against a run above it), so on a board
+already routing at or below 0.15 the only novel token in the whole sentence is
+the grid. The tail tells you that, and the grid alone is not a lever (see
+below). A failure printed as `ROUTE FAILED - ripping N blocker net(s) (...) did
+not free a path` is not a box-in at all: the ladder found blockers, ripped and
+restored them.
 
 ### Diagnose and Retry
 
