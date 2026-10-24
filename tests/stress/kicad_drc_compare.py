@@ -144,7 +144,10 @@ KICAD_COURTYARD_TYPES = {"courtyards_overlap"}
 # the repo named. Graded at the project's severity, like the copper classes
 # before #526 lifted them, and never in the copper match.
 KICAD_THERMAL_TYPES = {"starved_thermal"}
-_THERMAL_PAD_RE = re.compile(r"Pad\s+(\S+)\s+\[[^\]]*\]\s+of\s+(\S+)")
+# KiCad 10 spells a through-hole pad "PTH pad 7 [GND] of JP1" (lower-case
+# `pad`, #1406) and an SMD one "Pad 1 [GND] of BUS1 on bottom_copper".
+_THERMAL_PAD_RE = re.compile(
+    r"(?:\b(?:N?PTH|SMD)\s+)?\b[Pp]ad\s+(\S+)\s+\[[^\]]*\]\s+of\s+(\S+)")
 
 MATCH_RADIUS_MM = 0.5
 
