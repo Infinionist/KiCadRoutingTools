@@ -3299,8 +3299,49 @@ def grade_body_overlap(pcb_data, clearance: float,
     # COURTYARD pair for that reason threw away findings silk had nothing to
     # do with -- measured, glasgow_revC's J1<->TP13, J1<->TP15, J3<->TP1 and
     # orangecrab's J5<->J6, all pre-existing.
+    # #1401: the one silk drawing that DOES decide. A silk-sourced part whose
+    # silk CLOSES into a loop has drawn a housing, and another part whose pad
+    # copper lies wholly inside that loop is under it -- One-Air-Max's
+    # battery holder stopped gating when #1201 rejected the 0.06 mm F.Fab dot
+    # that had been its body, and its capacitors sat inside it as `buildable`.
+    # Open silk (corner brackets, side ticks: the SOT89 above) never closes,
+    # so it keeps its structural exemption.
+    _silk_loops: Dict[str, object] = {}
+
+    def _closed_silk_loop(ref):
+        if ref in _silk_loops:
+            return _silk_loops[ref]
+        loop = None
+        fp = fps.get(ref)
+        if fp is not None and path:
+            try:
+                from placement.parser import (OUTLINE_POLYGON,
+                                              extract_silk_shapes)
+                got = (extract_silk_shapes(path).get(ref) or {}).get(
+                    footprint_side(fp))
+            except Exception:                                # noqa: BLE001
+                got = None
+            if got is not None and got[1] == OUTLINE_POLYGON:
+                loop = place_local_shape(got[0], fp.x, fp.y,
+                                         fp.rotation or 0.0)
+        _silk_loops[ref] = loop
+        return loop
+
+    def _closed_silk_encloses(p) -> bool:
+        for outer, inner in ((p.a, p.b), (p.b, p.a)):
+            if outer not in silk_sourced or inner not in fps:
+                continue
+            loop = _closed_silk_loop(outer)
+            if loop is None:
+                continue
+            ps = bodyless_pad_shape(fps[inner])
+            if ps is not None and pads_under_body_frac(ps, loop) >= 0.999:
+                return True
+        return False
+
     def _silk_drawn_pair(p) -> bool:
-        return p.a in silk_sourced or p.b in silk_sourced
+        return ((p.a in silk_sourced or p.b in silk_sourced)
+                and not _closed_silk_encloses(p))
     containment_blocking = [p for p in contained
                             if p.waiver not in _GATE_EXEMPT
                             and not _silk_drawn_pair(p)]
