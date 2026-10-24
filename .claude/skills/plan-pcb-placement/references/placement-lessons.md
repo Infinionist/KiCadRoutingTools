@@ -535,6 +535,16 @@ six others.
     (esp-rust-board 7 vs 4 clean of 12, nudac a median of 1 vs 3).
   - *Apply:* take the groups from the sheets and keep each drawn block in one
     group (SKILL.md §3.3).
+- **A designer's layout note ("C11 close to pin45") is ignored unless it becomes
+  a `proximity` row.**
+  - *Routed:* on 8 corpus boards placed from a pile with the same groups, 12 seeds
+    each and every seed fast-routed, the noted pairs met their limit (2.0 mm at a
+    pin, 5.0 mm part to part) in 58 of 180 seeds without the rows and 164 of 180
+    with them, with no measurable routing cost. Without a row the placer put
+    usb_fm_radio's C6 a median 11 mm from its pin. Notes go stale: on usb_fm_radio
+    two of four pin notes name a cap a renumbering moved to another rail.
+  - *Apply:* SKILL.md §3.3. The human designers kept these pairs closer than 2 mm
+    in about half the cases, so a limit the user gives outranks the default.
 - **On a 4-layer board, leave about 1 mm between neighbouring groups.** Inside a group,
   parts are about 0.2 mm apart. 2-layer boards show no such gutter.
   - *Humans:* boundary parts sit 1.02 mm from the nearest part of another group and

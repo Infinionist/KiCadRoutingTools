@@ -50,6 +50,28 @@ A short note (`NOTE_MAX_CHARS`) belongs to the nearest block within
 `NOTE_REACH_MM`: "RTC Clock Crystal", "ESP32 3V3 LDO", "Buck Converter (12v
 -> 5v)". 87% of the boards carry notes, and 28% of their blocks of three or
 more parts have one beside them.
+
+A note that asks for a placement ("C11 close to pin45", "Place R4/R5 close
+to RP2040") is a LAYOUT NOTE, the designer's own proximity claim; 13% of
+the boards carry one. Each is split into clauses, one per `close to` /
+`next to` / ..., and a clause whose subject and partner the note NAMES (a
+reference, a value one part carries, or a pin list with the part it is
+`of`, else the part drawn nearest that has those pads) gives a candidate
+`proximity[]` row with `max_mm` null -- the limit is the author's. A subject
+the note leaves unnamed ("Place close to U6") is not guessed: the parts drawn
+nearest the note are printed instead.
+
+Every row is checked against the netlist (`_stale`), because a note is text
+and survives a re-annotation that renumbers the parts it names: on
+usb_fm_radio two of four pin notes name a cap on another rail. A row whose
+subject is not on the named pin's net (or whose two parts share no net) is
+returned as STALE, with the two-pad parts that ARE on that net, and never
+as a row.
+
+Measured, 8 corpus boards placed from a pile with the same groups, 12 seeds
+each and every seed fast-routed: with the notes' rows, a noted pair met its
+limit in 164 of 180 seeds, against 58 of 180 without them, at no measurable
+routing cost.
 """
 from __future__ import annotations
 
@@ -70,8 +92,23 @@ BLOCK_CUT_MM = 25.4
 #: note's estimated text box.
 NOTE_REACH_MM = 12.7
 
-#: Longer text is a comment, not a block's title.
+#: Longer text is a comment, not a block's title (it is still read for a
+#: layout instruction).
 NOTE_MAX_CHARS = 80
+
+#: A note asking for a placement. "Do not place" is a DNP note, never this.
+_LAYOUT_NOTE = re.compile(
+    r"\b(close\s+to|as\s+close\s+as|closest\s+to|next\s+to|adjacent\s+to|"
+    r"near(?:by)?\s+(?:to\b|the\b|pins?\b|[A-Z]{1,3}\d)|"
+    r"keep\b[^.\n]{0,25}\b(?:short|close)|"
+    r"short(?:est)?\s+(?:trace|track|path|loop|connection)s?)", re.I)
+_PLACE_VERB = re.compile(r"\bplace[ds]?\b", re.I)
+_NOT_PLACE = re.compile(r"\b(?:do\s+not|don'?t|not|no)\s+place", re.I)
+_PLACE_WORD = re.compile(
+    r"\b(?:close|near|next|adjacent|beside|under|right\s+at)\b", re.I)
+_PINS = re.compile(
+    r"\bpins?\s*[#(]?\s*(\d+(?:\s*(?:,|/|&|and|\+)\s*\d+)*)", re.I)
+_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_+\-.]*\d[A-Za-z0-9_+\-.]*")
 
 _TOK = re.compile(r'\(|\)|"(?:[^"\\]|\\.)*"|[^\s()"]+')
 
@@ -438,11 +475,105 @@ def _natural(ref: str):
     return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', ref)]
 
 
+def _ref_for(tok: str, refs, values) -> Optional[str]:
+    """The board ref a note's word names: a reference as the sheet spells it
+    (`refs` maps it to the board's), or a part value only one part carries
+    (`RP2040`, or the start of `GS2971A-IBE3`)."""
+    tok = tok.strip('.,;:!?()')
+    if tok in refs:
+        return refs[tok]
+    hit = values.get(tok.upper(), [])
+    if len(hit) == 1:
+        return hit[0]
+    if len(tok) >= 5:
+        hit = sorted({r for v, rs in values.items() if v.startswith(tok.upper())
+                      for r in rs})
+        if len(hit) == 1:
+            return hit[0]
+    return None
+
+
+def _named(text: str, refs, values) -> List[Tuple[int, int, str, object]]:
+    """What a note names, in order: `(start, end, 'ref', ref)` and
+    `(start, end, 'pins', [numbers])`."""
+    out = []
+    for m in _TOKEN.finditer(text):
+        hit = _ref_for(m.group(0), refs, values)
+        if hit:
+            out.append((m.start(), m.end(), 'ref', hit))
+    for m in _PINS.finditer(text):
+        out.append((m.start(), m.end(), 'pins', re.findall(r'\d+', m.group(1))))
+    return sorted(out, key=lambda t: t[0])
+
+
+def _keywords(sentence: str) -> List[Tuple[int, int]]:
+    """Where a sentence asks for a placement: `close to`, `next to`, ... or,
+    in a sentence with the verb `place` (never `do not place`), its `near` /
+    `close` word."""
+    hits = [m.span() for m in _LAYOUT_NOTE.finditer(sentence)]
+    if not hits and _PLACE_VERB.search(sentence) \
+            and not _NOT_PLACE.search(sentence):
+        m = _PLACE_WORD.search(sentence)
+        if m:
+            hits.append(m.span())
+    return hits
+
+
+def _sentences(text: str) -> List[str]:
+    """A note's sentences. A line break is not one: eeschema wraps a note by
+    hand, so "C26 close to / MCU pin 44" is one instruction."""
+    flat = ' '.join(text.split())
+    return [s for s in re.split(r'(?<=[.;!?])\s+', flat) if s]
+
+
+def _clauses(sentence: str, refs, values) -> List[Dict]:
+    """`[{subjects, target, pins}]`, one per keyword: the parts named before
+    it (since the last clause's target) are its subjects, and the first
+    thing named after it -- a part, or a pin list and the part it is `of` --
+    its target. "C10 close to pin 11 C11 close to pin 10" is two clauses."""
+    kws = _keywords(sentence)
+    items = _named(sentence, refs, values)
+    out = []
+    start = 0
+    for k, (ks, ke) in enumerate(kws):
+        stop = kws[k + 1][0] if k + 1 < len(kws) else len(sentence)
+        subjects = [v for s, e, kind, v in items
+                    if kind == 'ref' and start <= s and e <= ks]
+        after = [t for t in items if ke <= t[0] < stop]
+        target, pins, end = None, [], ke
+        if after:
+            s0, e0, kind, v = after[0]
+            end = e0
+            if kind == 'ref':
+                target = v
+            else:
+                pins = v
+                if len(after) > 1 and after[1][2] == 'ref' and re.search(
+                        r'\b(?:of|on)\b', sentence[e0:after[1][0]], re.I):
+                    target, end = after[1][3], after[1][1]
+        out.append({'subjects': [r for r in subjects if r != target],
+                    'target': target, 'pins': pins})
+        start = end
+    return out
+
+
+def _chip_with_pads(pins, drawn, pcb_data, exclude) -> Optional[str]:
+    """The part drawn nearest the note that has every pad `pins` names and
+    more than three pads (a pin number on a passive names nothing)."""
+    for _d, r in drawn:
+        fp = pcb_data.footprints.get(r)
+        pads = {str(p.pad_number) for p in (fp.pads or ())} if fp else set()
+        if r not in exclude and len(pads) > 3 and all(p in pads for p in pins):
+            return r
+    return None
+
+
 def context(pcb_data, root_path: str) -> Dict:
     """The schematic, matched to `pcb_data`'s footprints.
 
     Returns `parts` (`{ref: {sheet, block}}`), `sheets` (each instance with
-    its blocks, their notes, and its single parts) and the match counts."""
+    its blocks, their notes, and its single parts), `layout_notes` (with
+    candidate `proximity[]` rows, `max_mm` null) and the match counts."""
     from placement.groups import sheet_and_symbol
 
     tree = read_tree(root_path)
@@ -471,8 +602,16 @@ def context(pcb_data, root_path: str) -> Dict:
         matched_copper += bool(copper)
         on_board.setdefault(prefix, []).append((ref, s))
 
+    refs = {r: r for r in (pcb_data.footprints or {})}
+    values: Dict[str, List[str]] = {}
+    for r, fp in (pcb_data.footprints or {}).items():
+        v = (getattr(fp, 'value', '') or '').strip().upper()
+        if v:
+            values.setdefault(v, []).append(r)
+
     parts: Dict[str, Dict] = {}
     sheets = []
+    layout_notes = []
     nb = 0
     for prefix, path, names in tree['instances']:
         f = tree['files'][path]
@@ -519,6 +658,17 @@ def context(pcb_data, root_path: str) -> Dict:
         for r in singles:
             parts[r] = {'sheet': sheet_name, 'block': None}
 
+        # A note names parts as the SHEET spells them: its own references
+        # and values, mapped to this instance's board parts, before the
+        # board's (a multi-instance sheet's file carries one instance's).
+        note_refs = dict(refs)
+        note_values = {k: list(v) for k, v in values.items()}
+        for ref, s in members:
+            if s['ref'] and not s['ref'].endswith('?'):
+                note_refs[s['ref']] = ref
+            v = (s['value'] or '').strip().upper()
+            if v and ref not in note_values.setdefault(v, []):
+                note_values[v].append(ref)
         loose = []
         for note in f['notes']:
             flat = ' '.join(note['text'].split())
@@ -529,6 +679,10 @@ def context(pcb_data, root_path: str) -> Dict:
                     blocks[near[1]]['notes'].append(flat)
                 elif members:
                     loose.append(flat)
+            if members and any(_keywords(x) for x in _sentences(note['text'])):
+                layout_notes.append(_layout_note(
+                    note, flat, sheet_name, members, boxes, note_refs,
+                    note_values, pcb_data))
         sheets.append({
             'sheet': sheet_name, 'file': os.path.relpath(
                 path, os.path.dirname(tree['root'])).replace('\\', '/'),
@@ -551,7 +705,85 @@ def context(pcb_data, root_path: str) -> Dict:
         'block_cut_mm': BLOCK_CUT_MM,
         'parts': parts,
         'sheets': [s for s in sheets if s['parts']],
+        'layout_notes': layout_notes,
     }
+
+
+def _layout_note(note, flat, sheet, members, boxes, refs, values, pcb_data):
+    """One layout instruction: what it names, what is drawn nearest it, and a
+    candidate `proximity[]` row (`max_mm` null) for each clause whose
+    subject AND partner it names. A subject the note does not name is not
+    guessed from the drawing: `drawn_nearest` is printed for the reader."""
+    drawn = sorted(((min(_gap(note['box'], u) for u in boxes[i]), members[i][0])
+                    for i in range(len(members))))
+    nearest = [r for d, r in drawn[:3] if d <= NOTE_REACH_MM]
+    named, pin_owner, pins, rows, stale, unresolved = [], [], [], [], [], 0
+    why = f'schematic note: "{flat}"'
+    for sentence in _sentences(note['text']):
+        for c in _clauses(sentence, refs, values):
+            target = c['target']
+            for r in c['subjects'] + ([target] if target else []):
+                if r not in named:
+                    named.append(r)
+            if target is None and c['pins']:
+                target = _chip_with_pads(c['pins'], drawn, pcb_data,
+                                         set(c['subjects']))
+                if target and target not in pin_owner:
+                    pin_owner.append(target)
+            pins += [p for p in c['pins'] if p not in pins]
+            if not c['subjects'] or target is None:
+                unresolved += 1
+                continue
+            for subj in c['subjects']:
+                if c['pins']:
+                    row = {'ref': target, 'near': subj,
+                           'pads': {target: list(c['pins'])},
+                           'max_mm': None, 'why': why}
+                else:
+                    row = {'ref': subj, 'near': target,
+                           'max_mm': None, 'why': why}
+                bad = _stale(row, pcb_data)
+                if bad:
+                    stale.append(dict(row, stale=bad))
+                else:
+                    rows.append(row)
+    return {'text': flat, 'sheet': sheet, 'named': named, 'pins': pins,
+            'pin_owner': pin_owner, 'drawn_nearest': nearest, 'rows': rows,
+            'stale': stale, 'unresolved_clauses': unresolved}
+
+
+def _nets(fp):
+    return {getattr(q, 'net_id', 0) for q in (fp.pads or ()) if getattr(q, 'net_id', 0)}
+
+
+def _stale(row, pcb_data):
+    """Why a note's row does not match the netlist, or None. A note is text
+    and survives a re-annotation that renumbers the parts it names: on
+    usb_fm_radio two of four pin notes name a cap on another rail. A pin row
+    holds when the subject sits on a named pin's net; a part row when the
+    two parts share a net."""
+    fps = pcb_data.footprints
+    if row.get('pads'):
+        chip, subj = row['ref'], row['near']
+        pins = set(row['pads'][chip])
+        pin_nets = {q.net_id: q.net_name for q in (fps[chip].pads or ())
+                    if str(q.pad_number) in pins and q.net_id}
+        if not pin_nets:
+            return f'{chip} has no pad {", ".join(sorted(pins))} on a net'
+        if _nets(fps[subj]) & set(pin_nets):
+            return None
+        on = sorted({q.component_ref for nid in pin_nets
+                     for q in pcb_data.nets[nid].pads
+                     if q.component_ref not in (chip,)
+                     and len(fps[q.component_ref].pads or ()) == 2},
+                    key=_natural)
+        return (f'{subj} is not on {chip} pin {", ".join(sorted(pins))}\'s net '
+                f'({", ".join(sorted(set(pin_nets.values())))}); two-pad parts '
+                f'on it: {", ".join(on) or "none"}')
+    a, b = row['ref'], row['near']
+    if _nets(fps[a]) & _nets(fps[b]):
+        return None
+    return f'{a} and {b} share no net'
 
 
 def section(pcb_data, board_path: str, schematic: Optional[str] = None) -> Dict:

@@ -728,8 +728,13 @@ footprint is matched to its symbol by the uuids of its `(path ...)`, so a
 part matches whatever its reference. The `## Schematic` section prints, per
 sheet, its **blocks** -- the parts drawn together (average linkage on the gap
 between their symbols' drawn boxes, cut at 25.4 mm) -- with the short notes
-drawn beside each ("RTC Clock Crystal"), and the parts drawn on their own.
-Each part's
+drawn beside each ("RTC Clock Crystal"), the parts drawn on their own, and
+the designer's **layout notes** ("C11 close to pin45", "Place R4/R5 close to
+RP2040"): each split into clauses, with a candidate `proximity` row
+(`max_mm` null) for every clause whose two parts the note names. Each row is
+checked against the netlist, and one whose part is not on the named pin's net
+(a note left behind by a renumbering) is printed as STALE with the parts that
+are. Each part's
 entry gives its sheet and block (`parts[].schematic` in the JSON). A sheet
 file that cannot be found, and a board part on no symbol, are named. On 239
 corpus boards against where their designers put the parts, how close two

@@ -418,9 +418,9 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
         'diff_pairs': [list(t) for t in sorted(pairs or ())],
         'parts': parts,
         'pin_order': po,
-        # The project's schematic: sheets, drawn blocks and their notes.
-        # `parts[].schematic` is each part's sheet and block; the per-part
-        # map is not repeated here.
+        # The project's schematic: sheets, drawn blocks and their notes, and
+        # the designer's layout notes. `parts[].schematic` is each part's
+        # sheet and block; the per-part map is not repeated here.
         'schematic': {k: v for k, v in sch.items() if k != 'parts'},
         # #1254: converters, crystals, oscillators and ESD arrays, each leg
         # measured and a ready `proximity[]` row beside it. Report only.
@@ -449,7 +449,10 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
                          'together on one sheet: average linkage on the gap '
                          'between their symbols\' drawn boxes, cut at '
                          'BLOCK_CUT_MM. A note is a short text beside a '
-                         'block',
+                         'block. A layout note\'s rows name both parts in '
+                         'the note\'s own words and are checked against '
+                         'the netlist (STALE when the named part is not on '
+                         'the pin\'s net); max_mm is the author\'s',
             'pads_by_face': 'placement.escape.assign_faces (#850)',
             'pin_order': 'placement.pair_order.pair_metrics; a pair through '
                          'per-leg series parts (#1251): the junctions of '
@@ -1081,7 +1084,7 @@ def mating_line(m) -> str:
 
 def _schematic_md(sec) -> List[str]:
     """The `## Schematic` section: each sheet's drawn blocks with the notes
-    beside them."""
+    beside them, then the designer's layout notes."""
     L = ['## Schematic', '']
     if sec.get('skipped'):
         return L + [f"Not read ({sec['skipped']}).", '']
@@ -1130,6 +1133,36 @@ def _schematic_md(sec) -> List[str]:
         if sh['notes']:
             L.append('- other notes: '
                      + '; '.join(f'"{n}"' for n in sh['notes'][:8]))
+        L.append('')
+    notes = sec.get('layout_notes') or ()
+    if notes:
+        L.append('### Layout notes')
+        L.append('')
+        L.append('The designer\'s own placement instructions. A row names '
+                 'both parts in the note\'s words and was checked against '
+                 'the netlist; `max_mm` is null because the limit is the '
+                 'author\'s. A STALE row names a part that is not on the '
+                 'named pin\'s net (the note predates a renumbering): never '
+                 'use it. Where the note does not name its subject, the '
+                 'parts drawn nearest it are listed: read the note, and '
+                 'decide.')
+        L.append('')
+        for n in notes:
+            L.append(f"- \"{n['text']}\" (sheet `{n['sheet'] or '<root>'}`)"
+                     + (f"; names {', '.join(n['named'])}" if n['named']
+                        else '')
+                     + (f"; pin {', '.join(n['pins'])} read as "
+                        f"{', '.join(n['pin_owner'])}'s (the part drawn "
+                        f"nearest with that pad)" if n.get('pin_owner')
+                        else '')
+                     + (f"; drawn nearest {', '.join(n['drawn_nearest'])}"
+                        if n['drawn_nearest'] else ''))
+            for r in n['rows']:
+                L.append('  - row `' + json.dumps(
+                    {k: v for k, v in r.items() if k != 'why'},
+                    sort_keys=True) + '`')
+            for r in n.get('stale') or ():
+                L.append(f"  - STALE: {r['stale']}")
         L.append('')
     return L
 

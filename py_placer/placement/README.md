@@ -535,7 +535,7 @@ after a QFN fanout, as tigard's does. See
 | `floorplan.py` | The floorplan intent: emit it, grade a board against it |
 | `design_brief.py`, `reconcile.py` | The design brief and `mechanical.json`, compiled into the intent |
 | `groups.py` | Placement blocks (KiCad groups, sheets) for intent zones and `route.py --group` |
-| `schematic.py` | The project's `.kicad_sch` tree, read for grouping: each part's sheet, the drawn blocks with their notes (`board_context`'s `## Schematic`) |
+| `schematic.py` | The project's `.kicad_sch` tree, read for grouping: each part's sheet, the drawn blocks with their notes, the designer's layout notes as netlist-checked `proximity` rows (`board_context`'s `## Schematic`) |
 | `mating.py`, `connector_geometry.py`, `edge_facing.py` | Which way a connector opens; its drawn envelope against its edge; pad rows facing the outline |
 | `edge_seat.py` | An unlocked declared edge connector held to its edge: its turns, its distance, the stretches of the edge it may slide along, the end-of-run push apart |
 | `arrays.py` | Declared `arrays[]`: the formation and the pin order, graded |

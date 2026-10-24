@@ -3,8 +3,9 @@
 and board_context's `## Schematic` section).
 
 A synthetic project is written to a temp dir: a root sheet with two blocks
-drawn apart and one part drawn on its own, a sub-sheet in a subdirectory, and
-a note beside one block. The board's references deliberately
+drawn apart and one part drawn on its own, a sub-sheet in a subdirectory, a
+note beside one block, and layout notes -- one a pin claim, one STALE (its
+part on another net), one a DNP note that is not a layout note. The board's references deliberately
 DIFFER from the schematic's, because a part is matched by the uuids of its
 `(path ...)`, never by its reference.
 
@@ -89,6 +90,10 @@ def write_project(d, *, with_sub=True):
         # a power symbol is never a part
         sym('power:GND', '#PWR01', 62, 60, 'sym-gnd'),
         text('Status LED', 148, 40),
+        text('C2 close to pin 3 of RP2040', 30, 40),
+        # stale: R1 is on the LED net, not on U1 pin 1's
+        text('R1 close to pin 1 of RP2040', 30, 70),
+        text('Do not place R1', 150, 70),
         ('  (sheet (at 200 20) (size 20 10) (uuid "sheet-pwr")\n'
          '    (property "Sheetname" "Power" (at 200 19 0))\n'
          '    (property "Sheetfile" "sub/power.kicad_sch" (at 200 31 0)))\n'
@@ -107,24 +112,24 @@ def write_project(d, *, with_sub=True):
         with open(os.path.join(d, 'sub', 'power.kicad_sch'), 'w') as fh:
             fh.write(sch(sub, 'sub-uuid'))
     # The board's refs are NOT the schematic's: matching is by uuid path.
-    fps = [('BU1', 'sym-u1', 4, 'RP2040'), ('BC1', 'sym-c1', 2, None),
-           ('BC2', 'sym-c2', 2, None), ('BR1', 'sym-r1', 2, None),
-           ('BD1', 'sym-d1', 2, None), ('BJ1', 'sym-j1', 2, None),
-           ('BU2', 'sheet-pwr/sym-u2', 4, None),
-           ('BC3', 'sheet-pwr/sym-c3', 2, None),
-           ('BX9', 'no-such-symbol', 2, None)]
+    fps = [('BU1', 'sym-u1', 4, 'RP2040', 1), ('BC1', 'sym-c1', 2, None, 1),
+           ('BC2', 'sym-c2', 2, None, 1), ('BR1', 'sym-r1', 2, None, 2),
+           ('BD1', 'sym-d1', 2, None, 2), ('BJ1', 'sym-j1', 2, None, 1),
+           ('BU2', 'sheet-pwr/sym-u2', 4, None, 1),
+           ('BC3', 'sheet-pwr/sym-c3', 2, None, 1),
+           ('BX9', 'no-such-symbol', 2, None, 1)]
     npth = ('\t\t(path "/sym-h1")\n\t\t(pad "" np_thru_hole circle (at 0 0) '
             '(size 3 3) (drill 3) (layers "*.Cu" "*.Mask"))\n')
     blocks = [footprint_text('BH1', 150, 150, pads=0, extra=npth)]
-    for i, (ref, path, pads, value) in enumerate(fps):
+    for i, (ref, path, pads, value, net) in enumerate(fps):
         extra = f'\t\t(path "/{path}")\n'
         if value:
             extra += f'\t\t(property "Value" "{value}" (at 0 0))\n'
         blocks.append(footprint_text(ref, 10 + 10 * i, 20, pads=pads,
-                                     pad_net=1, extra=extra))
+                                     pad_net=net, extra=extra))
     board = os.path.join(d, 'proj.kicad_pcb')
     with open(board, 'w') as fh:
-        fh.write(board_text(''.join(blocks), nets=(0, 1)))
+        fh.write(board_text(''.join(blocks), nets=(0, 1, 2)))
     return board
 
 
@@ -189,6 +194,39 @@ def test_context(d):
           '3V3 LDO' in by_ref['BU2']['notes'], by_ref['BU2'])
     check('a power symbol is never a part',
           not any('#PWR' in r for r in parts), sorted(parts))
+    notes = {n['text']: n for n in sec['layout_notes']}
+    check('two layout notes: "Do not place" is not one',
+          sorted(notes) == ['C2 close to pin 3 of RP2040',
+                            'R1 close to pin 1 of RP2040'], sorted(notes))
+    rows = notes.get('C2 close to pin 3 of RP2040', {}).get('rows', [])
+    check('a pin row: the pin owner is the subject, named by its VALUE, and '
+          'the cap by its schematic reference, mapped to the board\'s',
+          [{k: v for k, v in r.items() if k != 'why'} for r in rows]
+          == [{'ref': 'BU1', 'near': 'BC2', 'pads': {'BU1': ['3']},
+               'max_mm': None}], rows)
+    stale = notes.get('R1 close to pin 1 of RP2040', {})
+    check('a note whose part is not on the pin\'s net is STALE, never a row, '
+          'and names the two-pad parts that are',
+          not stale.get('rows') and len(stale.get('stale') or []) == 1
+          and 'BR1 is not on BU1 pin 1' in stale['stale'][0]['stale']
+          and 'BC1' in stale['stale'][0]['stale'], stale)
+
+
+def test_layout_note_clauses():
+    from placement import schematic as S
+    refs = {r: r for r in ('C10', 'C11', 'U4', 'R4', 'R5', 'U3')}
+    values = {'RP2040': ['U3']}
+    c = S._clauses('C10 close to pin 11 C11 close to pin 10', refs, values)
+    check('two clauses in one sentence, each with its own subject and pins',
+          [(x['subjects'], x['pins']) for x in c]
+          == [(['C10'], ['11']), (['C11'], ['10'])], c)
+    c = S._clauses('Place R4/R5 close to RP2040', refs, values)
+    check('"R4/R5 close to RP2040": two subjects, the value names the part',
+          c == [{'subjects': ['R4', 'R5'], 'target': 'U3', 'pins': []}], c)
+    check('"do not place" is no layout note',
+          S._keywords('Do not place R4') == [])
+    check('a wrapped note is one sentence',
+          S._sentences('C26 close to\nMCU pin 44') == ['C26 close to MCU pin 44'])
 
 
 def test_tree_files(d):
@@ -252,8 +290,10 @@ def test_board_context(d):
     check('--md prints the section before the pin-order one',
           0 <= md.find('## Schematic') < md.find('## Pin-order agreement'),
           md[:400])
-    check('--md names the sheet and the note',
-          "### Sheet `Power`" in md and '"Status LED"' in md, md[:2000])
+    check('--md names the sheet, the note, the layout row and the stale one',
+          "### Sheet `Power`" in md and '"Status LED"' in md
+          and '"pads": {"BU1": ["3"]}' in md and 'STALE: BR1' in md,
+          md[:3000])
     r = subprocess.run([sys.executable, '-X', 'utf8', TOOL, board, '--json',
                         '--no-schematic'], capture_output=True, text=True,
                        env=run_utils.tool_env(), timeout=600)
@@ -271,6 +311,8 @@ def main():
         test_average_link()
         print('context')
         test_context(d)
+        print('layout note clauses')
+        test_layout_note_clauses()
         print('tree_files')
         test_tree_files(d)
         print('discover')

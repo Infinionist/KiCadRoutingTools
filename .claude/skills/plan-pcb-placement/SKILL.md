@@ -70,7 +70,7 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   `python3 -X utf8 py_tools/board_context.py <board> --md` (every part's value,
   pin functions, nets by face, what each cap serves, `CROSSED` pin-order pairs,
   and, from the project's schematic, each sheet's drawn blocks with the notes
-  beside them). It finds the schematic beside
+  beside them and the designer's layout notes). It finds the schematic beside
   the board (`<board>.kicad_sch`); if its `## Schematic` section says none was
   found and the project has one elsewhere, run it again with
   `--schematic <root .kicad_sch>`.
@@ -95,8 +95,9 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   pad edge, and a ready `proximity` row with `max_mm` left null. Ask the
   user for the limits (crystal to its load pins, input cap to the
   regulator's VIN and PGND, inductor to SW, ESD array or diode to its
-  connector), put the rows in the brief's or the intent's `proximity`, and
-  report which you were given. Ask
+  connector, and each row of the schematic's layout notes, §3.3), put the
+  rows in the brief's or the intent's `proximity`, and report which you
+  were given. Ask
   in the same breath about `emc_roles.keep_away`: per crystal or oscillator,
   a rule keeping its clock nets away from every switch node, with its
   measured gap and a `brief_row` ready to paste into the brief's
@@ -217,6 +218,16 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
     Converter (12v -> 5v)") says what the block is: use it for the group's
     name and `why`, and for the template candidates (a buck or boost note
     names a switching stage).
+  - **A layout note is the designer's own proximity claim** ("C11 close to
+    pin45"). Put each row the `### Layout notes` subsection prints into the
+    intent's `proximity[]`, with a `why` quoting the note, and ask the user
+    for each limit along with the EMC rows (§2). With nobody to ask, use
+    2.0 mm for a part named at a pin (a row with `pads`) and 5.0 mm for a
+    part named near a part. A note that does not name its subject lists the
+    parts drawn nearest it: write its row only when the note, those parts
+    and the nets leave no doubt which two parts, and which pin, it means.
+    Never write a row marked STALE: the note names a part that is not on
+    that pin's net. Name the rows you added, and their limits, in REPORT.md.
 - **A cap belongs with the IC whose supply pin it decouples.** A load or RC
   cap belongs with its crystal or its button.
 - **Crystals are claimed for you.** `place_simple` claims each passive
