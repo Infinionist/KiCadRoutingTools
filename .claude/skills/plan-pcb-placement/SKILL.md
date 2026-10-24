@@ -822,6 +822,14 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
    python3 -X utf8 py_router/route_planes.py {in} {out} --nets GND --plane-layers B.Cu
    python3 -X utf8 py_router/route.py {in} {out} --nets '*' --json-out {dir}/route.json
    ```
+   The chain is ONE arm of the routing recipe, and the arms can pick different
+   seeds. Where `plan-pcb-routing` prescribes two arms for the board's class
+   (a 2-layer through-hole board without buses: its defaults, and
+   `--layer-costs 1.0 1.0 --via-cost 600`), write one chain per arm
+   (`judge_chain_A.txt`, `judge_chain_B.txt`), judge the seeds under each, and
+   keep a seed that wins under the arm the final route will use; where both
+   arms will be routed, one that ranks first or second under both. Any other
+   board has one chain: the recipe `plan-pcb-routing` prescribes for it.
 2. **Fast-route and score the seeds `wk/<run>/judge.json` names** (the
    `--judge` legal seeds, buildable and floorplan-clean first, then lowest
    `final.cost`; place_simple grades each seed with `check_assembly
@@ -854,7 +862,14 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
    which say nothing about the placement.) It ends by ranking the seeds
    and naming the best. `--jobs N` routes N seeds at once: a judging route
    takes up to about 1.3 GB on a small board and 5 GB on a 350-part one.
-   Never ship a `--quick` board.
+   Never ship a `--quick` board. Level 2 is a screen, not a verdict: its
+   copper reads -2% to +8% off the full route's per seed, and when every seed
+   routes its blocking is decided by one open net. Seeds that lie within that
+   spread of the best (the same defects, blocking within 1, copper within 10%)
+   are NOTEd; settle them with `--confirm close`, which routes those seeds
+   again at the full level (`--quick` off every route step, into
+   `s<S>_full.kicad_pcb` and `s<S>_full.score.json`) and names the best of
+   them by the same key (`--confirm K` confirms the K best instead).
 3. **Keep the best** by the placement's own defects first (floorplan errors
    plus the assembly count), then blocking, then `joins_needed`, then vias,
    copper_mm, segments (`quick_score.judge_key`): every seed whose floorplan
