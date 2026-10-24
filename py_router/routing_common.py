@@ -827,6 +827,20 @@ def run_length_matching(
             net_name_to_result[net_name] = result
 
     all_routed_names = list(net_name_to_result.keys())
+    # #1391: a named-pattern group also takes the board's own copper -- a member
+    # an earlier step routed and left protected is not in this run's results
+    # (protected nets are never registered as rip candidates), yet it belongs to
+    # the group and sets its target. The group matcher measures it from the
+    # board (`_seed_group_members_from_board`).
+    _have = set(all_routed_names)
+    _board_copper_names = []
+    _with_copper = ({s.net_id for s in pcb_data.segments}
+                    | {v.net_id for v in pcb_data.vias})
+    for _nid in _with_copper:
+        _n = pcb_data.nets.get(_nid)
+        if _n is not None and _n.name and _n.name not in _have:
+            _board_copper_names.append(_n.name)
+    _board_copper_names.sort()
     # #1247: the `auto` grouper's input is this call's scope, never the
     # pre-existing nets registered as rip candidates.
     auto_input_names = []
@@ -885,7 +899,8 @@ def run_length_matching(
                                 all_processed_vias.extend(result['new_vias'])
         else:
             # Find nets matching the patterns in this group
-            matching_nets = find_nets_matching_patterns(all_routed_names, group)
+            matching_nets = find_nets_matching_patterns(
+                all_routed_names + _board_copper_names, group)
             formed_groups.append({'name': ' '.join(group), 'source': 'patterns',
                                   'patterns': list(group),
                                   'members': sorted(matching_nets)})
@@ -918,6 +933,14 @@ def run_length_matching(
     except AttributeError:
         pass
     if report is not None:
+        # #1391: each member's verdict (matched / over_target / unmatched /
+        # unmeanderable / unmatched_board_copper, with the shortfall and the
+        # .kicad_dru window it was graded against).
+        _status = getattr(config, '_length_match_status', None) or {}
+        for g in formed_groups:
+            _ms = {m: _status[m] for m in g['members'] if m in _status}
+            if _ms:
+                g['member_status'] = _ms
         report['groups'] = formed_groups
     return net_name_to_result
 

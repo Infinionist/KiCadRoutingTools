@@ -2695,7 +2695,13 @@ def sweep_dangling_via_branches(board, net_ids, protected_ids=frozenset(),
     copper is what the next chain step welds to (#473). A pad is never
     removed. Locked copper and ``protected_ids``
     (``id()`` of input copper under --keep-input-copper) are never touched,
-    and a removal that would need one is skipped."""
+    and a removal that would need one is skipped.
+
+    The same gate removes the DEAD TAILS of a finished net (#1372): track ends
+    that join nothing (`prune_dead_end_segments`'s test), on a net with no pour
+    whose pads are all joined, when the removal leaves every pad as joined and
+    adds no dangling end, dangling via or soft joint. ``stats['tails']`` counts
+    them."""
     from collections import defaultdict
     from check_weird import (via_support_parts, _check_dangles,
                              _check_unsupported_vias)
@@ -2704,6 +2710,7 @@ def sweep_dangling_via_branches(board, net_ids, protected_ids=frozenset(),
     copper = list(getattr(board.board_info, 'copper_layers', None)
                   or ['F.Cu', 'B.Cu'])
     removed_s, removed_v = [], []
+    tails = []
     tol = 1e-3
 
     def grade(nid, segs, vias, pads, zones):
@@ -2765,7 +2772,7 @@ def sweep_dangling_via_branches(board, net_ids, protected_ids=frozenset(),
         for nid in sorted(net_ids):
             segs = [s for s in board.segments if s.net_id == nid]
             vias = [v for v in board.vias if v.net_id == nid]
-            if not vias:
+            if not vias and not segs:
                 continue
             pads = board.pads_by_net.get(nid, [])
             zones = [z for z in (getattr(board, 'zones', None) or [])
@@ -2810,6 +2817,35 @@ def sweep_dangling_via_branches(board, net_ids, protected_ids=frozenset(),
                 removed_s.extend(gone_s)
                 removed_v.append(v)
                 progressed = True
+            # Dead tails (#1372): a track end that joins nothing on a net whose
+            # pads are all joined. The in-run cleanup scopes an unfinished net
+            # out (#473) and the later passes never revisit it, so a net the
+            # finalize or the reconciliation finished ships its tails until a
+            # second identical run sweeps them. Pour nets are left alone (a
+            # tail's anchor in a pour is the fill's word, not the model's).
+            if zones or not segs:
+                continue
+            if base is None:
+                base = grade(nid, segs, vias, pads, zones)
+            if base[0] or not base[1]:
+                continue
+            fixed_segs = [x for x in segs
+                          if keep_out(x) or getattr(x, 'graphic', False)]
+            _fixed_ids = {id(x) for x in fixed_segs}
+            cands = [x for x in segs if id(x) not in _fixed_ids]
+            _kept, dead = prune_dead_end_segments(cands, fixed_segs, vias, pads)
+            if not dead:
+                continue
+            did = {id(x) for x in dead}
+            t_segs = [x for x in segs if id(x) not in did]
+            after = grade(nid, t_segs, vias, pads, zones)
+            if (after[0] > base[0] or (after[1] - base[1])
+                    or after[2] > base[2] or (after[3] - base[3])):
+                continue
+            segs, base = t_segs, after
+            removed_s.extend(dead)
+            tails.extend(dead)
+            progressed = True
         if removed_s or removed_v:
             gs = {id(x) for x in removed_s}
             gv = {id(x) for x in removed_v}
@@ -2819,6 +2855,7 @@ def sweep_dangling_via_branches(board, net_ids, protected_ids=frozenset(),
             break
     if stats is not None:
         stats['nets'] = len({x.net_id for x in removed_s + removed_v})
+        stats['tails'] = len(tails)
     return removed_s, removed_v
 
 

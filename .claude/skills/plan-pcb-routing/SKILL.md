@@ -2837,6 +2837,8 @@ contain structured data including:
 - `open_single`: Nets that KEPT a result whose copper still leaves pads disconnected (non-multipoint only). A run is clean only when `failed_single` AND `open_single` are both empty — a board can ship open copper with `failed_single: []`
 - `terminal_restores`: `{net: outcome}` for rip victims restored at terminal failure — `full` is the only success; `full_open`/`stub` ship broken
 - `stacked_copper`: Same-net duplicate copper KiCad's DRC never flags (disclosure only, not a routing failure). It is taken before the plane finalize; the end-of-run dedup (#162, the `Stacked copper (#162, end of run)` line) then removes the exact same-span copies the run ships, the widest kept, so `check_weird` on the output is the reading of what shipped
+- `close_same_net_vias` (#1414): same-net via pairs this run laid with drills closer than `--hole-to-hole-clearance` (the guarded re-route could not connect, so the unspaced path shipped); check_drc grades them `VIA-DRILL-HOLE`
+- `different_net_crossings` (#1375): different-net tracks crossing on one layer among the copper this run laid -- a short that `failed 0` does not cover; check_drc grades `SEGMENT-CROSSING`
 - `failed_multipoint`: List of nets with unconnected pads (includes pad coordinates)
 - `blockers`: Per still-failed net, which routed nets wall it off (`blocked_by` with cell counts; #409)
 - `pad_pairs_connected`/`pad_pairs_total` + `pad_pairs_open`: Pad-pair routability tallies (PRR = connected/total) and per-open-net outcome — route-time failures are opens; shorts are DRC's domain (#409 follow-up)
@@ -3123,10 +3125,13 @@ side effect, not about the one the hint names. And on a board with pours, the
 retry's `--nets` carries the poured nets too (#1032).
 
 **The hint's suggested values are an EXAMPLE, not a derivation — read its
-`(current: ...)` tail.** On a board already routing at 0.15/0.15 the box-in hint
-recommends `--clearance 0.15 --track-width 0.15`, the values already in force,
-so the only novel token in the whole sentence is the grid. The tail is what
-tells you that, and the grid alone is not a lever (see below).
+`(current: ...)` tail.** The box-in hint suggests a clearance or track only when
+it is narrower than the run's own (`0.15` against a run above it), so on a board
+already routing at or below 0.15 the only novel token in the whole sentence is
+the grid. The tail tells you that, and the grid alone is not a lever (see
+below). A failure printed as `ROUTE FAILED - ripping N blocker net(s) (...) did
+not free a path` is not a box-in at all: the ladder found blockers, ripped and
+restored them.
 
 ### Diagnose and Retry
 

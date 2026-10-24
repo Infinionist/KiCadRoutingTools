@@ -431,8 +431,19 @@ def _emit_summary_min(gate_report: Optional[dict] = None,
         print(f"  WARNING: could not emit JSON_SUMMARY_MIN: {_e}")
 
 
+def _oracle_checked_pours() -> bool:
+    """True when a pass of this run (the plane finalize's oracle) already read
+    the pours through KiCad's own fill."""
+    for _s in _SUMMARY_SINK:
+        _o = _s.get('oracle_reconnect') if isinstance(_s, dict) else None
+        if isinstance(_o, dict) and _o.get('available'):
+            return True
+    return False
+
+
 def _regrade_pour_fill(board, output_file: str,
-                       project_from: Optional[str]) -> Optional[dict]:
+                       project_from: Optional[str],
+                       force: bool = False) -> Optional[dict]:
     """Read `board`'s pours through KiCad's own refill of `output_file`, when
     no pass of this run checked them against it. Returns the record's
     `pour_fill` entry, or None when the board pours nothing or the plane
@@ -449,14 +460,17 @@ def _regrade_pour_fill(board, output_file: str,
     found 37 missing links on the same file.
 
     One refill of the written file (the oracle pays the same on a healthy
-    board), staged with the sibling project, else `project_from`'s."""
+    board), staged with the sibling project, else `project_from`'s.
+
+    `force` refills although the oracle ran (#1374): the oracle's own verdict
+    is per link, and a pour net the fill MODEL calls open but whose links the
+    oracle cleared is a model-only open -- only a read of KiCad's fill can
+    clear it."""
     from kicad_parser import pour_zones
     if not pour_zones(getattr(board, 'zones', None) or []):
         return None
-    for _s in _SUMMARY_SINK:
-        _o = _s.get('oracle_reconnect') if isinstance(_s, dict) else None
-        if isinstance(_o, dict) and _o.get('available'):
-            return None
+    if not force and _oracle_checked_pours():
+        return None
     try:
         from kicad_exact_fill import refill_islands_ex
         from plane_fill_model import install_kicad_fill
@@ -628,7 +642,7 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
                    routing_scope: List[str], input_signature,
                    orig_seg_by_net: Dict[int, list],
                    orig_via_by_net: Dict[int, list],
-                   orig_copper=None, exact_links=None,
+                   orig_copper=None, exact_links=None, exact_landed=(),
                    project_from: Optional[str] = None) -> Optional[dict]:
     """Grade the board this run SHIPS over every net it owns (#1069).
 
@@ -661,6 +675,9 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     pass of this run checked them against it (`_regrade_pour_fill`): the
     plane finalize's oracle is that check, and --quick skips it.
 
+    `exact_landed` names the nets whose forced link landed in the final
+    reconciliation (#1374): one landed link of several does not make the
+    net's pour whole, so they are graded on the exact fill too.
     `exact_links` are the oracle links still pending after the final
     reconciliation; a net among them that the fill model credits is graded on
     KiCad's exact fill instead (_exact_open_grades, #1339).
@@ -707,12 +724,31 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
                                 if n in id_of],
                         segs_by_net=segs_by_net, vias_by_net=vias_by_net)
     grades = {name_of[nid]: g for nid, g in graded.items()}
+    # #1374: the oracle ran, so the pours were not re-read through KiCad's
+    # fill -- but a pour net the fill MODEL calls broken may be a model-only
+    # open (a corridor the model's raster drops that KiCad pours), and nothing
+    # else clears it. Refill once for exactly that case and grade again.
+    if label == 'file' and _pour_fill is None and _oracle_checked_pours():
+        from kicad_parser import pour_zones as _pz1374
+        _pour_ids = {z.net_id for z in _pz1374(getattr(board, 'zones', None)
+                                               or [])}
+        if any(g['broken'] and id_of.get(n) in _pour_ids
+               for n, g in grades.items()):
+            _pour_fill = _regrade_pour_fill(board, output_file, project_from,
+                                            force=True)
+            if _pour_fill and _pour_fill.get('graded_on') == 'kicad_refill':
+                graded = grade_nets(
+                    board, [id_of[n] for n in list(named) + extra
+                            if n in id_of],
+                    segs_by_net=segs_by_net, vias_by_net=vias_by_net)
+                grades = {name_of[nid]: g for nid, g in graded.items()}
     # #1339: a pour net whose exact-fill links are still pending after the
     # final reconciliation is not connected because the fill MODEL says so --
     # multichannel_mixer's GND read "recovered" (failed 0) with the oracle's
     # 5 links open and KiCad's refill in 5 pieces. Grade those nets on the
     # exact fill of the shipped board, else on the oracle's verdict.
-    _pending = {lk[0] for lk in (exact_links or ()) if lk and lk[0]}
+    _pending = ({lk[0] for lk in (exact_links or ()) if lk and lk[0]}
+                | set(exact_landed or ()))
     _exact_open = _exact_open_grades(
         board, output_file if label == 'file' else None,
         sorted(n for n in _pending if n in grades and not grades[n]['broken']),
@@ -1579,10 +1615,13 @@ def _late_dangling_via_sweep1166(pcb_data, output_file, return_results,
                 print(f"  WARNING: dangling-via sweep (#1166): chose "
                       f"{len(removed)} segment(s) and {len(dropped)} via(s), "
                       f"found {n_s} and {n_v} in the written file")
+        _tails = _stats.get('tails', 0)
         print(f"  Dangling vias (#1166, end of run): removed {n_v} "
               f"via(s) joining fewer than two layers and {n_s} "
               f"segment(s) of the branches they ended, on "
-              f"{_stats.get('nets', 0)} net(s)")
+              f"{_stats.get('nets', 0)} net(s)"
+              + (f" ({_tails} of the segments were dead tails on finished "
+                 f"nets, #1372)" if _tails else ""))
         return n_s, n_v
     except Exception as _e:                                     # noqa: BLE001
         print(f"  (end-of-run dangling-via sweep skipped: "
@@ -5128,6 +5167,60 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         if len(stacked_copper_findings) > 8:
             print(f"  {RED}... and {len(stacked_copper_findings) - 8} more{RESET}")
 
+    # ---- CLOSE SAME-NET VIAS (#1414) ----------------------------------------
+    # A leg whose guarded re-route (#230) cannot connect ships its flawed path
+    # with two own vias under the drill hole-to-hole floor. Name every such
+    # pair this run laid; check_drc grades it as VIA-DRILL-HOLE.
+    close_via_findings = []
+    try:
+        from check_weird import close_same_net_via_pairs
+        _new_via_ids = {id(_v) for _r0 in results
+                        for _v in _r0.get('new_vias', [])}
+        close_via_findings = close_same_net_via_pairs(
+            _vias_by_net, lambda _v: id(_v) in _new_via_ids,
+            config.hole_to_hole_clearance,
+            lambda _n: (pcb_data.nets[_n].name if _n in pcb_data.nets
+                        else f"Net {_n}"))
+    except Exception as _cve:
+        print(f"  (close-via check failed: {_cve})")
+    if close_via_findings:
+        print(f"\n{RED}WARNING: {len(close_via_findings)} same-net via pair(s) "
+              f"closer than the {config.hole_to_hole_clearance} mm drill "
+              f"hole-to-hole floor (the guarded re-route could not connect; "
+              f"check_drc grades VIA-DRILL-HOLE):{RESET}")
+        for _f in close_via_findings[:8]:
+            print(f"  {RED}{_f['net']}: ({_f['via_a'][0]}, {_f['via_a'][1]}) "
+                  f"and ({_f['via_b'][0]}, {_f['via_b'][1]}), drills "
+                  f"{_f['drill_gap_mm']} mm apart{RESET}")
+        if len(close_via_findings) > 8:
+            print(f"  {RED}... and {len(close_via_findings) - 8} more{RESET}")
+
+    # ---- DIFFERENT-NET CROSSINGS (#1375) ------------------------------------
+    # Two nets' tracks crossing on one layer are a short that no clearance
+    # setting forgives. Audit the copper about to be written and name every
+    # such pair this run laid, instead of reporting `failed 0` over it.
+    crossing_findings = []
+    try:
+        from check_weird import different_net_crossings
+        _new_seg_ids = {id(_s) for _r0 in results
+                        for _s in _r0.get('new_segments', [])}
+        _new_seg_ids |= {id(_s) for _s in all_swap_segments}
+        crossing_findings = different_net_crossings(
+            _segs_by_net, lambda _s: id(_s) in _new_seg_ids,
+            lambda _n: (pcb_data.nets[_n].name if _n in pcb_data.nets
+                        else f"Net {_n}"))
+    except Exception as _xe:
+        print(f"  (crossing check failed: {_xe})")
+    if crossing_findings:
+        print(f"\n{RED}WARNING: {len(crossing_findings)} different-net "
+              f"track crossing(s) on the write model (a short; KiCad "
+              f"tracks_crossing, check_drc SEGMENT-CROSSING):{RESET}")
+        for _f in crossing_findings[:8]:
+            print(f"  {RED}{_f['net_a']} x {_f['net_b']} on {_f['layer']} at "
+                  f"({_f['at'][0]}, {_f['at'][1]}){RESET}")
+        if len(crossing_findings) > 8:
+            print(f"  {RED}... and {len(crossing_findings) - 8} more{RESET}")
+
     _zones_by_net: Dict[int, list] = {}
     for _z in getattr(pcb_data, 'zones', []) or []:
         _zones_by_net.setdefault(_z.net_id, []).append(_z)
@@ -5857,6 +5950,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # the via dedup (additive; KiCad's DRC never flags same-net stacks,
         # so this key is the only disclosure).
         summary['stacked_copper'] = stacked_copper_findings
+    if crossing_findings:
+        # #1375: different-net tracks crossing on one layer, laid by this run
+        # (additive; check_drc's SEGMENT-CROSSING is the matching grade).
+        summary['different_net_crossings'] = crossing_findings
+    if close_via_findings:
+        # #1414: own vias under the drill hole-to-hole floor, laid by this
+        # run (additive; check_drc's VIA-DRILL-HOLE is the matching grade).
+        summary['close_same_net_vias'] = close_via_findings
     summary['oracle_check'] = oracle_check
     if oracle_open:
         # Oracle summary: KiCad's own open-link counts for this run's scope
@@ -6707,6 +6808,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # #1339: the exact-fill links still pending after the final
     # reconciliation, for the end-of-run re-grade (None: no lap ran).
     _pending_links1339 = None
+    _landed_nets1339: list = []
     _zone_complete9 = set()
     # PLANE FINALIZE (#562): the pours-first chain's repair step, absorbed.
     # Measured (3-board arch chains): the standalone repair step's entire
@@ -8020,6 +8122,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                       None) or [])
             _pending_links1339 = [l for l in (_rk.get('oracle_links') or [])
                                   if l and l[0] not in _landed1339]
+            # #1374: a landed link is not a verdict -- the net keeps its
+            # exact-fill re-grade (a net with several links lands one and
+            # ships the rest split).
+            _landed_nets1339 = sorted(_landed1339)
             print("Note: the JSON_SUMMARY above covers only the "
                   "reconciliation subset (it carries scope="
                   "\"reconciliation-subset\"). The run's tally is the final "
@@ -8543,6 +8649,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 [_n for _n, _i in single_ended_nets], _input_sig1069,
                 _orig_seg_by_net, _orig_via_by_net,
                 orig_copper=_orig_copper_values,
+                exact_landed=_landed_nets1339,
                 exact_links=(list(_pending_links1339
                                   if _pending_links1339 is not None
                                   else list(_custody_links9)

@@ -25,6 +25,7 @@ from bga_fanout.constants import FANOUT_DETECTION_TOLERANCE
 from bga_fanout.layer_assignment import try_reassign_layer
 from bga_fanout.grid import is_edge_pad
 from bga_fanout.geometry import (
+    endpoint_on_pad,
     create_45_stub,
     calculate_exit_point,
     calculate_jog_end,
@@ -774,70 +775,75 @@ def find_existing_fanouts(pcb_data: PCBData, footprint: Footprint,
     fanned_out_nets: Set[int] = set()
     occupied_exits: Dict[Tuple[str, str, float], str] = {}
 
-    # Build a lookup of pad positions by net_id
-    pad_positions: Dict[int, Tuple[float, float]] = {}
+    # Build a lookup of the array's pads by net_id
+    pads_by_net: Dict[int, List] = {}
     net_names: Dict[int, str] = {}
     for pad in footprint.pads:
         if pad.net_id > 0:
-            pad_positions[pad.net_id] = (pad.global_x, pad.global_y)
+            pads_by_net.setdefault(pad.net_id, []).append(pad)
             net_names[pad.net_id] = pad.net_name
 
-    # Check each segment to see if it connects to a BGA pad
+    # Check each segment to see if it connects to a BGA pad. A track end that
+    # lands anywhere in the ball's copper counts (#1411), not only one within
+    # `tolerance` of the centre.
     for segment in pcb_data.segments:
-        if segment.net_id not in pad_positions:
+        if segment.net_id not in pads_by_net:
             continue
 
-        pad_x, pad_y = pad_positions[segment.net_id]
+        hit = None
+        for pad in pads_by_net[segment.net_id]:
+            s_at = endpoint_on_pad(pad, segment.start_x, segment.start_y, tolerance)
+            e_at = endpoint_on_pad(pad, segment.end_x, segment.end_y, tolerance)
+            if s_at or e_at:
+                hit = (pad, s_at)
+                break
+        if hit is None:
+            continue
+        pad_x, pad_y = hit[0].global_x, hit[0].global_y
+        starts_at_pad = hit[1]
 
-        # Check if segment starts or ends at the pad
-        starts_at_pad = (abs(segment.start_x - pad_x) < tolerance and
-                         abs(segment.start_y - pad_y) < tolerance)
-        ends_at_pad = (abs(segment.end_x - pad_x) < tolerance and
-                       abs(segment.end_y - pad_y) < tolerance)
+        fanned_out_nets.add(segment.net_id)
 
-        if starts_at_pad or ends_at_pad:
-            fanned_out_nets.add(segment.net_id)
+        # Determine the exit direction and position from the segment
+        # The "other end" of the segment (not at pad) tells us the escape direction
+        if starts_at_pad:
+            other_x, other_y = segment.end_x, segment.end_y
+        else:
+            other_x, other_y = segment.start_x, segment.start_y
 
-            # Determine the exit direction and position from the segment
-            # The "other end" of the segment (not at pad) tells us the escape direction
-            if starts_at_pad:
-                other_x, other_y = segment.end_x, segment.end_y
+        # Determine escape direction based on where the segment goes
+        dx = other_x - pad_x
+        dy = other_y - pad_y
+
+        # Find which channel/exit this segment uses
+        # For vertical escape (up/down), track X position
+        # For horizontal escape (left/right), track Y position
+        if abs(dy) > abs(dx):
+            # Primarily vertical movement
+            if dy < 0:
+                direction = 'up'
             else:
-                other_x, other_y = segment.start_x, segment.start_y
-
-            # Determine escape direction based on where the segment goes
-            dx = other_x - pad_x
-            dy = other_y - pad_y
-
-            # Find which channel/exit this segment uses
-            # For vertical escape (up/down), track X position
-            # For horizontal escape (left/right), track Y position
-            if abs(dy) > abs(dx):
-                # Primarily vertical movement
-                if dy < 0:
-                    direction = 'up'
-                else:
-                    direction = 'down'
-                # Find the vertical channel being used
-                for ch in channels:
-                    if ch.orientation == 'vertical':
-                        if abs(ch.position - other_x) < grid.pitch_x / 2:
-                            exit_key = (segment.layer, f'{direction}_v', round(ch.position, 1))
-                            occupied_exits[exit_key] = net_names.get(segment.net_id, f"net_{segment.net_id}")
-                            break
+                direction = 'down'
+            # Find the vertical channel being used
+            for ch in channels:
+                if ch.orientation == 'vertical':
+                    if abs(ch.position - other_x) < grid.pitch_x / 2:
+                        exit_key = (segment.layer, f'{direction}_v', round(ch.position, 1))
+                        occupied_exits[exit_key] = net_names.get(segment.net_id, f"net_{segment.net_id}")
+                        break
+        else:
+            # Primarily horizontal movement
+            if dx < 0:
+                direction = 'left'
             else:
-                # Primarily horizontal movement
-                if dx < 0:
-                    direction = 'left'
-                else:
-                    direction = 'right'
-                # Find the horizontal channel being used
-                for ch in channels:
-                    if ch.orientation == 'horizontal':
-                        if abs(ch.position - other_y) < grid.pitch_y / 2:
-                            exit_key = (segment.layer, f'{direction}_h', round(ch.position, 1))
-                            occupied_exits[exit_key] = net_names.get(segment.net_id, f"net_{segment.net_id}")
-                            break
+                direction = 'right'
+            # Find the horizontal channel being used
+            for ch in channels:
+                if ch.orientation == 'horizontal':
+                    if abs(ch.position - other_y) < grid.pitch_y / 2:
+                        exit_key = (segment.layer, f'{direction}_h', round(ch.position, 1))
+                        occupied_exits[exit_key] = net_names.get(segment.net_id, f"net_{segment.net_id}")
+                        break
 
     return fanned_out_nets, occupied_exits
 

@@ -3490,6 +3490,23 @@ def uncommit_dropped_result(pcb_data, dropped, kept=None) -> None:
         [s for s in dropped.get('new_segments') or () if id(s) not in spare])
 
 
+def _union_frontier_cells(first, second):
+    """`first` then the cells of `second` it lacks (order kept, no repeats)."""
+    if not second:
+        return first
+    if not first:
+        return second
+    seen = set()
+    out = []
+    for c in list(first) + list(second):
+        k = tuple(c) if isinstance(c, (list, tuple)) else c
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(c)
+    return out
+
+
 def _route_main_connection(router, obstacles, config, sources, targets, track_margin,
                            pcb_data, net_id, print_prefix="",
                            direction_labels=("forward", "backward"), single_direction=False,
@@ -3572,12 +3589,19 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
         router, obstacles, config, sources, targets, retry_margins,
         pcb_data, net_id, print_prefix, direction_labels, single_direction, waypoints)
     if retry[0] is None:
-        # Keep the WIDE attempt's frontier for rip-up analysis: blockers found
-        # by the narrow frontier only help a narrow route, but ripped nets
-        # re-route at their own wide width and can fail entirely.
+        # Rip-up analysis reads the UNION of both attempts' frontiers (#1400).
+        # The wide attempt alone cannot see a wall the narrow route meets: it
+        # cannot leave a narrow pad entry past its static neighbours, so its
+        # frontier never reaches the cells a narrower track would. The net
+        # then routes at the neck-down width, so the walls THAT search meets
+        # are the ones a rip must clear. The wide frontier stays first, so a
+        # blocker both searches meet ranks as it did before.
         # (The mid-retry _via_rung_retry that used to fire here was removed
         # 2026-08-05 -- see the note above _rung_search_pair.)
-        return (result[0], result[1] + retry[1]) + result[2:] + (False, None)
+        fwd = _union_frontier_cells(result[2], retry[2])
+        bwd = _union_frontier_cells(result[3], retry[3])
+        return ((result[0], result[1] + retry[1], fwd, bwd) + result[4:]
+                + (False, None))
     return (retry[0], result[1] + retry[1]) + retry[2:] + (True, None)
 
 
