@@ -7745,6 +7745,12 @@ class GradeResult:
     # withheld key was a bare `continue` in rule_legality and the run printed
     # "PASS: N rules ran, no violations" with overlap unmeasured.
     budget_abstained: Dict[str, str] = field(default_factory=dict)
+    #: #1420: withheld keys the plan ANSWERS with `dispositions.withheld.<key>`
+    #: ({key: the plan's why}). Not graded either, but acknowledged on
+    #: purpose, so they are not an absent verdict: they leave `budget_abstained`
+    #: and `not_graded`, and ride here so the wire still says what stayed
+    #: ungraded.
+    budget_dispositioned: Dict[str, str] = field(default_factory=dict)
     #: #712: the along-edge position of every declared edge connector, taken
     #: whether or not anyone declared a claim about it. Advisory, like the
     #: `health` block -- a measurement, never a verdict.
@@ -7838,8 +7844,12 @@ class GradeResult:
         out = {}
         if self.budget_abstained:
             out['budget_abstained'] = len(self.budget_abstained)
+        # A rule the plan answers with `dispositions.rules.<rule>` was left
+        # ungraded on purpose (#1420): written down is not absent.
+        _answered = ((getattr(self.intent, 'dispositions', None) or {})
+                     .get('rules', {}))
         _armed = sum(1 for k, r in self.rules_skipped.items()
-                     if not _is_not_asked(k, r))
+                     if not _is_not_asked(k, r) and k not in _answered)
         if _armed:
             out['rules_skipped_armed'] = _armed
         _edge = sum(1 for e in self.edge_seating
@@ -9040,6 +9050,11 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
                  for k, v in (intent.budget_withheld or {}).items()
                  if not _declared_by_hand(intent, str(k))}
     found, ran, skipped = _run_rules(ctx, abstained)
+    # #1420: a withheld key the plan answers (`dispositions.withheld`) is
+    # acknowledged, not an absent verdict.
+    _held_why = (intent.dispositions or {}).get('withheld', {})
+    dispositioned = {k: _held_why[k] for k in abstained if k in _held_why}
+    abstained = {k: v for k, v in abstained.items() if k not in _held_why}
     violations.extend(found)
     violations.extend(exclusive_unsatisfiable(intent, blocks, pcb_data,
                                               pcb_file, state=state))
@@ -9156,6 +9171,7 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
         health=health_out,
         rules_run=tuple(ran), rules_skipped=skipped,
         budget_abstained=abstained,
+        budget_dispositioned=dispositioned,
         edge_seating=list(ctx.edge_seating),
         proximity_measured=list(ctx.proximity_measured),
         keep_away_measured=list(ctx.keep_away_measured),
@@ -10678,6 +10694,12 @@ def format_text(r: GradeResult) -> str:
                      f"DERIVABLE -- not graded, not passed:")
         for key in sorted(r.budget_abstained):
             lines.append(f"    - {key}: {r.budget_abstained[key]}")
+    if r.budget_dispositioned:
+        lines.append(f"  {len(r.budget_dispositioned)} withheld value(s) "
+                     f"ANSWERED by the plan (dispositions.withheld) -- "
+                     f"ungraded on purpose:")
+        for key in sorted(r.budget_dispositioned):
+            lines.append(f"    - {key}: {r.budget_dispositioned[key]}")
     if r.rules_skipped:
         lines.append(f"  {len(r.rules_skipped)} rule(s) did not run:")
         for name in sorted(r.rules_skipped):
@@ -11137,6 +11159,7 @@ def to_json(r: GradeResult) -> Dict:
         'rules_run': list(r.rules_run),
         'rules_skipped': r.rules_skipped,
         'budget_abstained': r.budget_abstained,
+        'budget_dispositioned': r.budget_dispositioned,
         'edge_seating': r.edge_seating,
         'edge_connector_evidence': r.edge_connector_evidence,
         'decap_pin_evidence': r.decap_pin_evidence,
@@ -11177,6 +11200,7 @@ def summary(r: GradeResult) -> Dict:
                                        else r.dark_undispositioned),
         # Not a violation count and not a pass: channels nothing graded.
         'budget_abstained': len(r.budget_abstained),
+        'budget_dispositioned': len(r.budget_dispositioned),
         'edge_seating_rows': len(r.edge_seating),
         'edge_seating_declared': sum(1 for e in r.edge_seating
                                      if e.get('declared')),
