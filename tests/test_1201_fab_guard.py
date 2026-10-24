@@ -60,11 +60,22 @@ def _usb_c(x, y, rot):
             + pads + '  )\n')
 
 
-def _holder_silk():
+def _holder_silk(closed=True):
     """One-Air-Max BAT1's REAL shape (the comment on #1201): clips 40 mm
     apart, a silk outline running PAST the clips in y, and a pin-1 dot on
     F.Fab. (test_1184's `_holder` draws its silk inside the pads, so there
-    the silk is a tick and the body falls to the pad box.)"""
+    the silk is a tick and the body falls to the pad box.) `closed=False`
+    draws the same extent as four corner brackets, which never close (#1401)."""
+    if closed:
+        outline = ('    (fp_rect (start -21 -13) (end 21 13) (stroke (width 0.12)'
+                   ' (type default)) (layer "F.SilkS"))\n')
+    else:
+        outline = ''.join(
+            f'    (fp_line (start {sx * 21} {sy * 13}) (end {sx * 18} {sy * 13})'
+            f' (stroke (width 0.12) (type default)) (layer "F.SilkS"))\n'
+            f'    (fp_line (start {sx * 21} {sy * 13}) (end {sx * 21} {sy * 10})'
+            f' (stroke (width 0.12) (type default)) (layer "F.SilkS"))\n'
+            for sx in (-1, 1) for sy in (-1, 1))
     clips = ''.join(
         f'    (pad "{i}" smd rect (at {x} {y}) (size 3 4) (layers "F.Cu")'
         f' (net 1 "N1"))\n'
@@ -72,8 +83,7 @@ def _holder_silk():
                                     (20, -8), (20, 0), (20, 8)], 1))
     return ('  (footprint "t:HOLDER" (layer "F.Cu") (at 22 15)\n'
             '    (property "Reference" "BAT1" (at 0 0) (layer "F.SilkS"))\n'
-            '    (fp_rect (start -21 -13) (end 21 13) (stroke (width 0.12)'
-            ' (type default)) (layer "F.SilkS"))\n'
+            + outline +
             '    (fp_circle (center -18 -9) (end -17.97 -9) (stroke (width'
             ' 0.05) (type default)) (layer "F.Fab"))\n'
             + clips + '  )\n')
@@ -277,13 +287,14 @@ class SilkContainmentIsNamed(unittest.TestCase):
 
     def test_bat1_shape(self):
         """One-Air-Max BAT1's real shape (#1201's comment). Its drawn body
-        is its silk, so DC1 wholly inside it is a containment that does not
-        gate (#896) -- named as such -- while its OCCUPANCY is its pad box,
+        is its silk, drawn here as corner brackets that never close, so DC1
+        wholly inside it is a containment that does not gate (#896) -- named
+        as such -- while its OCCUPANCY is its pad box,
         so the courtyard channel still gates the pair, as it did before the
         guard. A fiducial inside it is exempt as a marker, and says so."""
         import pose_score
         with tempfile.TemporaryDirectory() as td:
-            path = _board(td, _holder_silk() + _dc1(22, 15)
+            path = _board(td, _holder_silk(closed=False) + _dc1(22, 15)
                           + _fiducial('FID1', 30, 15), size=(44, 30))
             pcb = parse_kicad_pcb(path)
             g = legality.grade_body_overlap(pcb, 0.2, pcb_file=path)
@@ -317,6 +328,24 @@ class SilkContainmentIsNamed(unittest.TestCase):
         self.assertEqual(js['fab_rejected_refs'], ['BAT1'])
         self.assertEqual(sorted(c['gate_exempt'] for c in js['containments']),
                          ['marker_class', 'silk_drawn'])
+
+    def test_a_closed_silk_body_gates(self):
+        """#1401: the same holder with its silk CLOSED is a housing, and DC1's
+        pad copper wholly inside it gates; the marker inside it is still
+        exempt as a marker."""
+        with tempfile.TemporaryDirectory() as td:
+            path = _board(td, _holder_silk() + _dc1(22, 15)
+                          + _fiducial('FID1', 30, 15), size=(44, 30))
+            g = legality.grade_body_overlap(parse_kicad_pcb(path), 0.2,
+                                            pcb_file=path)
+            out, _js = _check_assembly(td, path)
+        why = {frozenset((q.a, q.b)): q.gate_exempt
+               for q in g['containment_pairs']}
+        self.assertEqual(why.get(frozenset(('BAT1', 'DC1'))), '')
+        self.assertEqual(why.get(frozenset(('BAT1', 'FID1'))), 'marker_class')
+        self.assertEqual({frozenset((q.a, q.b))
+                          for q in g['containment_blocking_pairs']},
+                         {frozenset(('BAT1', 'DC1'))})
 
     def test_a_gating_containment_is_labelled_as_gating(self):
         """A part wholly inside another's FAB body gates; its label is '',

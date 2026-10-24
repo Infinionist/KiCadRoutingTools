@@ -1353,13 +1353,22 @@ def write_placed_output(input_file: str, output_file: str,
     # blind to an interior cutout moving and to a rotated circular window,
     # and rings are blind to an open stub that never chains. Only a board
     # with footprint-embedded Edge.Cuts arms it.
-    if _outline_owner_map(input_file):
+    _owners = _outline_owner_map(input_file)
+    if _owners:
         from kicad_parser import structural_outline_fingerprint, read_board_text
+        # Carried versus structural is decided ONCE, on the input (#1409): it
+        # is judged at each part's current pose, so a part carrying a milled
+        # window would be "carried" before a move off the board and
+        # "structural" after it, and its own legal move read as the outline
+        # changing. The same set masks both texts.
+        _carried = {ref for ref, structural in _owners.items()
+                    if not structural}
         # The same read as `content` (#1149), or a repaired footprint block
         # would read as an outline change.
         _before = structural_outline_fingerprint(
-            read_board_text(input_file, quiet=True))
-        if _before != structural_outline_fingerprint(content):
+            read_board_text(input_file, quiet=True), carried=_carried)
+        if _before != structural_outline_fingerprint(content,
+                                                     carried=_carried):
             raise OutlineOwnerMove(
                 f"this write would have CHANGED THE BOARD OUTLINE of "
                 f"{output_file}. The placement stack does not resize boards: "

@@ -330,14 +330,16 @@ python3 -X utf8 py_tools/check_floorplan.py wk/<run>/fixed.kicad_pcb --intent wk
 ```
 
 For each edge connector, read its edge, its facing (`facing ... pass`, or
-`facing abstained (...)` when its body names no face) and the group you gave
-it. Then decide, from the part's function and its datasheet:
+`facing abstained (...)` when its body names no face, `facing exempt (...)`
+when its class is not graded for a face) and the group you gave it. Then decide, from the part's function and its datasheet:
 
 - **The edge, and roughly where along it** when that matters (a USB or
   barrel jack where the enclosure opens, a debug header out of the user's
   way): `edge`, and `along_edge_band` as fractions of the edge.
 - **The mating face of a connector whose facing abstained** (a side-entry
-  JST drawn symmetric about its pads): find the side its opening is on in the
+  JST drawn symmetric about its pads) **or is exempt** (a side-push switch
+  of class `edge_actuator`, whose actuator points one way and is graded only
+  once a face is declared): find the side its opening is on in the
   datasheet's PCB-layout drawing and write `mating_face` (`+x`/`-x`/`+y`/`-y`,
   the footprint's own frame). The side of its solder tabs, away from the
   contact row, is a hint to check against the drawing, not a rule: it is
@@ -364,8 +366,10 @@ it. Then decide, from the part's function and its datasheet:
   flush instead, ch32v003_usb's USB-C J1 sat 0.88 mm deeper than its drawing
   and the board routed with about 15 mm more copper a seed. The band is
   read at zero margin, on the drawn body or else the courtyard (#1301): an
-  overhang of x reads x, so write the distance the part reaches past the
-  edge and never add the board's edge margin to it. check_floorplan's
+  overhang of x reads x past the DECLARED edge (one distance along that
+  edge's normal; what the part does past another edge is reported on its own
+  and bounded by the band's maximum, #1403), so write the distance the part reaches past the edge and never add
+  the board's edge margin to it. check_floorplan's
   `overhang_basis` says which of the two it read.
 
 Write these into the intent's `edge_connectors[]` entries, the rows into

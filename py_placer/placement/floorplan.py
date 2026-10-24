@@ -3431,7 +3431,7 @@ class _Ctx:
         names it, two rules reporting one fact.
         """
         if self._oob_exempt is None:
-            from .connector_geometry import courtyard_overhang, geometry_for
+            from .connector_geometry import courtyard_overhang_past, geometry_for
             out: Dict[str, float] = {}
             for c in self.intent.edge_claims():
                 ref = c['ref']
@@ -3449,10 +3449,18 @@ class _Ctx:
                 # can be measured, the courtyard at zero margin where it
                 # cannot (#1301). `amt` still decides whether the census
                 # counted the part at all.
+                _cy, _cy_others = courtyard_overhang_past(
+                    geometry_for(self, self.pcb, self.pcb_file),
+                    part.rect, c.get('edge'), skip_rings=own)
                 band, _basis, _body = _band_amount(
-                    self, ref, c.get('edge'), courtyard_overhang(
-                        geometry_for(self, self.pcb, self.pcb_file),
-                        part.rect, skip_rings=own))
+                    self, ref, c.get('edge'), _cy)
+                # #1403: the band reads the declared edge alone, so the
+                # exemption must not license a part hanging past ANOTHER edge
+                # by more than the band's own maximum.
+                _others = (_body.get('other_body_edge_overhang_mm')
+                           if _body.get('body_measured') else _cy_others) or {}
+                if any(v > hi + legality.EPS for v in _others.values()):
+                    continue
                 # The same body path that must still see copper off the
                 # outline (`rule_edge_connector`): a part with pads past the
                 # edge stays counted, whatever its body reads.
@@ -4905,7 +4913,7 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
     reporting it as a defect forever -- kept by `rule_legality` through
     `_Ctx.oob_exempt()`, for a declared part inside its own overhang band
     (it was a promise with no implementation until run 26 measured it)."""
-    from .connector_geometry import courtyard_overhang, geometry_for
+    from .connector_geometry import courtyard_overhang_past, geometry_for
     for c in ctx.intent.edge_connectors:
         ref = c['ref']
         part = ctx.parts.get(ref)
@@ -4935,8 +4943,8 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
         # clearance), which every routing step's DRC writeback rewrites, so
         # one pose graded differently placed and routed (daplink: 3 errors
         # after routing, nothing moved).
-        amount = courtyard_overhang(geometry_for(ctx, ctx.pcb, ctx.pcb_file),
-                                    part.rect)
+        amount, _cy_others = courtyard_overhang_past(
+            geometry_for(ctx, ctx.pcb, ctx.pcb_file), part.rect, c.get('edge'))
         lim = c.get('overhang_mm') or {}
         lo = float(lim.get('min', 0.0))
         hi = lim.get('max')
@@ -4951,6 +4959,25 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
         # reads the courtyard on either basis.
         band, overhang_basis, body = _band_amount(ctx, ref, c.get('edge'),
                                                   amount)
+        # #1403: the band above is ONE distance past the declared edge. What
+        # the part does past a DIFFERENT edge is graded on its own: more than
+        # the band's maximum is an error (the sum used to bound it); anything
+        # up to it is a fact of the pose (a courtyard longer than its edge
+        # overhangs both ends by design) and rides in the evidence row's
+        # `other_edge_overhang_mm`, silent, as the sum was.
+        _others = (body.get('other_body_edge_overhang_mm')
+                   if body.get('body_measured') else _cy_others) or {}
+        for _oe, _ov in sorted(_others.items()):
+            if hi is not None and _ov > float(hi) + legality.EPS:
+                yield Violation(
+                    rule='edge_connector', severity=ctx.sev('edge_connector'),
+                    ref=ref,
+                    message=(f"{ref} overhangs the {_oe} edge by {_ov:.2f}mm, "
+                             f"past the declared maximum {float(hi):.2f}mm "
+                             f"(its band is declared on the "
+                             f"{c.get('edge')} edge)"),
+                    measured={'edge': _oe, 'overhang_mm': round(_ov, 4)},
+                    expected={'edge': c.get('edge'), 'max': float(hi)})
         if band < lo - legality.EPS:
             yield Violation(
                 rule='edge_connector', severity=ctx.sev('edge_connector'),
@@ -4998,6 +5025,9 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
                 expected={'pad_copper_outside_mm': 0.0})
         evidence = _connector_evidence(ctx, c, ref, band, overhang_basis, body,
                                        lo, hi)
+        evidence['other_edge_overhang_mm'] = {
+            e: round(v, 4) for e, v in sorted(_others.items())
+            if v > legality.EPS}
         # The SEAT BASIS, decided once for the two conjuncts that ask where
         # the part's MATING FACE is (nearest edge, seat). A receptacle's
         # pads sit well inboard of its opening by construction: a micro-USB
@@ -5167,8 +5197,15 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
 
 def _facing_tail(f) -> str:
     """The CLI's `; facing ...` clause for one evidence row (#1155), or ''."""
-    if not f or f.get('disposition') in (None, 'exempt'):
+    if not f or f.get('disposition') is None:
         return ''
+    if f['disposition'] == 'exempt':
+        # #1392: said, not silent -- a side-push switch whose actuator points
+        # along its edge read "pass" with no facing word at all. Declaring a
+        # `mating_face` grades it (`edge_facing_policy`).
+        why = str(f.get('policy') or '').replace('exempt: ', '', 1)
+        return (f"; facing exempt ({why or 'by policy'}: not graded unless "
+                f"the entry declares a mating_face)")
     if f['disposition'] == 'abstained':
         return f"; facing abstained ({f.get('reason') or 'no face'})"
     if f['disposition'] == 'no_edge':
@@ -7773,6 +7810,12 @@ class GradeResult:
     # withheld key was a bare `continue` in rule_legality and the run printed
     # "PASS: N rules ran, no violations" with overlap unmeasured.
     budget_abstained: Dict[str, str] = field(default_factory=dict)
+    #: #1420: withheld keys the plan ANSWERS with `dispositions.withheld.<key>`
+    #: ({key: the plan's why}). Not graded either, but acknowledged on
+    #: purpose, so they are not an absent verdict: they leave `budget_abstained`
+    #: and `not_graded`, and ride here so the wire still says what stayed
+    #: ungraded.
+    budget_dispositioned: Dict[str, str] = field(default_factory=dict)
     #: #712: the along-edge position of every declared edge connector, taken
     #: whether or not anyone declared a claim about it. Advisory, like the
     #: `health` block -- a measurement, never a verdict.
@@ -7866,8 +7909,12 @@ class GradeResult:
         out = {}
         if self.budget_abstained:
             out['budget_abstained'] = len(self.budget_abstained)
+        # A rule the plan answers with `dispositions.rules.<rule>` was left
+        # ungraded on purpose (#1420): written down is not absent.
+        _answered = ((getattr(self.intent, 'dispositions', None) or {})
+                     .get('rules', {}))
         _armed = sum(1 for k, r in self.rules_skipped.items()
-                     if not _is_not_asked(k, r))
+                     if not _is_not_asked(k, r) and k not in _answered)
         if _armed:
             out['rules_skipped_armed'] = _armed
         _edge = sum(1 for e in self.edge_seating
@@ -9088,6 +9135,11 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
                  for k, v in (intent.budget_withheld or {}).items()
                  if not _declared_by_hand(intent, str(k))}
     found, ran, skipped = _run_rules(ctx, abstained)
+    # #1420: a withheld key the plan answers (`dispositions.withheld`) is
+    # acknowledged, not an absent verdict.
+    _held_why = (intent.dispositions or {}).get('withheld', {})
+    dispositioned = {k: _held_why[k] for k in abstained if k in _held_why}
+    abstained = {k: v for k, v in abstained.items() if k not in _held_why}
     violations.extend(found)
     violations.extend(exclusive_unsatisfiable(intent, blocks, pcb_data,
                                               pcb_file, state=state))
@@ -9204,6 +9256,7 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
         health=health_out,
         rules_run=tuple(ran), rules_skipped=skipped,
         budget_abstained=abstained,
+        budget_dispositioned=dispositioned,
         edge_seating=list(ctx.edge_seating),
         proximity_measured=list(ctx.proximity_measured),
         keep_away_measured=list(ctx.keep_away_measured),
@@ -10726,6 +10779,12 @@ def format_text(r: GradeResult) -> str:
                      f"DERIVABLE -- not graded, not passed:")
         for key in sorted(r.budget_abstained):
             lines.append(f"    - {key}: {r.budget_abstained[key]}")
+    if r.budget_dispositioned:
+        lines.append(f"  {len(r.budget_dispositioned)} withheld value(s) "
+                     f"ANSWERED by the plan (dispositions.withheld) -- "
+                     f"ungraded on purpose:")
+        for key in sorted(r.budget_dispositioned):
+            lines.append(f"    - {key}: {r.budget_dispositioned[key]}")
     if r.rules_skipped:
         lines.append(f"  {len(r.rules_skipped)} rule(s) did not run:")
         for name in sorted(r.rules_skipped):
@@ -11185,6 +11244,7 @@ def to_json(r: GradeResult) -> Dict:
         'rules_run': list(r.rules_run),
         'rules_skipped': r.rules_skipped,
         'budget_abstained': r.budget_abstained,
+        'budget_dispositioned': r.budget_dispositioned,
         'edge_seating': r.edge_seating,
         'edge_connector_evidence': r.edge_connector_evidence,
         'decap_pin_evidence': r.decap_pin_evidence,
@@ -11225,6 +11285,7 @@ def summary(r: GradeResult) -> Dict:
                                        else r.dark_undispositioned),
         # Not a violation count and not a pass: channels nothing graded.
         'budget_abstained': len(r.budget_abstained),
+        'budget_dispositioned': len(r.budget_dispositioned),
         'edge_seating_rows': len(r.edge_seating),
         'edge_seating_declared': sum(1 for e in r.edge_seating
                                      if e.get('declared')),

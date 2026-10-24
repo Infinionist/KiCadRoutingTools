@@ -275,6 +275,7 @@ def main():
     dup_refs = dict(getattr(pcb, 'duplicate_references', None) or {})
 
     new_advisory = None
+    base_courtyard_keys = None
     moved_refs = None
     base_pile = False
     own_pad_inherited = None
@@ -309,6 +310,8 @@ def main():
             base_keys = {(q.a, q.b, q.kind) for q in gb['pairs']}
         new_advisory = [q for q in g['advisory_pairs']
                         if (q.a, q.b, q.kind) not in base_keys]
+        base_courtyard_keys = {(a, b) for a, b, k in base_keys
+                               if k == 'courtyard'}
         # Refs whose POSE differs from the baseline: the courtyard gate's
         # currency (`legality.moved_refs` says why membership is not enough).
         # A function in legality, so a mover can ask the same question.
@@ -689,6 +692,26 @@ def main():
     if g['courtyard_blocking'] and moved_refs is not None:
         courtyard_gating = legality.courtyard_gating(
             g['courtyard_blocking_pairs'], moved_refs)
+    # #1385: the project declares courtyards_overlap an ERROR, so KiCad reports
+    # every real courtyard pair whatever its size, including the sliver the
+    # run-23 floors keep advisory. A pair a MOVED member created gates; one the
+    # baseline already carried stays a disclosure.
+    courtyard_error_gating = []
+    if g.get('courtyard_error_pairs') and moved_refs is not None:
+        _have = {(q.a, q.b) for q in courtyard_gating}
+        courtyard_error_gating = [
+            q for q in legality.courtyard_error_gating(
+                g['courtyard_error_pairs'], moved_refs, base_courtyard_keys)
+            if (q.a, q.b) not in _have]
+        if courtyard_error_gating:
+            print(f"  COURTYARD ERRORS ({len(courtyard_error_gating)}): the "
+                  f"project sets courtyards_overlap to 'error', so KiCad's DRC "
+                  f"reports each pair below whatever its size; a member of "
+                  f"each moved vs the baseline -- they GATE")
+            for q in courtyard_error_gating:
+                print(f"    {q.a} <-> {q.b}  {q.area_mm2}mm2  depth "
+                      f"{q.depth_mm}mm  side {q.side}")
+            courtyard_gating = courtyard_gating + courtyard_error_gating
     if g['courtyard_blocking']:
         _gate_note = (
             f"{len(courtyard_gating)} of {g['courtyard_blocking']} GATE "
@@ -1023,6 +1046,10 @@ def main():
                                           if moved_refs is not None else None),
             'courtyard_blocking_gating_pairs': [q._asdict()
                                                 for q in courtyard_gating],
+            # #1385: of those, the pairs below the run-23 floors that gate
+            # only because the project declares the rule an error.
+            'courtyard_error_gating_pairs': [q._asdict()
+                                             for q in courtyard_error_gating],
             # #1095: the severity the courtyard channel was graded at (None
             # = KiCad's default, error) and the waiver label it gave.
             'courtyard_severity': g.get('courtyard_severity'),
