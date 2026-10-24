@@ -189,7 +189,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
         members = [r for r in g['refs'] if r in state.parts]
         if len(members) >= 2 and any(r in movable for r in members):
             groups.append((g['name'], members))
-    claims, limits = [], []
+    claims, limits, padless = [], [], []
     for c in rows:
         s, p = str(c['ref']), str(c['near'])
         if s not in pcb.footprints or p not in pcb.footprints:
@@ -207,6 +207,8 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
             claims.append((s, p, legs))
             m = c.get('max_mm')
             limits.append(float(m) if isinstance(m, (int, float)) else None)
+            if isinstance(m, (int, float)) and not pads.get(s) and len(legs) > 1:
+                padless.append((s, p, float(m), legs))
     # decaps: each cap from a supply rail to ground, matched to that rail's
     # supply pins (`simple.Model._sites`) by the rule check_groups reports by
     # (`BoardView.decaps`) -- not a claimed part, and not a cap whose IC is in
@@ -236,6 +238,16 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
                      + '|'.join(pcb.nets[n].name for n in view.decap_rails()[r]) + " serves "
                      + ', '.join(sorted({ic for ic, _n in pins}))
                      + (" (no IC of its group is on its rail)" if r in foreign else ""))
+    # a claim with a limit and no `pads` is priced over every shared-net pad,
+    # while check_floorplan grades the ONE closest pad pair (#1426)
+    model_arity = []
+    rail_names = {pcb.nets[i].name for i in view.rails}
+    for s, p, m, legs in padless:
+        nets = sorted({q.net_name for q in pcb.footprints[s].pads
+                       if q.net_id and str(q.pad_number) in {l[0] for l in legs}})
+        model_arity.append({'ref': s, 'near': p, 'max_mm': m, 'legs': len(legs),
+                            'nets': nets,
+                            'rails': [n for n in nets if n in rail_names]})
     # congestion counts every net that is routed as tracks: all but ground,
     # which is poured as a plane
     cnets = sorted(n for n in state.net_refs if n and not is_ground(pcb.nets[n].name))
@@ -252,6 +264,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
                   halo_coef=args.halo_coef, halo_weight=args.halo_weight,
                   claim_limits=limits, claim_limit_weight=args.claim_limit_weight,
                   templates=tmpls, template_weight=args.template_weight)
+    model.claim_arity = model_arity
     # the unlocked parts the intent declares on an edge, seated there; an
     # edge that cannot hold all its declared parts together seats the most
     # that fit and records itself (`edge_oversubscribed`)
@@ -334,6 +347,17 @@ def _asm_text(asm):
     if asm.get('buildable'):
         return ''
     return f"NOT BUILDABLE ({', '.join(asm.get('fired') or ()) or 'check_assembly'})"
+
+
+def arity_text(rec):
+    """One WARNING body for a `proximity` claim with a limit and no `pads`
+    (`build`'s `claim_arity` rows, #1426)."""
+    rails = f" (rail nets: {', '.join(rec['rails'])})" if rec['rails'] else ''
+    return (f"proximity {rec['ref']} near {rec['near']} (max {rec['max_mm']:g} mm) names no "
+            f"pads: it is priced over {rec['legs']} shared-net pad legs on "
+            f"{', '.join(rec['nets'])}{rails}, but check_floorplan grades the ONE closest "
+            f"pad pair, so the objective can call it broken while the grade passes it; "
+            f"name the facing pads in `pads` so both read the same ones")
 
 
 def _fp_text(fp):
@@ -493,6 +517,9 @@ def _name_judged(a, seeds, summaries):
            # together, likewise
            'oversubscribed': next((summaries[s]['oversubscribed'] for s in seeds
                                    if summaries.get(s, {}).get('oversubscribed')), []),
+           # the claims priced over legs the grade does not read, likewise (#1426)
+           'claim_arity': next((summaries[s]['claim_arity'] for s in seeds
+                                if summaries.get(s, {}).get('claim_arity')), []),
            # each placed seed's check_floorplan --intent errors (None: not
            # graded), keyed by seed as JSON keys must be
            'floorplan': {str(s): (summaries[s].get('floorplan') or {}).get('errors')
@@ -524,6 +551,8 @@ def _name_judged(a, seeds, summaries):
         elif fp and fp.get('errors') is None:
             print(f"  WARNING: seed {s} is judged with its {_fp_text(fp)}: grade it with "
                   f"check_floorplan --intent before keeping it")
+    for rec in doc['claim_arity']:
+        print(f"  WARNING: {arity_text(rec)}")
     for r, why in sorted(doc['refused'].items()):
         print(f"  WARNING: {r}'s declared pose is not legal, in every seed: "
               f"{'; '.join(why)}")
@@ -749,6 +778,8 @@ def main(argv=None):
     from placement.edge_seat import crowding_text
     for rec in model.edge_oversubscribed:
         print(f"  WARNING: {crowding_text(rec)}")
+    for rec in model.claim_arity:
+        print(f"  WARNING: {arity_text(rec)}")
     print(f"place_simple: {len(movable)} movable part(s), fixed: "
           f"{', '.join(sorted(r for r in state.parts if r not in movable)) or 'none'}")
     for name, members in model.groups:
@@ -899,7 +930,8 @@ def main(argv=None):
               'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
               'illegal': illegal, 'refused': refused, 'estimate_fallback': fallback,
-              'oversubscribed': model.edge_oversubscribed, 'floorplan': fp, 'assembly': asm,
+              'oversubscribed': model.edge_oversubscribed, 'claim_arity': model.claim_arity,
+              'floorplan': fp, 'assembly': asm,
               'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'hints_saturated': saturated,
@@ -908,8 +940,8 @@ def main(argv=None):
         json.dump(report, open(a.json, 'w', encoding='utf-8'), indent=1)
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
-                                           'refused', 'oversubscribed', 'floorplan', 'assembly',
-                                           'hints_saturated', 'estimate_fallback', 'seconds')}))
+                                           'refused', 'oversubscribed', 'claim_arity', 'floorplan',
+                                           'assembly', 'hints_saturated', 'estimate_fallback', 'seconds')}))
     return 4 if illegal or refused or model.edge_oversubscribed else 0
 
 
