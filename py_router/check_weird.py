@@ -261,6 +261,32 @@ def _check_soft_joints(net_id, name, net_segs, net_vias, net_pads,
     return soft_pts
 
 
+def _end_cap_on_track(fx, fy, s, seg_index) -> bool:
+    """Does the end cap of ``s`` at (fx, fy) overlap the copper of another
+    same-net track of ``s``'s layer that is not ``s``'s own chain (shares no
+    vertex with it)? The cap radius is half of ``s``'s width and the other
+    track's copper is its body at half its width, the overlap test
+    ``_check_soft_joints`` uses for two ends (#1373)."""
+    cx0, cy0 = int(fx // _CELL), int(fy // _CELL)
+    own = ((round(s.start_x, 3), round(s.start_y, 3)),
+           (round(s.end_x, 3), round(s.end_y, 3)))
+    seen = set()
+    for ncx in (cx0 - 1, cx0, cx0 + 1):
+        for ncy in (cy0 - 1, cy0, cy0 + 1):
+            for o in seg_index.get((s.layer, ncx, ncy), ()):
+                if o is s or id(o) in seen or getattr(o, 'graphic', False):
+                    continue
+                seen.add(id(o))
+                if ((round(o.start_x, 3), round(o.start_y, 3)) in own
+                        or (round(o.end_x, 3), round(o.end_y, 3)) in own):
+                    continue
+                if (_pt_seg_dist(fx, fy, o.start_x, o.start_y,
+                                 o.end_x, o.end_y)
+                        < (s.width + o.width) / 2.0 - 1e-6):
+                    return True
+    return False
+
+
 def _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
                    soft_pts, findings, join_tol: float = 0.0, copper_layers=()):
     """Degree-1 endpoints that _point_anchored calls unanchored and that are
@@ -349,6 +375,14 @@ def _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
             if any(point_in_polygon(fx, fy, z.polygon)
                    for z in zones_by_layer.get(s.layer, ())):
                 continue  # lands in a same-net zone fill outline
+            # The end CAP overlapping another same-net track's copper (its
+            # body or its end cap) is a joint -- KiCad and check_orphan_stubs
+            # both call it connected (#1373); only a vertex, an interior T or
+            # a <=0.1mm gap used to be credited. A segment sharing a vertex
+            # with this one is its own chain: a sharp fold back onto it is a
+            # dead-end stub, not a joint, so it gives no credit here.
+            if _end_cap_on_track(fx, fy, s, seg_index):
+                continue
             # Two long tracks whose ends miss each other by a few um (a
             # nudge/micro-shift split pair) are OFF BY that microgap, not by
             # their segment lengths: within join_tol they are connected

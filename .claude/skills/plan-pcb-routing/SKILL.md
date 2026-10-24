@@ -1409,7 +1409,9 @@ Based on the analysis, generate a step-by-step plan. The general order is:
    pitch). Do not hand-pick a pitch from corpus statistics.
    **Do not recommend `--add-teardrops`** (7% of human boards use teardrops)
    and **do not set `--thermal-relief`** — leave the tool's default connection
-   style alone.
+   style alone. The one exception is re-pouring a designer's thermal-relief
+   pour that should keep its relief (Step 3, "A pour the board already
+   has"); `route_plan_check` R07 allows the flag only then, with `--board`.
 5. **Verification** - DRC and connectivity checks (plane repair is inside
    step 3's finalize — there is no separate repair step, #562)
 
@@ -1465,8 +1467,9 @@ designer's thermal-relief pour comes back solid, which matters on a
 hand-soldered through-hole board. Before the pour, look for existing pours on
 the plane nets. If the designer's pour should stay as drawn (its outline,
 connection style or clearance), add `--skip-existing-zones` for that step. If
-it should be replaced but keep thermal relief, add `--thermal-relief`. Then
-check the listed changes.
+it should be replaced but keep thermal relief, add `--thermal-relief`
+(`route_plan_check --board` accepts it exactly when the board's pour on that net
+is a thermal-relief pour). Then check the listed changes.
 
 A multi-layer pour, such as `(layers "F.Cu" "B.Cu")`, is ONE zone and is
 replaced only when this run pours the net on every layer it covers (#1299), so

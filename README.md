@@ -575,6 +575,12 @@ python3 py_router/check_connected.py kicad_files/output.kicad_pcb --routed-only
 # half-width), so T-junction taps and copper-overlap joints are not miscounted.
 python3 py_tools/check_orphan_stubs.py kicad_files/output.kicad_pcb
 
+# Other-net copper inside the screw-head ring of each mounting hole (KiCad checks
+# a hole's clearance only). Declare the ring before routing with
+# add_rule_area.py --name MOUNT --mounting-holes. --ring MM sets how far past the
+# hole edge the head reaches (default 0.4 x the drill).
+python3 py_tools/check_mounting_holes.py kicad_files/output.kicad_pcb --ring 1.3
+
 # Pad-geometry sanity check: flags same-footprint, different-net pads whose copper
 # overlaps (a short). A non-zero result almost always means a pad's rotation/size
 # is modelled wrong - the usual cause is a QFN/QFP/BGA placed at a non-orthogonal
@@ -764,6 +770,7 @@ KiCadRoutingTools/
 ├── py_tools/                 # Leaf diagnostic / analysis tools
 │   ├── check_impedance.py        # Verify impedance-controlled widths/gaps
 │   ├── check_orphan_stubs.py     # Orphan stub detector
+│   ├── check_mounting_holes.py   # Other-net copper under a mounting hole's screw head
 │   ├── check_cycles.py           # Redundant-loop (cycle) + overlapping-via checker
 │   ├── check_orthonormal.py      # Long non-orthonormal track detector
 │   ├── net_forensics.py          # Per-net copper forensics
