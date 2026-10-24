@@ -1582,7 +1582,7 @@ python3 -X utf8 awx/route_bus.py board_step1.kicad_pcb board_step1a.kicad_pcb \
 
 **What it hands on, and how to check it.** The last line of its log is the
 grade -- `BUS U1->U2 K=.. lanes=../.. vias=.. ... | on the board: ...
-connected=1 drc=.. planes=.. vs .. in` -- and `<out stem>.bus/summary.json`
+connected=1 drc=.. planes=.. vs .. in walled=..` -- and `<out stem>.bus/summary.json`
 names every net routed and every one refused, with why. It exits 0 when the
 bus is handed on routed, connected and clean, and 1 when OUT is the board as it
 came (then the rest of the chain routes the whole bus with A*: carry on from
@@ -1604,7 +1604,9 @@ Check, besides the BUS line: `check_connected.py` on OUT, and its PLANES --
 refill and count each pour's islands. On h616_lpddr4 the LPDDR4 lanes on In2
 split the VCC_DRAM island under the memory in two, which the step's own
 `planes=` count did not flag, and `route.py` then could not reach one of its
-pads past the protected bus.
+pads past the protected bus. A non-zero `walled=` names balls of the arrays
+(not the bus's) that no later step can reach past the locked lanes: report
+those nets as open, do not spend `route.py` rounds on them.
 
 **Known limits (it is experimental):** a bus's pairs run at the step's own
 pitch, not the net class's diff-pair gap (DDR 0.093/0.093 on h616_lpddr4,
