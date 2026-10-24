@@ -479,6 +479,81 @@ def stamp_via_protection_in_content(content: str, stamps_by_uuid: dict):
     return ''.join(out), len(edits)
 
 
+def strip_via_protection_in_content(content: str, drops_by_uuid: dict):
+    """Remove protection tokens from the `(via ...)` blocks named by uuid (#1367).
+
+    `drops_by_uuid` is {via uuid: [token, ...]}. Only a token that is a direct
+    child of the via block is removed, together with the line it stands on.
+    The inverse of `stamp_via_protection_in_content`: it undoes the explicit
+    tokens a pcbnew re-save wrote onto vias that had none, so the via inherits
+    the board's `(setup ...)` again. Returns `(content, n_vias_edited)`."""
+    if not drops_by_uuid:
+        return content, 0
+    from kicad_parser import _via_blocks
+    uuid_re = re.compile(r'\(uuid\s+"([^"]+)"\)')
+    edits = []   # (absolute start, absolute end) spans to delete
+    n_vias = 0
+    for start, blk in _via_blocks(content):
+        um = uuid_re.search(blk)
+        if not um or um.group(1) not in drops_by_uuid:
+            continue
+        spans = []
+        depth, in_str, i = 0, False, 0
+        while i < len(blk):
+            c = blk[i]
+            if in_str:
+                if c == '\\':
+                    i += 2
+                    continue
+                if c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c == '(':
+                depth += 1
+                if depth == 2:
+                    m = re.match(r'\(([A-Za-z_]+)', blk[i:])
+                    if m and m.group(1) in drops_by_uuid[um.group(1)]:
+                        j, d2, s2 = i, 0, False
+                        while j < len(blk):
+                            cj = blk[j]
+                            if s2:
+                                if cj == '\\':
+                                    j += 2
+                                    continue
+                                if cj == '"':
+                                    s2 = False
+                            elif cj == '"':
+                                s2 = True
+                            elif cj == '(':
+                                d2 += 1
+                            elif cj == ')':
+                                d2 -= 1
+                                if d2 == 0:
+                                    break
+                            j += 1
+                        k = i
+                        while k > 0 and blk[k - 1] in ' \t':
+                            k -= 1
+                        if k > 0 and blk[k - 1] == '\n':
+                            k -= 1
+                        spans.append((start + k, start + j + 1))
+            elif c == ')':
+                depth -= 1
+            i += 1
+        if spans:
+            edits.extend(spans)
+            n_vias += 1
+    if not edits:
+        return content, 0
+    out, pos = [], 0
+    for a, b in sorted(edits):
+        out.append(content[pos:a])
+        pos = b
+    out.append(content[pos:])
+    return ''.join(out), n_vias
+
+
 def via_net_name(net_id: int, net_id_to_name: dict) -> Optional[str]:
     """This board's name for a net id, or None to mean "use the numeric dialect".
 

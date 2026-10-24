@@ -2852,11 +2852,21 @@ python3 py_tools/fill_for_delivery.py routed.kicad_pcb -o delivered.kicad_pcb
 |------|---------|
 | `-o, --output` | Destination board (required, and not the input itself). Its siblings (`.kicad_pro`, `.kicad_prl`, `.kicad_dru`, design brief) are copied first, via `copy_board`. |
 | `--timeout N` | Seconds to allow the KiCad fill (default: the exact-fill budget). |
+| `--baseline BOARD` | The board *before* the routing that made the input. Used only when the re-save changes the file format (below): vias it already had under solder keep what it gave them. |
 | `--exit-zero` | Report problems but exit 0. |
 
 `route.py --write-fill` does the same thing in place, at the very end of a
 run, after the DRC-floor writeback — so the fill is graded against the
 project's real net classes.
+
+**File format.** KiCad saves what it runs, so a board older than KiCad 10 comes
+back as KiCad 10's format (printed as `file format: 20241229 -> 20260206`; KiCad
+9 cannot open the copy). That format can declare per-via protection, and the
+re-save writes an explicit `(capping no) (filling no)` on every via. The tool
+removes those tokens again and declares IPC-4761 Type VII on the vias in a pad
+or paste opening — the declaration the route step makes on a KiCad 10 file — so
+`check_drc` reports the same zero via-in-paste violations it did on the input.
+A filled copy with more unprotected vias-in-paste than its input is refused.
 
 ### Output
 
