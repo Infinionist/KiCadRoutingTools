@@ -19,6 +19,12 @@ Rows, on `sweep_dangling_via_branches` and then through route.py:
     are left alone
   * route.py ships the board without the tail, and check_weird reads clean
 
+and the via-in-pad unblock shape (#535): a via that is the only thing joining
+two F.Cu track ends 0.07 mm apart (their caps overlap, so the net grades
+connected). The sweep's gate refused to remove it because dropping the via
+graded the two ends as new dangling ends; it now removes the via and moves
+one end onto the other (a weld), so the net stays joined and the via is gone.
+
     python3 tests/test_1372_dead_tail_late_sweep.py
 """
 import os
@@ -106,6 +112,43 @@ def main():
     check('6. a stub that ends past a pad it is rooted on is not a tail the sweep takes',
           len(b.segments) >= 2)
 
+    # 8. Two ends that met inside a dangling via's barrel are welded.
+    via = Via(x=20.0, y=10.0, size=0.6, drill=0.3, layers=['F.Cu', 'B.Cu'], net_id=1)
+    a, c = seg(10, 10, 19.965, 10), seg(20.035, 10, 30, 10)
+    b = board([a, c], PADS)
+    b.vias = [via]
+    st = {}
+    rs, rv = sweep_dangling_via_branches(b, {1}, stats=st)
+    added = st.get('added') or []
+    check('8. the via is removed and one end is welded onto the other',
+          rv == [via] and len(added) == 1 and len(b.vias) == 0
+          and st.get('welds') == 1, f'{len(rv)} via(s), {len(added)} weld(s), {st}')
+    if added:
+        w = added[0]
+        pts = {(round(q.start_x, 3), round(q.start_y, 3), round(q.end_x, 3), round(q.end_y, 3))
+               for q in b.segments}
+        joined = any(abs(x.end_x - y.start_x) < 1e-6 and abs(x.end_y - y.start_y) < 1e-6
+                     for x in b.segments for y in b.segments if x is not y)
+        check('8. the two ends now coincide and the net is still two tracks',
+              len(b.segments) == 2 and joined and w in b.segments, str(pts))
+    a, c = seg(10, 10, 19.965, 10, locked=True), seg(20.035, 10, 30, 10)
+    b = board([a, c], PADS)
+    b.vias = [Via(x=20.0, y=10.0, size=0.6, drill=0.3, layers=['F.Cu', 'B.Cu'], net_id=1)]
+    st = {}
+    rs, rv = sweep_dangling_via_branches(b, {1}, stats=st)
+    check('8. the unlocked track moves when the other is locked',
+          len(rv) == 1 and st.get('welds') == 1 and a in b.segments, str(st))
+    a, c = seg(10, 10, 19.965, 10, locked=True), seg(20.035, 10, 30, 10, locked=True)
+    b = board([a, c], PADS)
+    b.vias = [Via(x=20.0, y=10.0, size=0.6, drill=0.3, layers=['F.Cu', 'B.Cu'], net_id=1)]
+    rs, rv = sweep_dangling_via_branches(b, {1})
+    check('8. with both tracks locked nothing is welded or removed', not rv and not rs)
+    a, c = seg(10, 10, 18.0, 10), seg(22.0, 10, 30, 10)        # ends 4 mm apart
+    b = board([a, c], PADS)
+    b.vias = [Via(x=20.0, y=10.0, size=0.6, drill=0.3, layers=['F.Cu', 'B.Cu'], net_id=1)]
+    rs, rv = sweep_dangling_via_branches(b, {1})
+    check('8. ends that did not meet inside the barrel are not welded', not rv)
+
     # 7. route.py on a board file.
     bd = RoutingBoard(w=40, h=30)
     bd.pad('A', 10, 15, 'SIG')
@@ -132,6 +175,35 @@ def main():
                          errors='replace')
     check('7. precondition: the input does carry the tail', 'dangling-end' in inp.stdout,
           inp.stdout[-300:])
+
+    # 9. The same weld through route.py on a board file.
+    bd = RoutingBoard(w=40, h=30)
+    bd.pad('A', 10, 15, 'SIG')
+    bd.pad('B', 30, 15, 'SIG')
+    bd.seg(10, 15, 19.965, 15, 'SIG', w=0.2)
+    bd.via(20, 15, 'SIG', size=0.6, drill=0.3)
+    bd.seg(20.035, 15, 30, 15, 'SIG', w=0.2)
+    pcb2 = os.path.join(tmp, 'v.kicad_pcb')
+    out2 = os.path.join(tmp, 'vo.kicad_pcb')
+    open(pcb2, 'w', encoding='utf-8').write(bd.text())
+    inp2 = subprocess.run([sys.executable, '-X', 'utf8', 'py_router/check_weird.py', pcb2],
+                          cwd=ROOT, capture_output=True, text=True, encoding='utf-8',
+                          errors='replace')
+    r2 = subprocess.run([sys.executable, '-X', 'utf8', 'py_router/route.py', pcb2, out2,
+                         '--nets', 'SIG', '--layers', 'F.Cu', 'B.Cu'], cwd=ROOT,
+                        capture_output=True, text=True, encoding='utf-8', errors='replace')
+    w2 = subprocess.run([sys.executable, '-X', 'utf8', 'py_router/check_weird.py', out2],
+                        cwd=ROOT, capture_output=True, text=True, encoding='utf-8',
+                        errors='replace')
+    c2 = subprocess.run([sys.executable, '-X', 'utf8', 'py_router/check_connected.py', out2],
+                        cwd=ROOT, capture_output=True, text=True, encoding='utf-8',
+                        errors='replace')
+    check('9. precondition: the input carries the dangling via',
+          'dangling-via: 1' in inp2.stdout, inp2.stdout[-300:])
+    check('9. route.py ships the board without the via, welded, still connected',
+          'NO WEIRD THINGS' in w2.stdout and 'ALL NETS FULLY CONNECTED' in c2.stdout
+          and 'welded 1 pair' in (r2.stdout + r2.stderr),
+          (w2.stdout + c2.stdout + r2.stdout)[-500:])
 
     print('FAILED: ' + ', '.join(FAILS) if FAILS else 'ALL OK')
     return 1 if FAILS else 0

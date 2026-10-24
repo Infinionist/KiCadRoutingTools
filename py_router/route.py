@@ -1592,6 +1592,9 @@ def _late_dangling_via_sweep1166(pcb_data, output_file, return_results,
         if not (removed or dropped):
             return 0, 0
         gone = {id(x) for x in removed + dropped}
+        # #1372: a via that was the only thing joining two track ends is
+        # removed with one end moved onto the other; the moved copy is new copper.
+        welded = list(_stats.get('added') or [])
         if return_results:
             for r in rd.get('results') or []:
                 for key in ('new_segments', 'new_vias'):
@@ -1606,6 +1609,11 @@ def _late_dangling_via_sweep1166(pcb_data, output_file, return_results,
                 x for x in dropped if id(x) not in owned)
             pcb_data.segments = [x for x in pcb_data.segments if id(x) not in gone]
             pcb_data.vias = [x for x in pcb_data.vias if id(x) not in gone]
+            if welded:
+                rd.setdefault('results', []).append({
+                    'new_segments': welded, 'new_vias': [],
+                    'cleanup': 'dangling_via_weld'})
+                pcb_data.segments.extend(welded)
             bump_copper_epoch(pcb_data)
             n_s, n_v = len(removed), len(dropped)
         else:
@@ -1615,13 +1623,29 @@ def _late_dangling_via_sweep1166(pcb_data, output_file, return_results,
                 print(f"  WARNING: dangling-via sweep (#1166): chose "
                       f"{len(removed)} segment(s) and {len(dropped)} via(s), "
                       f"found {n_s} and {n_v} in the written file")
+            if welded:
+                from kicad_parser import board_uses_name_nets
+                from kicad_writer import generate_segment_sexpr
+                with open(output_file, 'r', encoding='utf-8') as _f:
+                    _content = _f.read()
+                _v10 = board_uses_name_nets(_content)
+                _sx = [generate_segment_sexpr(
+                    (w.start_x, w.start_y), (w.end_x, w.end_y), w.width, w.layer,
+                    w.net_id, name_of.get(w.net_id) if _v10 else None)
+                    for w in welded]
+                _lp = _content.rfind(')')
+                _content = _content[:_lp] + '\n'.join(_sx) + '\n' + _content[_lp:]
+                with open(output_file, 'w', encoding='utf-8') as _f:
+                    _f.write(_content)
         _tails = _stats.get('tails', 0)
         print(f"  Dangling vias (#1166, end of run): removed {n_v} "
               f"via(s) joining fewer than two layers and {n_s} "
               f"segment(s) of the branches they ended, on "
               f"{_stats.get('nets', 0)} net(s)"
               + (f" ({_tails} of the segments were dead tails on finished "
-                 f"nets, #1372)" if _tails else ""))
+                 f"nets, #1372)" if _tails else "")
+              + (f"; welded {len(welded)} pair(s) of track ends that met "
+                 f"inside a removed via's barrel (#1372)" if welded else ""))
         return n_s, n_v
     except Exception as _e:                                     # noqa: BLE001
         print(f"  (end-of-run dangling-via sweep skipped: "
@@ -1870,6 +1894,28 @@ def _late_kicad_dangling_split1217(pcb_data, output_file, return_results,
         print(f"  (end-of-run KiCad-dangling split skipped: "
               f"{type(_e).__name__}: {_e})")
         return 0
+
+
+def _unfinished_net_ids(routed_results, single_ended_nets, terminal_restores=None):
+    """Nets that still carry unfinished pads when the cleanup pipeline runs
+    (#473): they keep ALL their copper through its subtractive passes, because
+    their spurs are the landing sites the next chain step or rescue welds to.
+
+      * a routed net with failed pads (`failed_pads_info`);
+      * a net this run was asked to route that has no result at all;
+      * a rip victim put back PARTIALLY (#1427): the #134 last resort restores
+        the pieces that do not collide and leaves "the net PARTIAL for a later
+        reconnect pass" (`partial_restore_134`), and a terminal restore that
+        is only 'full_open' or an escape 'stub'. Their restored escape is the
+        landing site; the dead-end sweep read it as a spur and took it, and
+        the ball shipped bare.
+    """
+    out = {nid for nid, _r in routed_results.items()
+           if _r.get('failed_pads_info') or _r.get('partial_restore_134')}
+    out |= {nid for _nm, nid in single_ended_nets if nid not in routed_results}
+    out |= {nid for nid, how in (terminal_restores or {}).items()
+            if how in ('full_open', 'stub')}
+    return out
 
 
 def _late_orphan_sweep659(pcb_data, output_file, return_results, results_data,
@@ -4756,10 +4802,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # through the dead-end sweep -- their spurs are the landing sites the
     # next chain step / rescue needs, and sweeping them each step eroded
     # failed nets across chains.
-    _protect_unfinished = {nid for nid, _r in routed_results.items()
-                           if _r.get('failed_pads_info')}
-    _protect_unfinished |= {nid for _nm, nid in single_ended_nets
-                            if nid not in routed_results}
+    _protect_unfinished = _unfinished_net_ids(
+        routed_results, single_ended_nets,
+        getattr(state, 'terminal_restores', None))
     _cleanup = None if (_ckpt_stop and not _ckpt_cleanup) else run_post_route_cleanup(
         results, pcb_data, sweep_scope_ids, config,
         protect_net_ids=_protect_unfinished,
