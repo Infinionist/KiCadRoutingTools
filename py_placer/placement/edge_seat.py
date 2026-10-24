@@ -79,6 +79,10 @@ ROTS = (0.0, 90.0, 180.0, 270.0)
 #: The step a seat line is scanned at, and the precision each change found
 #: between two steps is then bisected to.
 SCAN_STEP_MM = 0.5
+#: How many places along an edge the seat's depth is read (#1412). One sample
+#: at the edge's midpoint seats a part at a notch's depth along the whole edge
+#: whenever the midpoint falls in a notch.
+DEPTH_SAMPLES = 9
 REFINE_MM = 0.02
 #: The step and the reach of a part's slide to a legal spot on its edge after
 #: the anneal.
@@ -564,6 +568,24 @@ def seats(state, pcb, pcb_file, intent, movable, crowded=None
                         squeezed.add(rot)
                         continue
             free = _free_stretches(probe, c, edge, axis, coord, rot, lo, hi, fixed, tally)
+            # The depth was read at the edge's midpoint, and a notch there
+            # makes it the notch's depth for every position (#1412): read it at
+            # DEPTH_SAMPLES places along the span too, and keep the depth
+            # with the most room. A straight edge reads one depth everywhere,
+            # so the extra reads cost nothing there.
+            tried = {round(coord, 3)}
+            for k in range(DEPTH_SAMPLES):
+                alt, _f = _seat_coord(probe, ref, edge, rot, axis,
+                                      lo + (hi - lo) * k / (DEPTH_SAMPLES - 1),
+                                      aim)
+                if alt is None or round(alt, 3) in tried:
+                    continue
+                tried.add(round(alt, 3))
+                more = _free_stretches(probe, c, edge, axis, alt, rot, lo, hi,
+                                       fixed)
+                if (sum(f1 - f0 for f0, f1 in more)
+                        > sum(f1 - f0 for f0, f1 in free) + EPS):
+                    coord, free = alt, more
             if free:
                 lines[rot] = Line(coord, tuple(free))
         if not lines:
