@@ -99,6 +99,9 @@ RESTARTS = 2
 SCATTERED_SEEDS = 6
 CLUSTERED_SEEDS = 6
 JUDGED_SEEDS = 6
+#: A part whose pad copper reaches further than this (mm) past its drawn
+#: courtyard is named before the anneal (#1386).
+PAD_REACH_WARN_MM = 0.3
 #: Anchored seeds (`--anchored`) are opt-in, numbered after the clustered ones.
 #: Over 10 boards, 6 scattered + 6 anchored routed better than the default
 #: seeds on two (covg blocking 3.1 -> 0.1, bitaxe) and worse on three (tigard,
@@ -860,6 +863,19 @@ def main(argv=None):
             too_big.add(r)
             print(f"  WARNING: {r} ({w:.2f} x {h:.2f} mm) does not fit in the usable area "
                   f"({ux1 - ux0:.2f} x {uy1 - uy0:.2f} mm) at either quarter turn")
+    # a part whose pad copper reaches past its drawn courtyard is priced on the
+    # courtyard here, but check_assembly gates courtyard plus pad copper, so a
+    # neighbour can end over the pad (#1386)
+    from placement.seeder import _pad_copper_overhang
+    wide = {r: round(_pad_copper_overhang(state, r), 2) for r in sorted(state.parts)
+            if _pad_copper_overhang(state, r) > PAD_REACH_WARN_MM}
+    if wide:
+        print("  WARNING: pad copper reaches past the drawn courtyard: " + ', '.join(
+            f"{r} {v:.2f} mm" + (' (locked)' if r not in movable else '')
+            for r, v in wide.items())
+            + "; the anneal prices the courtyard, check_assembly gates courtyard plus "
+              "pad copper, so a neighbour can end over such a pad and the seed grade "
+              "NOT BUILDABLE (ranked below the buildable seeds)")
     t1 = time.time()
     moves = a.moves or MOVES_PER_PART * len(movable)
 
@@ -1036,7 +1052,7 @@ def main(argv=None):
               'decap_residual': resid, 'decap_repair': mended,
               'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
-              'hints_saturated': saturated, 'template_keepout': tk,
+              'hints_saturated': saturated, 'template_keepout': tk, 'pad_overhang': wide,
               'template_off': off,
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
     if a.json:
