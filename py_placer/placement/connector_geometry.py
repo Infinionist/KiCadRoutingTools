@@ -510,28 +510,39 @@ def _depth_beyond(region, rect):
 
 def courtyard_overhang_past(geometry, rect, edge, skip_rings=None):
     """`(amount, others)` for the courtyard `rect` against the DECLARED
-    `edge` (#1403). On a rectangular outline `amount` is one signed distance
-    past that edge along its normal (0 when inside) and `others` the same for
-    each other compass edge. On an outline with rings (a rounded corner, a
-    notch, a cutout) the courtyard's sides are not separable by edge, so
-    `amount` is the one distance the rect reaches beyond the board (the
-    farthest it lies from the outline) and `others` is empty -- not the sum of
-    every off-board corner and every near side that `courtyard_overhang`
-    ranks poses by. Falls back to that summed reading when the edge, the
-    bounds or the region are unknown."""
+    `edge` (#1403): `amount` is one distance past that edge along its normal
+    (0 when inside) and `others` the same for each other compass edge. On an
+    outline with rings (a rounded corner, a notch, a cutout) `amount` also
+    counts how far the rest of the rect -- cut off at the other edges' lines
+    -- reaches beyond the board, so a courtyard hanging off a rounded corner
+    or into a notch is not read as flush. It is never the sum of every
+    off-board corner and near side that `courtyard_overhang` ranks poses by.
+    Falls back to that summed reading when the edge or the bounds are
+    unknown."""
     b = geometry.bounds
     if edge not in EDGES or b is None:
-        return courtyard_overhang(geometry, rect, skip_rings), {}
-    gate = geometry.zero_gate()
-    if gate.active:
-        region = _board_region(gate)
-        if region is not None:
-            return float(_depth_beyond(region, rect)), {}
         return courtyard_overhang(geometry, rect, skip_rings), {}
     outside = dict(zip(EDGES, (b[0] - rect[0], rect[2] - b[2],
                                b[1] - rect[1], rect[3] - b[3])))
     amount = max(0.0, outside[edge])
     others = {e: max(0.0, v) for e, v in outside.items() if e != edge}
+    gate = geometry.zero_gate()
+    if gate.active:
+        region = _board_region(gate)
+        if region is not None:
+            # What the rect does past another edge's line is `others`; the
+            # rest of it is measured against the outline, so a corner that
+            # hangs off a rounded outline or into a notch counts for the
+            # declared edge, by its distance from the board.
+            clip = (rect[0] if edge == 'west' else max(rect[0], b[0]),
+                    rect[1] if edge == 'north' else max(rect[1], b[1]),
+                    rect[2] if edge == 'east' else min(rect[2], b[2]),
+                    rect[3] if edge == 'south' else min(rect[3], b[3]))
+            depth = (_depth_beyond(region, clip)
+                     if clip[0] < clip[2] and clip[1] < clip[3] else 0.0)
+            amount = max(amount, float(depth))
+        else:
+            amount = max(amount, float(courtyard_overhang(geometry, rect, skip_rings)))
     return float(amount), others
 
 
