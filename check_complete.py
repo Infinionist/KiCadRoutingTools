@@ -234,19 +234,38 @@ def fab_floor_integrity(board, authored_from, hole_grader=None, timeout=3600):
     from fix_kicad_drc_settings import (FAB_FLOOR_KEYS,
                                         FAB_FLOOR_KEYS_MEASURABLE,
                                         find_project, scan_board_minima)
-    if not authored_from:
-        return {'ran': False, 'reason': 'no --authored-from: the chain rewrites '
-                                        'the floors in place, so there is '
-                                        'nothing left to compare against'}
-    pro = find_project(authored_from)
-    if not os.path.isfile(pro):
-        return {'ran': False, 'reason': f'no project beside {authored_from}'}
-    try:
-        with open(pro, encoding='utf-8') as fh:
-            authored = ((json.load(fh).get('board') or {})
-                        .get('design_settings') or {}).get('rules') or {}
-    except Exception as exc:                                # noqa: BLE001
-        return {'ran': False, 'reason': f'unreadable project: {exc}'}
+    pro = None
+    source = 'authored_from'
+    if authored_from:
+        pro = find_project(authored_from)
+        if not os.path.isfile(pro):
+            return {'ran': False, 'reason': f'no project beside {authored_from}'}
+        try:
+            with open(pro, encoding='utf-8') as fh:
+                authored = ((json.load(fh).get('board') or {})
+                            .get('design_settings') or {}).get('rules') or {}
+        except Exception as exc:                            # noqa: BLE001
+            return {'ran': False, 'reason': f'unreadable project: {exc}'}
+    else:
+        # #1368: without a reference board the floors a chain rewrote are
+        # still on record -- the writeback seeds
+        # ``kicad_routing_tools.fab_floor_origin`` with what the board
+        # declared BEFORE the first step lowered anything. Grade against it
+        # instead of declaring nothing left to compare with. Only a board no
+        # tool ever wrote back has no origin, and there the project IS the
+        # declaration.
+        try:
+            import tool_records
+            authored = dict(tool_records.effective_namespace(board)
+                            .get('fab_floor_origin') or {})
+        except Exception as exc:                            # noqa: BLE001
+            return {'ran': False, 'reason': f'unreadable fab_floor_origin: {exc}'}
+        if not authored:
+            return {'ran': False,
+                    'reason': 'no --authored-from and the project records no '
+                              'fab_floor_origin: no earlier declaration to '
+                              'compare the floors with'}
+        source = 'fab_floor_origin'
     now = scan_board_minima(board) or {}
     try:
         with open(find_project(board), encoding='utf-8') as fh:
@@ -255,7 +274,10 @@ def fab_floor_integrity(board, authored_from, hole_grader=None, timeout=3600):
     except (OSError, ValueError):
         declared_now = {}
     try:
-        ref_min = scan_board_minima(authored_from) or {}
+        # No reference board under the origin source: nothing is excused as
+        # `reference_too`, so every breach counts.
+        ref_min = (scan_board_minima(authored_from) or {}) if authored_from \
+            else {}
     except Exception:                                           # noqa: BLE001
         ref_min = {}
     grade_holes = hole_grader or (
@@ -321,7 +343,11 @@ def fab_floor_integrity(board, authored_from, hole_grader=None, timeout=3600):
             measured_kept.append(row)
             continue
         row['on_board'] = g.get('min_actual')
-        rg = grade_holes(authored_from, was) or {'error': 'no grade'}
+        if authored_from:
+            rg = grade_holes(authored_from, was) or {'error': 'no grade'}
+        else:
+            rg = {'error': 'no reference board (graded against the recorded '
+                           'fab_floor_origin)'}
         if rg.get('error'):
             row['reference_error'] = rg['error']
         else:
@@ -340,6 +366,8 @@ def fab_floor_integrity(board, authored_from, hole_grader=None, timeout=3600):
     # chain's own --clearance / --clearance-ceiling is a decision, not a
     # relaxation (stock classes are aspirational).
     try:
+        if not pro:
+            raise OSError('no reference project')       # origin source
         from fab_tiers import project_default_class_clearance
         from fix_kicad_drc_settings import CLASS_CLEARANCE_RELAXED_KEY
         with open(pro, encoding='utf-8') as fh:
@@ -362,7 +390,7 @@ def fab_floor_integrity(board, authored_from, hole_grader=None, timeout=3600):
     return {'ran': True, 'relaxed': relaxed, 'unmeasured': unmeasured,
             'vacuous': vacuous, 'declared_kept': declared_kept,
             'measured_kept': measured_kept, 'reference_too': reference_too,
-            'authored_from': authored_from}
+            'authored_from': authored_from, 'source': source}
 
 
 def _grade(a, doc):
@@ -551,6 +579,13 @@ def _grade(a, doc):
         why += ('. DECLARED, AND BROKEN BY THE REFERENCE TOO, at least as '
                 'badly (reported, not counted against this board): '
                 + ', '.join(_ref(r) for r in floors['reference_too']))
+    if not floors.get('ran'):
+        # #1368: a floor check that did not run examined nothing. It cannot
+        # block (a board nothing ever wrote back has no earlier declaration,
+        # and its project IS the spec), but it is named like every other
+        # component nothing graded, with WHY it did not run.
+        ungraded = list(ungraded) + [
+            'fab_floors (' + str(floors.get('reason') or 'did not run') + ')']
     if ungraded:
         # "Not asked" is one reason, not the only one: a --length-groups file
         # whose nets are not routed yet is asked and still cannot measure
@@ -580,7 +615,7 @@ def main(argv=None):
                          '--authored-from, which reads that board\'s FLOORS')
     ap.add_argument('--clearance', type=float, default=None)
     ap.add_argument('--intent', default=None)
-    ap.add_argument('--impedance-nets', nargs='+', default=None)
+    ap.add_argument('--impedance-nets', nargs='+', action='extend', default=None)
     ap.add_argument('--length-groups', default=None)
     ap.add_argument('--net-min-widths', default=None)
     ap.add_argument('--min-track-width', type=float, default=None)
