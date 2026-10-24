@@ -133,6 +133,15 @@ def test_unreachable_is_named(td):
     got = decap_repair.repair(
         model, movable,
         lambda r, x, y, rot: (cx + reach - 0.25 < x < cx + reach and abs(y - cy) < 0.3))
+    # only another chip's cap may move: the pose that frees IC2's pin would
+    # put IC3's own pin past its limit, and the row says so
+    got2 = decap_repair.repair(model, movable, lambda r, x, y, rot: r != 'C2')
+    wb = got2['stuck'][0].get('would_break') if got2['stuck'] else None
+    ok('a pose that frees the pin by breaking another limit is refused and named',
+       got2['moved'] == [] and wb is not None and wb['kind'] == 'pin'
+       and wb['ic'] != 'IC2', got2)
+    ok('... in words', 'would put' in decap_repair.stuck_text(got2['stuck'][0]),
+       decap_repair.stuck_text(got2['stuck'][0]))
     ok('a legal pose outside the limit is measured, kept out, and its distance named',
        got['moved'] == [] and got['stuck'][0]['reach'] is not None
        and got['stuck'][0]['reach'] > LIMIT, got['stuck'])

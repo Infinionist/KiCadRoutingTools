@@ -60,6 +60,15 @@ the same way.
    is left illegal that a shove frees; when no run is legal, the one that
    left the fewest parts illegal is kept, the earlier on a tie. On
    ch32v003_usb (22 movable parts) the whole run takes about 2.5 s.
+   The intent's decap limits are a soft term, so a seed can end a fraction
+   of a mm past one: each limit still broken is WARNED (rail, cap, pin, the
+   distance against the limit) and carried in the report as `decap_residual`,
+   and `--repair-decaps` first moves each such cap to the nearest legal pose
+   inside its limit that worsens no other limit, naming the cap no legal pose
+   frees (`placement/decap_repair.py`). A BGA's far-face parts under its ball
+   field are counted too (`bga_field`), and a `proximity` claim that names no
+   pads but a limit is WARNED, being priced over legs the grade does not read
+   (`claim_arity`).
 
 Exit codes: 0 placed, 2 unreadable input, a part in two groups, or a face the
 board cannot take (two declarations disagree, or a KiCad-locked part is
@@ -957,9 +966,7 @@ def main(argv=None):
     resid = mended['stuck'] if mended is not None else decap_repair.residual(model)
     for r in resid:
         print(f"  WARNING: {decap_repair.residual_text(r)}"
-              + (f"; no legal pose of the cap got closer than {r['reach']:.2f} mm"
-                 if r.get('reach') is not None else
-                 "; it has no legal pose to try" if mended is not None else ''))
+              + (decap_repair.stuck_text(r) if mended is not None else ''))
     if drift:
         print("  template drift (worst pad, mm): " + ', '.join(
             f"{d['ref']} {d['worst_mm']:.2f}" for d in drift))

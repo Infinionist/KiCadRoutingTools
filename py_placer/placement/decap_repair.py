@@ -92,6 +92,19 @@ def residual_text(r: Dict) -> str:
             f"decouples (limit {r['limit']:.2f} mm)")
 
 
+def stuck_text(r: Dict) -> str:
+    """What the repair found for a row it could not clear: why, in words."""
+    w = r.get('would_break')
+    if w is not None:
+        who = (f"{w['ic']} pin {w['pin']} ({w['rail']})" if w['kind'] == 'pin'
+               else f"{w['cap']} ({w['rail']})")
+        return (f"; a legal pose inside the limit exists but would put {who} past its "
+                f"own limit")
+    if r.get('reach') is None:
+        return "; the cap has no legal pose to try"
+    return f"; no legal pose of the cap got closer than {r['reach']:.2f} mm"
+
+
 def _target(model, i, ref) -> Tuple[Tuple[float, float], float]:
     """`((x, y), reach)`: the point term `i`'s limit is measured from, and how
     far `ref`'s centre can lie from it and still come inside the limit. A pin
@@ -129,7 +142,9 @@ def _over(model) -> Dict[int, float]:
 
 def _try_mover(model, i, ref, legal_at) -> Dict:
     """Move `ref` to the nearest legal pose that clears term `i` and worsens
-    no other limit term. Returns {'moved': (from, to) | None, 'best': mm}."""
+    no other limit term. Returns {'moved': (from, to) | None, 'best': the
+    nearest any legal pose put term `i`, mm, 'blocks': a term a pose inside
+    the limit would have put past its own, else None}."""
     st = model.state
     p = st.parts[ref]
     was = (p.x, p.y, p.rot)
@@ -149,7 +164,7 @@ def _try_mover(model, i, ref, legal_at) -> Dict:
                 for k, rot in enumerate(turns):
                     cand.append((d + 0.01 * k, x, y, rot))
     cand.sort()
-    best, tried = None, 0
+    best, tried, blocks = None, 0, None
     for _d, x, y, rot in cand[:LOOKS]:
         if (x, y, rot) == was or not legal_at(ref, x, y, rot):
             continue
@@ -159,15 +174,19 @@ def _try_mover(model, i, ref, legal_at) -> Dict:
         v = model._lval[i]
         best = v if best is None else min(best, v)
         now = _over(model)
-        if v <= thr + EPS and all(now[j] <= base[j] + 1e-9 for j in now if j != i):
-            return {'moved': (was, (round(x, 4), round(y, 4), rot)), 'best': best}
+        worse = [j for j in now if j != i and now[j] > base[j] + 1e-9]
+        if v <= thr + EPS and not worse:
+            return {'moved': (was, (round(x, 4), round(y, 4), rot)), 'best': best,
+                    'blocks': None}
+        if v <= thr + EPS and blocks is None:
+            blocks = worse[0]
         st.parts[ref].ensure_rotation(was[2])
         st.apply_move(ref, *was)
         tried += 1
         if tried >= TRIES:
             break
     model._limits_all()
-    return {'moved': None, 'best': best}
+    return {'moved': None, 'best': best, 'blocks': blocks}
 
 
 def repair(model, movable, legal_at: Callable[[str, float, float, float], bool],
@@ -177,13 +196,15 @@ def repair(model, movable, legal_at: Callable[[str, float, float, float], bool],
     `legal_at(ref, x, y, rot)` is the full legality of a candidate pose, asked
     before the part is moved. Returns {'moved': [{'ref', 'from', 'to', 'mm', 'rail'}], 'before':
     N broken, 'after': N broken, 'seconds', 'stuck': [residual rows, each with 'reach':
-    the nearest distance any legal pose got (None: none was legal)]}.
+    the nearest distance any legal pose got (None: none was legal) and
+    'would_break': the other limit term a pose inside the limit would have put
+    past its own (None: no such pose)]}.
 
     The model is repriced when it ends, so its totals read the mended poses."""
     t0 = time.time()
     movable = set(movable) - set(seats)
     before = broken_terms(model)
-    moved, last_best = [], {}
+    moved, last_best, last_block = [], {}, {}
     for _ in range(rounds):
         bt = broken_terms(model)
         if not bt:
@@ -196,6 +217,8 @@ def repair(model, movable, legal_at: Callable[[str, float, float, float], bool],
                 got = _try_mover(model, i, ref, legal_at)
                 if got['best'] is not None:
                     last_best[i] = min(last_best.get(i, got['best']), got['best'])
+                if got['blocks'] is not None:
+                    last_block.setdefault(i, got['blocks'])
                 if got['moved']:
                     a, b = got['moved']
                     moved.append({'ref': ref, 'from': [round(v, 4) for v in a],
@@ -209,6 +232,11 @@ def repair(model, movable, legal_at: Callable[[str, float, float, float], bool],
     stuck = []
     for r in _rows_of(model, after):
         r['reach'] = None if r['term'] not in last_best else round(last_best[r['term']], 3)
+        j = last_block.get(r['term'])
+        r['would_break'] = None
+        if j is not None:
+            o = _rows_of(model, [j])[0]
+            r['would_break'] = {k: o[k] for k in ('kind', 'ic', 'pin', 'rail', 'cap')}
         stuck.append(r)
     model.reprice_all()
     model.total()
