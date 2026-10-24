@@ -1139,6 +1139,12 @@ class DifferentialTab(wx.Panel):
                 mps_segment_intersection=config.get('mps_segment_intersection', False),
                 schematic_dir=config.get('schematic_dir'),
                 add_teardrops=config.get('add_teardrops', False),
+                # #1399: the shared "Force re-route selected nets" box, here
+                # re-routing the selected pairs AS pairs. The raw patterns are
+                # the #521 exact-name override (None = interactive selection,
+                # which names its nets exactly), as the signal tab passes.
+                force_reroute=config.get('force_reroute', False),
+                net_name_patterns=config.get('net_name_patterns'),
                 skip_routing=config.get('skip_routing', False),
                 debug_memory=config.get('debug_memory', False),
                 return_results=True,

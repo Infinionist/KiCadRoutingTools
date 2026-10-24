@@ -3046,44 +3046,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         print("WARNING: --force-reroute requires an explicit --nets scope "
               "(it rips every selected net); ignoring it for this run.")
     elif force_reroute:
-        _fr_zone_nids = {z.net_id for z in pour_zones(pcb_data.zones)}
-        _fr_copper_nids = ({s.net_id for s in pcb_data.segments}
-                           | {v.net_id for v in pcb_data.vias})
-        _fr_cand, _fr_skipped_plane = [], []
-        for _name, _nid in net_ids:
-            if _nid not in _fr_copper_nids:
-                continue  # no existing copper -- routes normally anyway
-            if _nid in _fr_zone_nids:
-                _fr_skipped_plane.append(_name)
-                continue
-            _fr_cand.append((_name, _nid))
-        if _fr_skipped_plane:
-            print(f"--force-reroute: skipping {len(_fr_skipped_plane)} plane "
-                  f"(zone-owning) net(s) -- planes belong to route_planes: "
-                  f"{', '.join(_fr_skipped_plane[:6])}"
-                  f"{', ...' if len(_fr_skipped_plane) > 6 else ''}")
-        if _fr_cand:
-            from protected_nets import (protection_map, filter_rippable_names,
-                                        stash_rip_overrides)
-            _fr_prot = protection_map(pcb_data, input_file)
-            _fr_overrides = list(net_name_patterns
-                                 if net_name_patterns is not None
-                                 else net_names)
-            # Run-6 z2 fix: the in-run ladders must see the same exact-name
-            # overrides this pre-run filter honors.
-            stash_rip_overrides(pcb_data, _fr_overrides)
-            _fr_keep = set(_n for _n, _ in _fr_cand)
-            if _fr_prot:
-                _fr_keep = set(filter_rippable_names(
-                    [_n for _n, _ in _fr_cand], _fr_prot,
-                    override_patterns=_fr_overrides,
-                    context="--force-reroute"))
-            for _name, _nid in _fr_cand:
-                if _name not in _fr_keep:
-                    continue
-                force_ripped[_nid] = (
-                    [s for s in pcb_data.segments if s.net_id == _nid],
-                    [v for v in pcb_data.vias if v.net_id == _nid])
+        from rip_up_reroute import select_force_reroute_nets
+        force_ripped = select_force_reroute_nets(
+            pcb_data, net_ids,
+            net_name_patterns if net_name_patterns is not None else net_names,
+            input_file)
         if force_ripped:
             pcb_data.segments = [s for s in pcb_data.segments
                                  if s.net_id not in force_ripped]

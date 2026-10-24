@@ -211,6 +211,13 @@ def _route_force_reroute_unscoped(ns, cwd):
         return "--force-reroute requires an explicit net scope"
 
 
+def _diff_force_reroute_unscoped(ns, cwd):
+    patterns = [p.strip() for p in list(ns.net_patterns or []) + list(ns.nets or [])
+                if p.strip()]
+    if ns.force_reroute and not patterns:
+        return "--force-reroute requires an explicit net scope"
+
+
 def _route_group_sources(ns, cwd):
     if not ns.group:
         return None
@@ -286,7 +293,7 @@ POST_PARSE = {
                  _keep_away, _route_force_reroute_unscoped, _route_group_sources,
                  _route_power_nets_count_mismatch, _net_clearances_unreadable),
     'route_diff.py': (_keep_away, _fab_overrides_missing, _output_twice,
-                      _net_clearances_unreadable),
+                      _diff_force_reroute_unscoped, _net_clearances_unreadable),
     'route_planes.py': (_fab_overrides_missing, _output_twice,
                         _planes_count_mismatch, _net_clearances_unreadable),
     'repair_planes.py': (_fab_overrides_missing, _output_twice,
@@ -341,6 +348,8 @@ REFUSAL_SITES = {
         'call:load_net_clearances': ('file', '_net_clearances_unreadable'),
     },
     'route_diff.py': {
+        '--force-reroute requires an explicit net':
+            ('argv', '_diff_force_reroute_unscoped'),
         '--keep-away: ': ('argv', '_keep_away'),
         'call:read_brief_keep_away': (
             'board', "reads the design brief beside the input board"),

@@ -1782,6 +1782,10 @@ _POST_PARSE_WITNESSES = (
     ('_output_twice', 'route.py a.kicad_pcb b.kicad_pcb --output b.kicad_pcb',
      None),
     ('_route_group_empty', "route.py a.kicad_pcb --group ' '", 'empty name'),
+    ('_diff_force_reroute_unscoped', 'route_diff.py a.kicad_pcb b.kicad_pcb '
+     '--force-reroute', 'explicit net scope'),
+    ('_diff_force_reroute_unscoped', 'route_diff.py a.kicad_pcb b.kicad_pcb '
+     '--force-reroute --nets X_P X_N', None),
     ('_keep_away', 'route.py a.kicad_pcb b.kicad_pcb --nets X --keep-away A:B:x',
      '--keep-away'),
     ('_route_force_reroute_unscoped', 'route.py a.kicad_pcb b.kicad_pcb '

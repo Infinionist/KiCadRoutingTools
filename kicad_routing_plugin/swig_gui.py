@@ -1507,7 +1507,8 @@ class RoutingDialog(wx.Dialog):
             "Protected nets (length-matched groups, routed diff pairs) are skipped "
             "unless selected by exact name; KiCad-locked copper is never ripped; "
             "plane nets are skipped (use the Planes tab). If the re-route fails "
-            "outright, the original copper is restored.")
+            "outright, the original copper is restored. On the Differential "
+            "Pairs tab the selected pairs are re-routed as coupled pairs.")
         options_inner.Add(self.force_reroute, 0, wx.ALL, 3)
 
         # Keep input copper (#84 / --keep-input-copper): the flip side of rip --
