@@ -2889,7 +2889,9 @@ def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
             })
     from kicad_dru import unbound_length_rules
     unbound = [r.name for r in unbound_length_rules(rules, names, member)]
+    from net_queries import LENGTH_MEASURE_CALIBRATED_TO
     summary = {'rules': len(rules), 'graded': graded,
+               'calibrated_to_kicad': LENGTH_MEASURE_CALIBRATED_TO,
                'out_of_range': sum(1 for v in violations
                                    if v['type'] == 'length-out-of-range'),
                'unmeasured': unmeasured, 'unbound_rules': unbound,
@@ -2906,6 +2908,9 @@ def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
                   f"it may bind are not graded here; KiCad still grades them")
         for rname in unbound:
             print(f"  {_UNBOUND_RULE_NOTE.format(rname=rname)}")
+        if graded:
+            from net_queries import length_measure_note
+            print(f"  (length) {length_measure_note()}")
         for n in notes:
             print(f"  .kicad_dru: {n}")
     return summary

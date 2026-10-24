@@ -244,6 +244,37 @@ def net_copper_length(pcb_data: PCBData, net_id: int,
     return total
 
 
+#: The KiCad release `kicad_via_length` and `net_match_length` reproduce
+#: (#1432). LENGTH_DELAY_CALCULATION changed after it: 10.0.7 joins a via to
+#: every layer where a track ends anywhere inside the via pad (not only at its
+#: centre) and clips track length inside via pads, so a net whose length sits
+#: within about one via barrel of a window limit can grade on the other side
+#: of the one kicad-cli applies. Disclosed, not guessed at: nothing here has
+#: been measured against a release other than this one.
+LENGTH_MEASURE_CALIBRATED_TO = '10.0.0'
+
+
+def length_measure_note() -> str:
+    """One line saying which KiCad the length measure is calibrated to, and
+    -- when the installed kicad-cli is another release -- which one is
+    installed, so a verdict inside a via barrel of a limit is read as
+    uncertain rather than final."""
+    note = (f"lengths are measured as KiCad {LENGTH_MEASURE_CALIBRATED_TO} "
+            f"measures them (via layer span from track ends at the via "
+            f"centre)")
+    try:
+        from kicad_oracle import kicad_cli_version
+        have = kicad_cli_version()
+    except Exception:                                        # noqa: BLE001
+        have = None
+    if have and have != LENGTH_MEASURE_CALIBRATED_TO:
+        note += (f"; the installed kicad-cli is {have}, whose length DRC "
+                 f"also charges track ends inside the via pad and clips "
+                 f"track inside via pads -- a net within about one via "
+                 f"barrel of its limit may grade differently there")
+    return note
+
+
 def kicad_via_length(via: Via, segments, pads, pcb_data, tolerance: float = 1e-4) -> float:
     """The length KiCad's length DRC charges one via, in mm (#1313).
 

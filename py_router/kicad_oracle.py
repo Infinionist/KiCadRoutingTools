@@ -119,6 +119,26 @@ _IGNORE_SEVERITIES = [
 ]
 
 
+_CLI_VERSION_CACHE = {}
+
+
+def kicad_cli_version(cli: Optional[str] = None) -> Optional[str]:
+    """The version string `kicad-cli version` prints (e.g. '10.0.7'), or None
+    when no kicad-cli is found or it does not answer. Cached per binary."""
+    cli = cli or find_kicad_cli(warn=False)
+    if not cli:
+        return None
+    if cli not in _CLI_VERSION_CACHE:
+        try:
+            r = subprocess.run([cli, 'version'], capture_output=True, text=True,
+                               timeout=30)
+            m = re.search(r'\d+\.\d+\.\d+', r.stdout or '')
+            _CLI_VERSION_CACHE[cli] = m.group(0) if m else None
+        except Exception:                                    # noqa: BLE001
+            _CLI_VERSION_CACHE[cli] = None
+    return _CLI_VERSION_CACHE[cli]
+
+
 def find_kicad_cli(warn: bool = True) -> Optional[str]:
     # `warn=False` resolves SILENTLY, for a module that looks kicad-cli up at
     # IMPORT and says the not-found warning itself later -- a CLI whose output
