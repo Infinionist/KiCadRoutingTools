@@ -2215,6 +2215,55 @@ def courtyard_gating(blocking_pairs, moved) -> list:
     return [q for q in blocking_pairs if q.a in moved or q.b in moved]
 
 
+#: The thinnest courtyard overlap KiCad's `courtyards_overlap` reports (mm of
+#: `overlap_thickness`). MEASURED against kicad-cli 10.0 on the tracked rp2350
+#: board under an `error` project: the six pairs it reports are 0.027-0.2 mm
+#: deep, and the six slivers this census also finds are 0.0-0.0075 mm -- the
+#: polygon round-off of two courtyards that touch.
+COURTYARD_ERROR_MIN_DEPTH_MM = 0.01
+
+
+def courtyard_error_pairs(pairs, severity, waivers, *, synthetic_refs=(),
+                          silk_occupancy_refs=(),
+                          undrawn_refs=()) -> list:
+    """The courtyard pairs KiCad itself reports as ERRORS (#1385): every
+    unwaived courtyard pair, whatever its size, when the project declares
+    `courtyards_overlap` an `error`; none otherwise.
+
+    The run-23 floors (`courtyard_blocking`) keep a sliver advisory so a
+    pristine board does not flip, and they do it on a project that declares
+    the rule an error too, where kicad-cli reports the sliver a run's own move
+    made. A pair is a KiCad finding only when both parts DRAW a courtyard
+    (`undrawn_refs`: a part whose occupancy is a fab outline, silk or the pad
+    box draws none KiCad tests, and a zero-pad footprint's fictional box is
+    one) and it is deeper than `COURTYARD_ERROR_MIN_DEPTH_MM`; the blocking
+    waiver ladder (`PairWaivers.blocking_waived`: authored, marker, edge,
+    container) still excuses it. `courtyard_error_gating` is the part a move
+    owns."""
+    if severity != 'error':
+        return []
+    synthetic_refs = set(synthetic_refs)
+    silk = set(silk_occupancy_refs)
+    undrawn = set(undrawn_refs)
+    return [p for p in pairs
+            if p.kind == 'courtyard' and not waivers.blocking_waived(p)
+            and p.depth_mm >= COURTYARD_ERROR_MIN_DEPTH_MM
+            and p.a not in synthetic_refs and p.b not in synthetic_refs
+            and p.a not in silk and p.b not in silk
+            and p.a not in undrawn and p.b not in undrawn]
+
+
+def courtyard_error_gating(error_pairs, moved, base_keys=None) -> list:
+    """The `courtyard_error_pairs` a run owns: a member MOVED, and the pair is
+    not one the baseline already carried (`base_keys`, a set of `(a, b)`; None
+    arms no such exemption). A pair neither member moved is the baseline's
+    own and stays a disclosure, as `courtyard_gating` leaves it."""
+    base_keys = base_keys or ()
+    return [q for q in error_pairs
+            if (q.a in moved or q.b in moved)
+            and (q.a, q.b) not in base_keys and (q.b, q.a) not in base_keys]
+
+
 # --- #1255: a component body's distance to the board edge --------------------
 #
 # Past the hard outline gate, the only pressure keeping a BODY off the edge was
@@ -2591,6 +2640,9 @@ class CourtyardGrade(NamedTuple):
     # gate, absolutely -- KiCad's pth_inside_courtyard has no "moved" either.
     pin_pairs: List[BodyOverlapPair] = []
     pin_blocking: List[BodyOverlapPair] = []
+    # #1385: the pairs KiCad reports as errors when the project declares the
+    # rule an error (`courtyard_error_pairs`), whatever their size.
+    error_pairs: List[BodyOverlapPair] = []
 
 class CourtyardCensus:
     """check_assembly's courtyard channel at any pose map.
@@ -2910,7 +2962,7 @@ class CourtyardCensus:
         return list(g.pin_blocking)
 
     def _select(self, parts, raw, moved, pin_raw=()) -> CourtyardGrade:
-        from placement.body import SOURCE_SILK
+        from placement.body import SOURCE_COURTYARD, SOURCE_SILK
         containers = self.containers
         waivers = self.waivers(
             rect_of=lambda r: parts[r].rect if r in parts else None,
@@ -2972,7 +3024,12 @@ class CourtyardCensus:
             containers=containers, severity=self.severity,
             severity_basis=self.severity_basis,
             severity_waiver=self.severity_waiver, waivers=waivers,
-            pin_pairs=pin_pairs, pin_blocking=pin_blocking)
+            pin_pairs=pin_pairs, pin_blocking=pin_blocking,
+            error_pairs=courtyard_error_pairs(
+                pairs, self.severity, waivers, synthetic_refs=synthetic,
+                silk_occupancy_refs=silk,
+                undrawn_refs=[r for r, g in parts.items()
+                              if g.source != SOURCE_COURTYARD]))
 
 
 def grade_body_overlap(pcb_data, clearance: float,
@@ -3358,6 +3415,10 @@ def grade_body_overlap(pcb_data, clearance: float,
             # a pair can be both advisory-listed and courtyard-blocking.
             'courtyard_blocking': len(courtyard_blocking),
             'courtyard_blocking_pairs': courtyard_blocking,
+            # #1385: with the project declaring courtyards_overlap an
+            # error, every real unwaived courtyard pair (KiCad reports each);
+            # the caller gates the moved subset (`courtyard_error_gating`).
+            'courtyard_error_pairs': list(_cg.error_pairs),
             # #1212: a pin frame's holes inside another part's occupancy --
             # KiCad's pth_inside_courtyard. GATES, absolutely: on the two
             # healthy frame boards it is 0 (rp2350's own and the fa10 final).

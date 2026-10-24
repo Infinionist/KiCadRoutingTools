@@ -98,9 +98,12 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
 #: BUILDABLE. The pairs are measured by check_assembly's own function.
 #: #1266: a `[pad part, copper owner]` pair against footprint graphic copper.
 #: #1306: a `["U1.1", "U1.2"]` pair of one footprint's pads shorted.
+#: #1385: `[a, b]` courtyard pairs KiCad reports as errors, when the project
+#: declares `courtyards_overlap` an error (`courtyard_error_pairs`).
 PAIR_KEYS = ('pad_conflict_pairs', 'hole_conflict_pairs',
              'graphic_pad_conflict_pairs', 'graphic_pad_stack_pairs',
-             'pad_stack_pairs', 'own_pad_short_pairs')
+             'pad_stack_pairs', 'own_pad_short_pairs',
+             'courtyard_error_pairs')
 
 MAGNITUDE_KEYS = ('pad_shortfall', 'oob_pad_amount', 'pad_edge_shortfall',
                   'oob_keepout_copper_amount',
@@ -123,7 +126,9 @@ LEGAL_SCOPE = ('pad-pad clearance', 'hole-hole clearance', 'pad copper vs the '
                "two parts' pad copper overlapping on a shared side, ANY net "
                "-- a pad stack, check_assembly's pad_intersection (#1064)",
                "one footprint's own pads touching on two different real nets "
-               "(KiCad's shorting_items; #1306)")
+               "(KiCad's shorting_items; #1306)",
+               "a NEW courtyard overlap pair, when the project declares "
+               "courtyards_overlap an error (#1385)")
 LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
                     '(disclosed as graphic_edge_shortfall_refs, not gated)',
                     'footprint copper the parser does not model: pad-less '
@@ -134,8 +139,9 @@ LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
                     'no-outline / moved-side in oob_graphic_copper_unmeasured)',
                     'rule areas a footprint owns (listed in '
                     'keepout_copper_unmeasured)',
-                    'solder paste and mask openings', 'component bodies / '
-                    'courtyards', 'routing', 'zone fill',
+                    'solder paste and mask openings', 'component bodies, and '
+                    'courtyards unless the project declares courtyards_overlap '
+                    'an error', 'routing', 'zone fill',
                     "parts sharing an origin whose pads do not intersect "
                     "(check_assembly's coincident_origins)")
 MAGNITUDE_EPS = 1e-6
@@ -590,7 +596,23 @@ def grade(pcb_data, board_path: str, clearance: float,
                            edge_margin=board_edge_clearance,
                            declared_keepouts=declared_keepouts)
     g.update(pad_stack_census(pcb_data, clearance))
+    g['courtyard_error_pairs'] = courtyard_error_pairs(pcb_data, board_path)
     return g
+
+
+def courtyard_error_pairs(pcb_data, board_path: str) -> List[List[str]]:
+    """`[[a, b], ...]`: the courtyard pairs KiCad reports as ERRORS on this
+    board (#1385) -- every real, unwaived pair, whatever its size -- when its
+    project declares `courtyards_overlap` an error; `[]` otherwise (the
+    census is not even built then). This verb used to grade pads and holes
+    only, so a `--near` pose could sit in a neighbour's courtyard and report
+    legal on a project whose own DRC fails it."""
+    from placement.legality import CourtyardCensus, courtyard_severity_of
+    if courtyard_severity_of(board_path)[0] != 'error':
+        return []
+    with contextlib.redirect_stdout(io.StringIO()):
+        pairs = CourtyardCensus(pcb_data, board_path).grade().error_pairs
+    return sorted([q.a, q.b] for q in pairs)
 
 
 def worsened(before: Dict, after: Dict) -> List[str]:
@@ -736,6 +758,9 @@ def _legality_row(before: Dict, after: Dict) -> Dict:
     # #1306: which of one footprint's own pads are shorted together.
     row['own_pad_short_pairs_after'] = after.get('own_pad_short_pairs')
     row['own_pad_basis'] = after.get('own_pad_basis')
+    # #1385: courtyard pairs KiCad reports as errors (project severity error).
+    row['courtyard_error_pairs_before'] = before.get('courtyard_error_pairs')
+    row['courtyard_error_pairs_after'] = after.get('courtyard_error_pairs')
     return row
 
 
