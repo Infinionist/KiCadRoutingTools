@@ -895,18 +895,20 @@ class RoutingDialog(wx.Dialog):
     def _effective_via_size(self):
         """Pinned up so the via keeps the fab floor's annular ring around the
         effective drill (#1433) -- parity with the CLI's enforce_fab_floors,
-        through the same fab_tiers.via_size_for_annular_ring."""
+        through the same fab_tiers.via_size_for_annular_ring. Like the CLI,
+        which pins only when --via-size AND --via-drill are both given, this
+        pins only when both override checkboxes are checked; a board-derived
+        value is the board's own and is left as it is."""
         val = self._effective_geometry_floor('via_size')
-        try:
-            from fab_tiers import via_size_for_annular_ring, parse_fab_overrides
-            ncu = len(self.pcb_data.board_info.copper_layers) or 2
-            tier = self.fab_tier.GetString(self.fab_tier.GetSelection())
-            path = self.fab_overrides_path.GetValue().strip()
-            ovr = parse_fab_overrides(path) if path and os.path.isfile(path) else {}
-            return via_size_for_annular_ring(val, self._effective_via_drill(),
-                                             ncu, tier, ovr)
-        except Exception:
+        if not (self.via_size_check.GetValue() and self.via_drill_check.GetValue()):
             return val
+        from fab_tiers import via_size_for_annular_ring, parse_fab_overrides
+        ncu = len(self.pcb_data.board_info.copper_layers) or 2
+        tier = self.fab_tier.GetString(self.fab_tier.GetSelection())
+        path = self.fab_overrides_path.GetValue().strip()
+        ovr = parse_fab_overrides(path) if path and os.path.isfile(path) else {}
+        return via_size_for_annular_ring(val, self._effective_via_drill(),
+                                         ncu, tier, ovr)
 
     def _effective_via_drill(self):
         return self._effective_geometry_floor('via_drill')

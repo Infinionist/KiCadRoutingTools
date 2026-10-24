@@ -76,6 +76,19 @@ def main():
     assert doc2.get('successful') == 0 and doc2.get('failed') == 0, doc2
     print("  PASS nothing-to-route run: status 'already_connected' written")
 
+    # 3. The pattern matches nets but no pair (a ground net): the run exits non-zero, and the file
+    #    still says why, so the caller can tell it from a crash.
+    js3 = os.path.join(tmp, 'route3.json')
+    r3 = subprocess.run([sys.executable, route_diff, inp,
+                         os.path.join(tmp, 'out3.kicad_pcb'),
+                         '--nets', '*GND*', '--json-out', js3],
+                        capture_output=True, text=True)
+    assert 'No differential pairs found matching' in r3.stdout, r3.stdout[-800:]
+    evidence(js3, '--json-out file (no pair matched)')
+    doc3 = json.load(open(js3))
+    assert doc3.get('status') == 'no_diff_pairs', doc3
+    print("  PASS no-pair-matched run: status 'no_diff_pairs' written")
+
     print("\nAll checks passed")
     return 0
 

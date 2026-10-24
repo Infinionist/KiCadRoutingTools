@@ -1051,6 +1051,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         print(f"Error: No differential pairs found matching the patterns!")
         print("  Differential pairs must have _P/_N, P/N, or +/- suffixes.")
         print(f"  Patterns provided: {net_names}")
+        _write_json_out(json_out, _nothing_to_do_document('no_diff_pairs'))
         if return_results:
             return 0, 0, 0.0, {'results': [], 'all_swap_vias': [], 'exclusion_zone_lines': [], 'boundary_debug_labels': []}
         return 0, 0, 0.0
@@ -1174,6 +1175,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     if not diff_pair_ids_to_route_set:
         print("Error: No differential pairs to route!")
         print("  Ensure your net patterns match nets with _P/_N, P/N, or +/- suffixes.")
+        _write_json_out(json_out, _nothing_to_do_document('no_diff_pairs'))
         if return_results:
             return 0, 0, 0.0, {'results': [], 'all_swap_vias': [], 'exclusion_zone_lines': [], 'boundary_debug_labels': []}
         return 0, 0, 0.0
