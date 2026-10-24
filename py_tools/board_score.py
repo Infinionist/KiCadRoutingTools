@@ -662,7 +662,11 @@ def ungraded_entries(parts: dict) -> list:
         [k for k, v in parts.items() if v.get('ran') is False]
         + (['assembly.courtyard_gating']
            if not (parts.get('assembly') or {}).get('courtyard_gating_armed')
-           else []))
+           else [])
+        # #1390: a .kicad_dru size rule check_drc could not model is a
+        # declaration nothing grades.
+        + (['undersized.dru_rules']
+           if (parts.get('undersized') or {}).get('ungraded_rules') else []))
 
 
 def baseline_problem(path: str):
@@ -760,12 +764,16 @@ def score_drc(root: str, board: str, clearance=None, sizes=None,
     if baseline:
         args += ['--baseline', baseline]
     rc, out = run_tool(root, 'check_drc.py', *args)
+    # #1390: .kicad_dru size rules check_drc could not model. The copper they
+    # bind is ungraded, whatever `undersized` says about the rest.
+    _unsz = sorted(set(re.findall(r"NOT GRADED \(size\): rule '([^']*)'", out)))
+    _size_extra = {'ungraded_rules': _unsz} if _unsz else {}
     if 'NO DRC VIOLATIONS FOUND' in out:
         return ({'ran': True, 'count': 0, 'by_type': {}, 'graded_at': _graded_at(out),
                  'graphic_grazes_unverified': _unverified_grazes(out),
                  'via_in_paste': {'ran': True, 'count': 0, 'by_type': {},
                                   'undeclarable': _undeclarable_vias(out)}},
-                {'ran': True, 'count': 0, 'by_type': {}},
+                {'ran': True, 'count': 0, 'by_type': {}, **_size_extra},
                 {'ran': True, 'count': 0, 'by_type': {}})
     if not _DRC_TOTAL.search(out):
         r = skipped(f'check_drc.py produced no summary (rc={rc})')
@@ -805,7 +813,8 @@ def score_drc(root: str, board: str, clearance=None, sizes=None,
              'pair_rules': pairs,
              'via_in_paste': {'ran': True, 'count': sum(vip.values()), 'by_type': vip,
                               'undeclarable': _undeclarable_vias(out)}},
-            {'ran': True, 'count': sum(size.values()), 'by_type': size},
+            {'ran': True, 'count': sum(size.values()), 'by_type': size,
+             **_size_extra},
             {'ran': True, 'count': sum(rule.values()), 'by_type': rule})
 
 

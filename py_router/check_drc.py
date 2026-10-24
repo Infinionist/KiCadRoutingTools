@@ -4140,6 +4140,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         _size_rules = None
         try:
             from design_rules import DesignRules as _DR
+            from design_rules import SIZE_KINDS as _SZK
             _size_rules = _DR.from_project(pcb_data, pcb_file, fab_floor=fab,
                                            copper_layers=copper_layers)
             if not (_size_rules.board_min or _size_rules.rules):
@@ -4167,6 +4168,20 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             print(f"Size floors ({copper_count}-layer fab): track >= {eff_min_track}mm, "
                   f"via dia >= {eff_min_via_dia}mm, via drill >= {eff_min_via_drill}mm"
                   + ("; per-net board/rule minimums applied (#530)" if _size_rules else ""))
+            # #1390: a .kicad_dru size rule whose condition is not modelled
+            # (A.insideCourtyard(), ...) binds copper the minimums above
+            # know nothing about, and used to vanish: the clearance half got
+            # a note, the track_width half none, and KiCad's own DRC then
+            # reported errors this grader called clean.
+            if _size_rules is not None:
+                for _r in _size_rules.rules:
+                    if _r.unsupported and not _r.honoured:
+                        _sk = sorted(k for k in _r.constraints if k in _SZK)
+                        if _sk:
+                            print(f"  NOT GRADED (size): rule '{_r.name}' "
+                                  f"({', '.join(_sk)}): {_r.unsupported} -- "
+                                  f"the copper it binds is not graded here; "
+                                  f"KiCad still enforces it")
 
     # Helper to check if a net_id matches the filter patterns
     def net_matches_filter(net_id: int) -> bool:

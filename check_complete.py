@@ -573,6 +573,15 @@ def _grade(a, doc):
     # checked, so it blocks DONE like the placement verifier's rule 5 does.
     _comps = (score.get('components') or {}) if isinstance(score, dict) else {}
     for _name in ungraded:
+        if _name == 'undersized.dru_rules':
+            # #1390: a .kicad_dru size rule check_drc cannot model.
+            reasons.append(
+                '.kicad_dru size rule(s) nothing grades: '
+                + ', '.join(repr(r) for r in
+                            (_comps.get('undersized') or {}).get('ungraded_rules', ()))
+                + ' -- the copper they bind is unchecked here and KiCad still '
+                  'enforces it')
+            continue
         _c = _comps.get(_name)
         if isinstance(_c, dict) and _c.get('declared'):
             reasons.append(f'{_name}: the board DECLARES it '
