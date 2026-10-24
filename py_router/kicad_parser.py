@@ -3150,8 +3150,17 @@ def outline_fingerprint(board_info) -> Tuple:
     )
 
 
-def structural_outline_fingerprint(content: str) -> Tuple:
+def structural_outline_fingerprint(content: str, carried=None) -> Tuple:
     """`outline_fingerprint` of the board's STRUCTURAL outline only (#829).
+
+    `carried` (#1409), a set of refs, replaces the classification read off
+    `content` itself. A write compares the board BEFORE and AFTER one move, and
+    carried-versus-structural is judged at each footprint's CURRENT pose
+    (`classify_outline_owners`): a part carrying a milled window is carried
+    while it is on the board and structural once it is off, so classifying
+    each text separately read a legal move of the part off the board as the
+    outline changing. The caller decides once, on the input, and passes the
+    same set for both texts.
 
     The board-level Edge.Cuts plus the footprints that draw the boundary --
     with every CARRIED owner masked out. That distinction is the whole reason
@@ -3164,8 +3173,9 @@ def structural_outline_fingerprint(content: str) -> Tuple:
     Invariant under any permitted placement move, by construction. A change
     means something moved a footprint that draws the board.
     """
-    owners = footprint_outline_owners(content)
-    carried = {ref for ref, structural in owners.items() if not structural}
+    if carried is None:
+        owners = footprint_outline_owners(content)
+        carried = {ref for ref, structural in owners.items() if not structural}
     if carried:
         content = _mask_footprint_blocks(content, only_refs=carried)
     outers, cutouts = extract_board_contours(content)
