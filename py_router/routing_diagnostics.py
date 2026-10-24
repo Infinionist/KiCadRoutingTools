@@ -526,9 +526,11 @@ def preexisting_blocker_hint(blocked_cells, config, pcb_data, net_id,
     # names, so no authority machinery ever receives them (a47f244).
     prot_txt = ""
     try:
-        from protected_nets import protection_map
-        _pmap = protection_map(pcb_data,
-                               getattr(pcb_data, 'source_path', None))
+        from protected_nets import effective_protection_map
+        # The effective set (#1395): a net this run lifted by exact name is
+        # not one the router "will NEVER rip".
+        _pmap = effective_protection_map(
+            pcb_data, getattr(pcb_data, 'source_path', None))
         if _pmap and anchors:
             from geometry_utils import point_to_segment_distance
             _pnames = []

@@ -467,6 +467,22 @@ def protection_map(pcb_data, input_file: Optional[str] = None) -> Dict[str, str]
 
 
 
+def effective_protection_map(pcb_data, input_file: Optional[str] = None
+                             ) -> Dict[str, str]:
+    """protection_map() minus the nets this run's operator named EXACTLY
+    (the stashed rip overrides, `stash_rip_overrides`): the ONE protected set
+    a run reads once its main pass has lifted the overrides (#1395). The
+    plane finalize's blocker rip-up, its nested sub-runs and the failure hints
+    all see the net the main pass made rippable as rippable, instead of
+    refusing it as "protected, cannot rip". 'locked' and `sense:` reasons
+    have no override (`never_lifts`) and stay in the map."""
+    m = protection_map(pcb_data, input_file)
+    lifted = rip_override_names(pcb_data)
+    if not lifted:
+        return m
+    return {n: r for n, r in m.items() if never_lifts(r) or n not in lifted}
+
+
 def exact_names(patterns: Optional[Iterable[str]]) -> Set[str]:
     """The non-glob entries of a pattern list: naming a net exactly is the
     deliberate-override signal that lifts its protection for this step."""

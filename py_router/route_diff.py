@@ -472,6 +472,15 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 keep_input_copper: bool = False,
                 schematic_dir: Optional[str] = None,
                 add_teardrops: bool = False,
+                # #1399: rip both members of every already-connected pair
+                # this call names and re-route them AS pairs (route.py's
+                # --force-reroute, whose single-ended engine de-pairs them).
+                force_reroute: bool = False,
+                # The RAW --nets patterns (route.py's net_name_patterns): the
+                # #521 exact-name override of --force-reroute reads a name
+                # typed whole from one a glob expanded into, and net_names is
+                # already the expansion. None = net_names.
+                net_name_patterns: Optional[List[str]] = None,
                 return_results: bool = False,
                 pcb_data=None,
                 # #1421: write the run's JSON_SUMMARY to this file (route.py's
@@ -512,6 +521,14 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         diff_pair_intra_match: Enable intra-pair P/N length matching (default: False)
         ac_couple_match: End-to-end length-match AC-coupled diff pairs split by series
             DC-blocking caps, matching the concatenated P vs N path (#196) (default: False)
+        force_reroute: Strip the copper of every selected pair that is already
+            connected and route it again as a coupled pair. Protected pairs
+            (#521: routed diff pairs, matched groups) are skipped unless both
+            members are named EXACTLY (no glob) in net_names; KiCad-locked
+            copper is never stripped; plane (zone-owning) nets are skipped. A
+            pair whose re-route lands no copper gets its original back.
+        net_name_patterns: The raw patterns net_names was expanded from (the
+            exact-name override above reads these); None = net_names.
         return_results: If True, return results data instead of writing to file
         pcb_data: Optional pre-parsed PCBData (if None, loads from input_file)
 
@@ -1123,6 +1140,43 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     _edge_clear = board_edge_clearance if board_edge_clearance > 0 else clearance
     warn_targets_outside_board(pcb_data, net_ids,
                                edge_margin=_edge_clear + track_width / 2)
+
+    # #1399: --force-reroute. Strip the selected pairs' copper BEFORE the
+    # already-connected filter so they re-enter the route set; the originals
+    # are kept for custody (a pair whose re-route lands nothing gets them
+    # back) and, once replaced, are stripped from the written file.
+    force_ripped = {}
+    if force_reroute:
+        from rip_up_reroute import select_force_reroute_nets
+        force_ripped = select_force_reroute_nets(
+            pcb_data, net_ids,
+            net_name_patterns if net_name_patterns is not None else net_names,
+            input_file)
+        # A pair re-routes as a pair: when one member qualifies but its
+        # partner has copper that does not (protected, plane-owning), the
+        # qualifying one stays as it is too.
+        _has_copper = ({s.net_id for s in pcb_data.segments}
+                       | {v.net_id for v in pcb_data.vias})
+        for _pair in diff_pairs.values():
+            _pn, _nn = _pair.p_net_id, _pair.n_net_id
+            for _mine, _other in ((_pn, _nn), (_nn, _pn)):
+                if _mine in force_ripped and _other not in force_ripped \
+                        and _other in _has_copper:
+                    print(f"--force-reroute: {_pair.base_name}: its partner "
+                          f"cannot be ripped (protected or plane-owning); "
+                          f"leaving the pair as it is")
+                    force_ripped.pop(_mine, None)
+        if force_ripped:
+            from pcb_modification import bump_copper_epoch
+            pcb_data.segments = [s for s in pcb_data.segments
+                                 if s.net_id not in force_ripped]
+            pcb_data.vias = [v for v in pcb_data.vias
+                             if v.net_id not in force_ripped]
+            bump_copper_epoch(pcb_data)
+            print(f"--force-reroute: stripped "
+                  f"{sum(len(a) for a, _ in force_ripped.values())} segment(s) / "
+                  f"{sum(len(b) for _, b in force_ripped.values())} via(s) from "
+                  f"{len(force_ripped)} net(s) for a from-scratch re-route")
 
     net_ids, _ = filter_already_routed(pcb_data, net_ids, config)
     if not net_ids:
@@ -1898,6 +1952,45 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # #521's protection noting moved below the copper measure (#1303): a pair
     # is protected only when the copper it ships is coupled.
 
+    # ----- --force-reroute custody (#1399) ---------------------------------
+    # A stripped pair whose re-route landed NO copper gets its ORIGINAL back
+    # (same objects), so a failed re-route never costs a working route; a
+    # stale copy that would now short copper routed into its corridor this
+    # run is refused instead (#134). Every original NOT restored is stale in
+    # the input file and goes to the writer's strip list below.
+    force_stale_segs, force_stale_vias = [], []
+    if force_ripped:
+        from rip_up_reroute import partition_force_restores
+        _fr_new_copper = set()
+        for _r in results:
+            _fr_new_copper.update(_s.net_id for _s in _r.get('new_segments') or [])
+            _fr_new_copper.update(_v.net_id for _v in _r.get('new_vias') or [])
+        _fr_ids, _fr_refused_ids = partition_force_restores(
+            force_ripped, pcb_data, config.clearance,
+            skip_net_ids=_fr_new_copper, config=config)
+
+        def _fr_name(_nid):
+            return (pcb_data.nets[_nid].name
+                    if _nid in pcb_data.nets else str(_nid))
+        if _fr_ids:
+            from pcb_modification import bump_copper_epoch
+            bump_copper_epoch(pcb_data)
+            print(f"--force-reroute: re-route produced no copper for "
+                  f"{len(_fr_ids)} net(s); ORIGINAL copper restored: "
+                  f"{', '.join(_fr_name(_n) for _n in _fr_ids[:6])}"
+                  f"{', ...' if len(_fr_ids) > 6 else ''}")
+        if _fr_refused_ids:
+            print(f"--force-reroute: restore SKIPPED for {len(_fr_refused_ids)} "
+                  f"net(s) -- the saved copper would short copper routed into "
+                  f"its corridor this run; left unrouted (#134): "
+                  f"{', '.join(_fr_name(_n) for _n in _fr_refused_ids[:6])}"
+                  f"{', ...' if len(_fr_refused_ids) > 6 else ''}")
+        for _nid, (_fsegs, _fvias) in force_ripped.items():
+            if _nid in _fr_ids:
+                continue
+            force_stale_segs.extend(_fsegs)
+            force_stale_vias.extend(_fvias)
+
     # ----- Post-route cleanup (#215): the ONE shared pipeline ---------------
     # Same passes, ordering and strip plumbing as route.py's single-ended
     # cleanup (cleanup_pipeline.py), scoped to the diff-pair nets so other
@@ -1921,12 +2014,14 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         keep_input_copper=keep_input_copper,
         progress_callback=progress_callback)
     cleanup_input_strip = _dp_cleanup.input_strip_segments
+    if force_stale_segs:
+        cleanup_input_strip = list(cleanup_input_strip or []) + force_stale_segs
     # #508 finding 11: the pipeline's removed input VIAS were dropped on the
     # floor here -- the orphan-island sweep deletes them from pcb_data, but
     # neither the writer nor the GUI ever heard, so the output kept via
     # barrels the router had withdrawn (firing: cm4_underwater step4_diff).
     cleanup_input_strip_vias = list(
-        getattr(_dp_cleanup, 'input_strip_vias', None) or [])
+        getattr(_dp_cleanup, 'input_strip_vias', None) or []) + force_stale_vias
 
     # Build summary data
     import json
@@ -2264,6 +2359,27 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
     except Exception:          # without re-reading logs
         pass
+    # #1371: the via rows describe the vias that SHIP (route.py's census):
+    # the placement ladders record per ATTEMPT, and a via the rung search or a
+    # diff-pair via laid at the fab floor recorded nothing at all.
+    try:
+        from routing_common import new_via_shortfall, via_identity
+        from fab_tiers import replace_via_rows
+        _nm1371 = {_n: _nn.name for _n, _nn in pcb_data.nets.items()}
+        _id1371 = {_nm: _n for _n, _nm in _nm1371.items()}
+        _in1371 = {(_nm1371.get(_t[0], f"Net {_t[0]}"), round(_t[1], 3),
+                    round(_t[2], 3), round(_t[3], 3))
+                   for _t in _input_vias962}
+        _short1371 = new_via_shortfall(
+            pcb_data.vias, lambda _n: _nm1371.get(_n, f"Net {_n}"), _in1371,
+            lambda _nm: (config.net_via(_id1371[_nm])[0]
+                         if _nm in _id1371 else None))
+        replace_via_rows(
+            [(_id1371[_nm], _nm, _r['requested_mm'], _r['sizes'])
+             for _nm, _r in _short1371.items()],
+            'via copper shipped under size')
+    except Exception as _vre:                                   # noqa: BLE001
+        print(f"  (via-size disclosure skipped: {_vre})")
     # #857: what this run delivered below a requested size (route.py's
     # key), when it delivered anything there.
     from fab_tiers import narrowed_summary
@@ -2782,6 +2898,17 @@ Examples:
                         help="Skip actual routing, only do swaps and write debug info")
     parser.add_argument("--debug-memory", action="store_true",
                         help="Print memory usage statistics at key points during routing")
+    parser.add_argument("--force-reroute", action="store_true",
+                        help="Rip and re-route AS PAIRS every differential pair "
+                             "selected by --nets, even if already fully connected "
+                             "(route.py --force-reroute routes single-ended and "
+                             "would de-pair them). Requires an explicit --nets "
+                             "scope. Protected pairs (routed diff pairs, "
+                             "length-matched groups) are skipped unless both "
+                             "members are named EXACTLY in --nets (no glob); "
+                             "KiCad-locked copper is never ripped; plane "
+                             "(zone-owning) nets are skipped. A pair whose "
+                             "re-route lands no copper gets its original back.")
     parser.add_argument("--add-teardrops", action="store_true",
                         help="Add teardrop settings to all pads and vias in output file")
     from fix_kicad_drc_settings import add_drc_fix_args
@@ -2791,6 +2918,7 @@ Examples:
                            enforce_fab_floors, count_copper_layers_in_file)
     add_fab_tier_args(parser)
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
+    __import__("cli_nets").refuse_unusable_inputs(parser, args)  # #1410
     # #530: --clearance-ceiling is the clamp switch (see route.py). Given ->
     # non-Default classes capped at min(class, ceiling) + writeback clamps.
     # Omitted -> honor classes: base = --clearance, else the board Default
@@ -2964,6 +3092,13 @@ Examples:
     # own instead of as a single glob containing a comma (which matches nothing).
     all_patterns = [p.strip() for token in all_patterns for p in token.split(',') if p.strip()]
 
+    # --force-reroute rips every selected pair; without an explicit scope that
+    # would be every pair on the board (route.py refuses the same way).
+    if args.force_reroute and not all_patterns:
+        parser.error("--force-reroute requires an explicit net scope "
+                     "(--nets or positional patterns): it rips every "
+                     "selected pair")
+
     # Default to "*" (all nets) if no patterns specified
     if not all_patterns:
         all_patterns = ["*"]
@@ -3100,13 +3235,16 @@ Examples:
                 keep_input_copper=args.keep_input_copper,
                 schematic_dir=args.schematic_dir,
                 add_teardrops=args.add_teardrops,
+                force_reroute=args.force_reroute,
+                net_name_patterns=all_patterns,
                 json_out=args.json_out)
 
     # Make the output project's DRC design rules consistent with the floors we
     # just routed to (issue #160), mirroring route.py, so a manual DRC in KiCad
     # flags only genuine problems instead of stock-default noise.
-    if not args.no_fix_drc_settings and not args.skip_routing \
-            and args.output_file and os.path.isfile(args.output_file):
+    _wrote_output = (not args.skip_routing and args.output_file
+                     and os.path.isfile(args.output_file))
+    if not args.no_fix_drc_settings and _wrote_output:
         try:
             import clearance_ledger
             eff_clearance = clearance_ledger.effective(args.clearance)
@@ -3123,10 +3261,13 @@ Examples:
                 **drc_fix_kwargs(args))
         except Exception as e:
             print(f"  (skipped DRC-settings fix: {e})")
+    if _wrote_output:
         # #521: record this step's protection-worthy nets (routed diff pairs,
         # matched groups) and impedance declarations in the output project so
         # later steps refuse to rip the former and redo the latter at the same
-        # widths.
+        # widths. Independent of the DRC-floor writeback (#1415):
+        # --no-fix-drc-settings keeps the floors from being lowered, it must
+        # not void the records.
         try:
             from protected_nets import (consume_protection_candidates,
                                         consume_impedance_specs,

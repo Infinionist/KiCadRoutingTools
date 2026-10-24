@@ -144,6 +144,16 @@ Safety rails:
 python3 py_router/route.py in.kicad_pcb out.kicad_pcb --nets "/CLK" --force-reroute
 ```
 
+`route_diff.py --force-reroute` is the same for differential pairs: both
+members of every selected pair are stripped and the pair is routed again AS a
+coupled pair (`route.py` routes single-ended and would de-pair it). A pair is
+re-routed together or not at all: if one member is protected or plane-owning
+the other stays too. A routed pair is protected, so name both members exactly:
+
+```bash
+python3 py_router/route_diff.py in.kicad_pcb out.kicad_pcb --nets "/DQS_P" "/DQS_N" --force-reroute
+```
+
 ### Geometry Options
 
 | Option | Default | Description |

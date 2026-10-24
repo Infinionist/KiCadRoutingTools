@@ -1507,7 +1507,8 @@ class RoutingDialog(wx.Dialog):
             "Protected nets (length-matched groups, routed diff pairs) are skipped "
             "unless selected by exact name; KiCad-locked copper is never ripped; "
             "plane nets are skipped (use the Planes tab). If the re-route fails "
-            "outright, the original copper is restored.")
+            "outright, the original copper is restored. On the Differential "
+            "Pairs tab the selected pairs are re-routed as coupled pairs.")
         options_inner.Add(self.force_reroute, 0, wx.ALL, 3)
 
         # Keep input copper (#84 / --keep-input-copper): the flip side of rip --
@@ -4478,6 +4479,13 @@ class RoutingDialog(wx.Dialog):
                 edge_clearance=config.get('board_edge_clearance'),
                 # #581: recorded as route.py records --same-net-pad-clearance
                 same_net_pad_clearance=config.get('same_net_pad_clearance'))
+        else:
+            # The tool records (protected nets, impedance, same-net pad
+            # clearance) are not DRC floors: an unchecked box must not void
+            # them (#1415, as route.py --no-fix-drc-settings).
+            from .gui_utils import persist_live_tool_records
+            persist_live_tool_records(
+                board, config.get('same_net_pad_clearance'))
 
     def _add_via_to_board(self, board, via, get_layer_id):
         """Add a via to the pcbnew board."""

@@ -1139,6 +1139,12 @@ class DifferentialTab(wx.Panel):
                 mps_segment_intersection=config.get('mps_segment_intersection', False),
                 schematic_dir=config.get('schematic_dir'),
                 add_teardrops=config.get('add_teardrops', False),
+                # #1399: the shared "Force re-route selected nets" box, here
+                # re-routing the selected pairs AS pairs. The raw patterns are
+                # the #521 exact-name override (None = interactive selection,
+                # which names its nets exactly), as the signal tab passes.
+                force_reroute=config.get('force_reroute', False),
+                net_name_patterns=config.get('net_name_patterns'),
                 skip_routing=config.get('skip_routing', False),
                 debug_memory=config.get('debug_memory', False),
                 return_results=True,
@@ -1528,6 +1534,13 @@ class DifferentialTab(wx.Panel):
                 edge_clearance=_cfg.get('board_edge_clearance'),
                 # #581: recorded as route_diff.py records it
                 same_net_pad_clearance=_cfg.get('same_net_pad_clearance'))
+        else:
+            # The tool records (protected pairs, impedance, same-net pad
+            # clearance) are not DRC floors: an unchecked box must not void
+            # them (#1415, as route_diff.py --no-fix-drc-settings).
+            from .gui_utils import persist_live_tool_records
+            persist_live_tool_records(
+                board, _cfg.get('same_net_pad_clearance'))
 
         return tracks_added, vias_added, tracks_removed
 

@@ -3092,44 +3092,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         print("WARNING: --force-reroute requires an explicit --nets scope "
               "(it rips every selected net); ignoring it for this run.")
     elif force_reroute:
-        _fr_zone_nids = {z.net_id for z in pour_zones(pcb_data.zones)}
-        _fr_copper_nids = ({s.net_id for s in pcb_data.segments}
-                           | {v.net_id for v in pcb_data.vias})
-        _fr_cand, _fr_skipped_plane = [], []
-        for _name, _nid in net_ids:
-            if _nid not in _fr_copper_nids:
-                continue  # no existing copper -- routes normally anyway
-            if _nid in _fr_zone_nids:
-                _fr_skipped_plane.append(_name)
-                continue
-            _fr_cand.append((_name, _nid))
-        if _fr_skipped_plane:
-            print(f"--force-reroute: skipping {len(_fr_skipped_plane)} plane "
-                  f"(zone-owning) net(s) -- planes belong to route_planes: "
-                  f"{', '.join(_fr_skipped_plane[:6])}"
-                  f"{', ...' if len(_fr_skipped_plane) > 6 else ''}")
-        if _fr_cand:
-            from protected_nets import (protection_map, filter_rippable_names,
-                                        stash_rip_overrides)
-            _fr_prot = protection_map(pcb_data, input_file)
-            _fr_overrides = list(net_name_patterns
-                                 if net_name_patterns is not None
-                                 else net_names)
-            # Run-6 z2 fix: the in-run ladders must see the same exact-name
-            # overrides this pre-run filter honors.
-            stash_rip_overrides(pcb_data, _fr_overrides)
-            _fr_keep = set(_n for _n, _ in _fr_cand)
-            if _fr_prot:
-                _fr_keep = set(filter_rippable_names(
-                    [_n for _n, _ in _fr_cand], _fr_prot,
-                    override_patterns=_fr_overrides,
-                    context="--force-reroute"))
-            for _name, _nid in _fr_cand:
-                if _name not in _fr_keep:
-                    continue
-                force_ripped[_nid] = (
-                    [s for s in pcb_data.segments if s.net_id == _nid],
-                    [v for v in pcb_data.vias if v.net_id == _nid])
+        from rip_up_reroute import select_force_reroute_nets
+        force_ripped = select_force_reroute_nets(
+            pcb_data, net_ids,
+            net_name_patterns if net_name_patterns is not None else net_names,
+            input_file)
         if force_ripped:
             pcb_data.segments = [s for s in pcb_data.segments
                                  if s.net_id not in force_ripped]
@@ -3554,7 +3521,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # KiCad-LOCKED copper are excluded unconditionally (no override).
         if existing_rippable:
             from protected_nets import (protection_map, filter_rippable_names,
-                                        stash_rip_overrides)
+                                        stash_rip_overrides, rip_override_names)
             _prot = protection_map(pcb_data, input_file)
             # Override source: the RAW --nets patterns when main() passed
             # them -- expansion turns a glob into exact names, which made
@@ -3564,7 +3531,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             _rip_overrides = (list(rip_existing_nets)
                               + list(net_name_patterns
                                      if net_name_patterns is not None
-                                     else (net_names or [])))
+                                     else (net_names or []))
+                              # #1395: overrides an enclosing step stashed on
+                              # this pcb_data (a nested sub-run is passed none
+                              # of the patterns itself)
+                              + sorted(rip_override_names(pcb_data)))
             # Run-6 z2 fix: stash for the in-run ladders too.
             stash_rip_overrides(pcb_data, _rip_overrides)
             if _prot:
@@ -3715,12 +3686,19 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 continue
             _pe_auto.append(_nid)
         if _pe_auto:
-            from protected_nets import protection_map, filter_rippable_names
+            from protected_nets import (protection_map, filter_rippable_names,
+                                        rip_override_names)
             _pe_prot = protection_map(pcb_data, input_file)
             if _pe_prot:
+                # + the overrides an enclosing step stashed on this pcb_data
+                # (#1395): a nested sub-run is handed neither --nets nor
+                # --rip-existing-nets, but the board it runs on remembers
+                # which nets the operator named exactly.
                 _pe_keep = set(filter_rippable_names(
                     [pcb_data.nets[n].name for n in _pe_auto], _pe_prot,
-                    override_patterns=list(rip_existing_nets or []) + _pe_caller_pats,
+                    override_patterns=(list(rip_existing_nets or [])
+                                       + _pe_caller_pats
+                                       + sorted(rip_override_names(pcb_data))),
                     context="pre-existing rip candidacy"))
                 _pe_auto = [n for n in _pe_auto
                             if pcb_data.nets[n].name in _pe_keep]
@@ -8610,6 +8588,52 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         except Exception as _wwe:                               # noqa: BLE001
             print(f"  (wide-net width disclosure skipped: {_wwe})")
 
+    # #1371: the via rows of the design_rules ledger describe the vias that
+    # SHIP. They were recorded per placement ATTEMPT -- a last-resort via the
+    # weld then rejected stayed a row, one placement counted several times,
+    # and the rung-1 via search (which ships small vias) recorded nothing.
+    # Replaced by a census of this run's shipped vias against the diameter
+    # each net asked for (config.net_via). Outermost run only, both fronts
+    # (the write model on the GUI, the written board on the CLI), like the
+    # width rows above.
+    if final_reconcile and not _ckpt_stop:
+        try:
+            from routing_common import new_via_shortfall, via_identity
+            from fab_tiers import (replace_via_rows,
+                                   escalation_summary as _es1371)
+            _vias1371 = None
+            if return_results:
+                _, _av1371 = _gui_write_model(results_data)
+                _vias1371 = [_v for _l in _av1371.values() for _v in _l]
+                _names1371 = {_n: _nn.name for _n, _nn in pcb_data.nets.items()}
+            elif output_file and os.path.isfile(output_file):
+                from kicad_parser import parse_kicad_pcb as _pk1371
+                _b1371 = _pk1371(output_file)
+                _vias1371 = _b1371.vias
+                _names1371 = {_n: _nn.name for _n, _nn in _b1371.nets.items()}
+            if _vias1371 is not None:
+                _ids1371 = {_nn.name: _n for _n, _nn in pcb_data.nets.items()}
+                _in1371 = {via_identity(_v, pcb_data.nets[_n].name)
+                           for _n, _lst in _orig_via_by_net.items()
+                           if _n in pcb_data.nets for _v in _lst}
+                _short1371 = new_via_shortfall(
+                    _vias1371, lambda _n: _names1371.get(_n, f"Net {_n}"),
+                    _in1371,
+                    lambda _nm: (config.net_via(_ids1371[_nm])[0]
+                                 if _nm in _ids1371 else None))
+                replace_via_rows(
+                    [(_ids1371[_nm], _nm, _r['requested_mm'], _r['sizes'])
+                     for _nm, _r in _short1371.items()],
+                    'via copper shipped under size')
+                _dr1371 = _es1371()
+                for _sm in list(_SUMMARY_SINK) + [summary]:
+                    if isinstance(_sm.get('design_rules'), dict):
+                        _keep = {k: v for k, v in _sm['design_rules'].items()
+                                 if k == 'unsupported_rules'}
+                        _sm['design_rules'] = dict(_dr1371, **_keep)
+        except Exception as _vre:                               # noqa: BLE001
+            print(f"  (via-size disclosure skipped: {_vre})")
+
     # ---- THE FLOOR THIS RUN SHIPS ------------------------------------------
     # Every summary measured min_clearance_used and design_rules when it was
     # BUILT, and pass 1's predates the plane finalize, whose fine-pitch taps
@@ -9602,6 +9626,14 @@ For differential pair routing, use route_diff.py:
     # negative rail (-12V, -5V) is read as an unknown option and argparse exits
     # 2 before this line's result is ever used.
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
+    __import__("cli_nets").refuse_unusable_inputs(parser, args)  # #1410
+    if args.power_nets and args.power_nets_widths and \
+            len(args.power_nets) != len(args.power_nets_widths):
+        # Checked here so the CLI answers with a usage error (the engine's own
+        # ValueError stays as the GUI's guard).
+        parser.error(f"--power-nets ({len(args.power_nets)}) and "
+                     f"--power-nets-widths ({len(args.power_nets_widths)}) "
+                     f"must have the same length")
     # #530: --clearance-ceiling is the clamp switch (#439 used the PRESENCE of
     # --clearance). Given -> non-Default classes are capped at min(class, ceiling)
     # and the output .kicad_pro clamps them to the routed floor. Omitted -> honor
@@ -10210,9 +10242,9 @@ For differential pair routing, use route_diff.py:
     # clearances/sizes we just routed to, so a manual DRC only flags genuine
     # problems instead of stock-default noise (issue #160). Only edits the
     # .kicad_pro, never the .kicad_pcb, so the board's KiCad version is preserved.
-    if not args.no_fix_drc_settings and not args.skip_routing \
-            and not _gate_reverted \
-            and args.output_file and os.path.isfile(args.output_file):
+    _wrote_output = (not args.skip_routing and not _gate_reverted
+                     and args.output_file and os.path.isfile(args.output_file))
+    if not args.no_fix_drc_settings and _wrote_output:
         try:
             import clearance_ledger
             eff_clearance = clearance_ledger.effective(args.clearance)
@@ -10228,9 +10260,12 @@ For differential pair routing, use route_diff.py:
                 **drc_fix_kwargs(args))
         except Exception as e:
             print(f"  (skipped DRC-settings fix: {e})")
+    if _wrote_output:
         # #521: record this step's protection-worthy nets (matched groups) and
         # impedance declarations in the output project so later chain steps
         # refuse to rip the former and redo the latter at the same widths.
+        # Independent of the DRC-floor writeback (#1415): --no-fix-drc-settings
+        # keeps the floors from being lowered, it must not void the records.
         try:
             from protected_nets import (consume_protection_candidates,
                                         consume_impedance_specs,

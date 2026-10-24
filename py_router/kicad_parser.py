@@ -10916,9 +10916,19 @@ def _is_ball_grid(pads) -> bool:
     # ball/pin array populates several of each; a pin header does not.
     uniform = [p for p in pads
                if (round(p.size_x, 2), round(p.size_y, 2)) == dominant_size]
+    return pads_form_matrix(uniform)
+
+
+def pads_form_matrix(pads) -> bool:
+    """Do the pads fill a 2-D matrix: >=3 rows AND >=3 columns that each hold
+    >=3 of them? Such an array has INTERIOR pads, every neighbour ring of which
+    is more pads -- the geometry a via lattice (a pour that must thread between
+    drop vias) is about. A perimeter land pattern (LGA-12, a 2-row header) has
+    none: every pad is on the periphery. Pad-local coordinates, so the answer
+    does not depend on placement rotation."""
     row_counts = {}
     col_counts = {}
-    for p in uniform:
+    for p in pads:
         ry = round(p.local_y, 2)
         rx = round(p.local_x, 2)
         row_counts[ry] = row_counts.get(ry, 0) + 1
