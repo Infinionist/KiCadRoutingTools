@@ -5845,6 +5845,27 @@ def part_outline_rings(gate, pads):
     return gate.rings_enclosing([(p.global_x, p.global_y) for p in pads or ()])
 
 
+def _non_castellated_extent(pads):
+    """The bounding box of `pads` other than the castellated ones, holes of
+    copper-less pads included, or None when there is none (#1424)."""
+    xs0, ys0, xs1, ys1 = [], [], [], []
+    for p in pads or ():
+        if getattr(p, 'castellated', False):
+            continue
+        hx, hy = pad_half_extents(p)
+        if not _pad_carries_copper(p):
+            hx = hy = float(getattr(p, 'drill', 0) or 0) / 2.0
+            if hx <= 0:
+                continue
+        xs0.append(p.global_x - hx)
+        ys0.append(p.global_y - hy)
+        xs1.append(p.global_x + hx)
+        ys1.append(p.global_y + hy)
+    if not xs0:
+        return None
+    return (min(xs0), min(ys0), max(xs1), max(ys1))
+
+
 def pad_copper_overrun_mm(pads, gate) -> float:
     """How far `pads`' copper reaches past the outline, in mm: THE gating
     measure for pad copper off the board (#1096), shared by check_assembly
@@ -6466,6 +6487,24 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                 [(p.global_x, p.global_y) for p in pads_by_ref.get(ref, ())])
             amt = gate.rect_outside_amount(ext, skip_rings=own)
             if amt > EPS:
+                # #1424: a castellated module's half-holes sit ON the outline
+                # by design -- check_assembly's copper gate exempts them
+                # (`pad_copper_overrun_mm`) and so does this census, or
+                # `legal` and `buildable` disagree on every such module on its
+                # edge. The part is exempt when its OTHER pads and holes are
+                # inside the margin gate and every castellated pad still
+                # straddles the outline (one wholly off the board, a module
+                # parked away from its edge, still counts).
+                _pads = pads_by_ref.get(ref, ())
+                if any(getattr(p, 'castellated', False) for p in _pads):
+                    _rest = _non_castellated_extent(_pads)
+                    if ((_rest is None
+                         or gate.rect_outside_amount(_rest, skip_rings=own) <= EPS)
+                            and pad_copper_overrun_mm(
+                                [p for p in _pads
+                                 if getattr(p, 'castellated', False)],
+                                BoardOutlineGate(board_info, 0.0)) <= EPS):
+                        continue
                 oob_count += 1
                 oob_amount += amt
                 oob_refs.append([ref, round(amt, 4)])
