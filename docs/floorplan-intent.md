@@ -671,7 +671,9 @@ writeback rewrites both inputs, so one pose read differently placed and
 routed. On daplink, with nothing moved, J2/J3 read 7.0062 placed (margin
 0.55) and 6.6562 routed (margin 0.2), and P1 read 1.0500 and 0.7000; three
 band errors appeared after routing. An overhang of x now reads x at any
-margin, so write a band as the distance the part reaches past the edge, and
+margin (past the declared edge alone, along its normal: the overhang past another
+edge rides in the evidence row's `other_edge_overhang_mm`, and is an
+`edge_connector` error only above the band's maximum), so write a band as the distance the part reaches past the edge, and
 never add the board's edge margin to it. A band written in the old currency
 reads the margin too high: daplink's hand-written J2/J3 `{7.0, 7.4}` and P1
 `{1.05, 1.35}` added 0.55, and now read 6.4562 and 0.5000 placed and routed

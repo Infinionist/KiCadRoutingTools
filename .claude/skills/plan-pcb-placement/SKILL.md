@@ -366,8 +366,10 @@ when its class is not graded for a face) and the group you gave it. Then decide,
   flush instead, ch32v003_usb's USB-C J1 sat 0.88 mm deeper than its drawing
   and the board routed with about 15 mm more copper a seed. The band is
   read at zero margin, on the drawn body or else the courtyard (#1301): an
-  overhang of x reads x, so write the distance the part reaches past the
-  edge and never add the board's edge margin to it. check_floorplan's
+  overhang of x reads x past the DECLARED edge (one distance along that
+  edge's normal; what the part does past another edge is reported on its own
+  and bounded by the band's maximum, #1403), so write the distance the part reaches past the edge and never add
+  the board's edge margin to it. check_floorplan's
   `overhang_basis` says which of the two it read.
 
 Write these into the intent's `edge_connectors[]` entries, the rows into

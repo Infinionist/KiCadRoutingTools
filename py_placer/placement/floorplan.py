@@ -3431,7 +3431,7 @@ class _Ctx:
         names it, two rules reporting one fact.
         """
         if self._oob_exempt is None:
-            from .connector_geometry import courtyard_overhang, geometry_for
+            from .connector_geometry import courtyard_overhang_past, geometry_for
             out: Dict[str, float] = {}
             for c in self.intent.edge_claims():
                 ref = c['ref']
@@ -3449,10 +3449,18 @@ class _Ctx:
                 # can be measured, the courtyard at zero margin where it
                 # cannot (#1301). `amt` still decides whether the census
                 # counted the part at all.
+                _cy, _cy_others = courtyard_overhang_past(
+                    geometry_for(self, self.pcb, self.pcb_file),
+                    part.rect, c.get('edge'), skip_rings=own)
                 band, _basis, _body = _band_amount(
-                    self, ref, c.get('edge'), courtyard_overhang(
-                        geometry_for(self, self.pcb, self.pcb_file),
-                        part.rect, skip_rings=own))
+                    self, ref, c.get('edge'), _cy)
+                # #1403: the band reads the declared edge alone, so the
+                # exemption must not license a part hanging past ANOTHER edge
+                # by more than the band's own maximum.
+                _others = (_body.get('other_body_edge_overhang_mm')
+                           if _body.get('body_measured') else _cy_others) or {}
+                if any(v > hi + legality.EPS for v in _others.values()):
+                    continue
                 # The same body path that must still see copper off the
                 # outline (`rule_edge_connector`): a part with pads past the
                 # edge stays counted, whatever its body reads.
@@ -4905,7 +4913,7 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
     reporting it as a defect forever -- kept by `rule_legality` through
     `_Ctx.oob_exempt()`, for a declared part inside its own overhang band
     (it was a promise with no implementation until run 26 measured it)."""
-    from .connector_geometry import courtyard_overhang, geometry_for
+    from .connector_geometry import courtyard_overhang_past, geometry_for
     for c in ctx.intent.edge_connectors:
         ref = c['ref']
         part = ctx.parts.get(ref)
@@ -4935,8 +4943,8 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
         # clearance), which every routing step's DRC writeback rewrites, so
         # one pose graded differently placed and routed (daplink: 3 errors
         # after routing, nothing moved).
-        amount = courtyard_overhang(geometry_for(ctx, ctx.pcb, ctx.pcb_file),
-                                    part.rect)
+        amount, _cy_others = courtyard_overhang_past(
+            geometry_for(ctx, ctx.pcb, ctx.pcb_file), part.rect, c.get('edge'))
         lim = c.get('overhang_mm') or {}
         lo = float(lim.get('min', 0.0))
         hi = lim.get('max')
@@ -4951,6 +4959,25 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
         # reads the courtyard on either basis.
         band, overhang_basis, body = _band_amount(ctx, ref, c.get('edge'),
                                                   amount)
+        # #1403: the band above is ONE distance past the declared edge. What
+        # the part does past a DIFFERENT edge is graded on its own: more than
+        # the band's maximum is an error (the sum used to bound it); anything
+        # up to it is a fact of the pose (a courtyard longer than its edge
+        # overhangs both ends by design) and rides in the evidence row's
+        # `other_edge_overhang_mm`, silent, as the sum was.
+        _others = (body.get('other_body_edge_overhang_mm')
+                   if body.get('body_measured') else _cy_others) or {}
+        for _oe, _ov in sorted(_others.items()):
+            if hi is not None and _ov > float(hi) + legality.EPS:
+                yield Violation(
+                    rule='edge_connector', severity=ctx.sev('edge_connector'),
+                    ref=ref,
+                    message=(f"{ref} overhangs the {_oe} edge by {_ov:.2f}mm, "
+                             f"past the declared maximum {float(hi):.2f}mm "
+                             f"(its band is declared on the "
+                             f"{c.get('edge')} edge)"),
+                    measured={'edge': _oe, 'overhang_mm': round(_ov, 4)},
+                    expected={'edge': c.get('edge'), 'max': float(hi)})
         if band < lo - legality.EPS:
             yield Violation(
                 rule='edge_connector', severity=ctx.sev('edge_connector'),
@@ -4998,6 +5025,9 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
                 expected={'pad_copper_outside_mm': 0.0})
         evidence = _connector_evidence(ctx, c, ref, band, overhang_basis, body,
                                        lo, hi)
+        evidence['other_edge_overhang_mm'] = {
+            e: round(v, 4) for e, v in sorted(_others.items())
+            if v > legality.EPS}
         # The SEAT BASIS, decided once for the two conjuncts that ask where
         # the part's MATING FACE is (nearest edge, seat). A receptacle's
         # pads sit well inboard of its opening by construction: a micro-USB

@@ -196,10 +196,19 @@ class _Probe:
     def band_read(self, ref, edge, pose) -> Tuple[float, str]:
         """`(amount, basis)`: the overhang the grade reads at `pose`, and
         the currency it reads it in (`connector_geometry.band_amount`)."""
-        from .connector_geometry import band_amount, courtyard_overhang
+        from .connector_geometry import band_amount, courtyard_overhang_past
         # #1301: the courtyard at ZERO margin, as the grade reads it
-        legacy = courtyard_overhang(self.geo, self.state.parts[ref].rect(*pose))
-        return band_amount(self.geo, ref, edge, legacy, 0.0, pose=pose)[:2]
+        legacy, cy_others = courtyard_overhang_past(
+            self.geo, self.state.parts[ref].rect(*pose), edge)
+        amount, basis, row = band_amount(self.geo, ref, edge, legacy, 0.0, pose=pose)
+        # The grade reads the DECLARED edge alone and reports another edge's
+        # overhang on its own (#1403). The seat holds the stricter rule and
+        # seats only where no OTHER edge is crossed either: a courtyard longer
+        # than its edge stays unseated, with its reading (#1325), rather than
+        # being seated hanging off the corners.
+        others = (row.get('other_body_edge_overhang_mm')
+                  if row.get('body_measured') else cy_others) or {}
+        return amount + sum(others.values()), basis
 
     def copper_clear(self, ref, pose) -> bool:
         """Every pad's copper the board's edge clearance inside the outline
