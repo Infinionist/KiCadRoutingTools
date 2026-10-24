@@ -34,7 +34,8 @@ runnable tool in the clone with a one-line purpose.
   [run ledger](#run-ledger-convergepy) ·
   [label tidy](#label-tidy-beautify_labelspy) ·
   [decap clearance repair](#decap-clearance-repair-place_fanout_clearancepy) ·
-  [rule-area writer](#rule-area-writer-add_rule_areapy)
+  [rule-area writer](#rule-area-writer-add_rule_areapy) ·
+  [mounting-hole copper](#mounting-hole-copper-check_mounting_holespy)
 - Pictures: [board renderer](#board-renderer-route_renderpy) ·
   [placement renderer](#placement-renderer-render_placementpy) ·
   [floorplan overlay](#floorplan-overlay-render_planpy) ·
@@ -767,6 +768,31 @@ footprints stay allowed by default). A board-level rule area of the same
 `--name` is replaced, so the command is idempotent; the output gets the
 input's siblings. Exit 0 written, 2 for a usage error, a `--ref` the board
 does not have, or a layer it does not have.
+
+**Mounting holes (#1442).** `--mounting-holes` (with `--name` as a prefix and an
+optional `--ring MM`) writes one area per mounting hole instead of a shape: its
+screw-head ring, 0.4 x the drill past the hole's edge (about an ISO 7380 head,
+for every metric size), named `<name>_<ref>` and forbidding `tracks vias`. A
+mounting hole is a footprint of at most 9 pads, every one drilled 2.0 mm or
+wider and none on a signal net. A hole whose pad carries a net (a ground ring)
+gets no area, since its own copper has to reach it. The router and the plane
+steps honour the areas like any other; [`check_mounting_holes.py`](#mounting-hole-copper-check_mounting_holespy)
+grades the result.
+
+## Mounting-Hole Copper (`check_mounting_holes.py`)
+
+KiCad checks a mounting hole against the ordinary hole clearance only; the
+screw head, washer or standoff on it is not in the board file, so a track laid
+up to the hole passes every DRC. This reports each mounting hole's other-net
+tracks and vias inside the screw-head ring (0.4 x the drill past the edge, or
+`--ring MM`); copper of the hole's own net is not reported.
+
+```bash
+python3 py_tools/check_mounting_holes.py board.kicad_pcb [--ring MM]
+```
+
+Exit 0 when every ring is clear, 1 when any holds another net's copper.
+Declare the ring before routing with `add_rule_area.py --mounting-holes`.
 
 ## Connectivity Checker (`check_connected.py`)
 

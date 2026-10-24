@@ -952,6 +952,12 @@ Routing Completes): run them once, here, not again inside the routing.
   brief's `keepouts[]` grades and places only; no routing step reads it:
   `python3 -X utf8 py_router/add_rule_area.py <in> <out> --name ANT_KEEPOUT --ref U1 --rect X0 Y0 X1 Y1`
   (#1200).
+- **A mounting hole's screw head needs its ring WRITTEN too (#1442).** KiCad
+  checks a hole's own clearance only, so a route runs up to it. Before routing,
+  `python3 -X utf8 py_router/add_rule_area.py <in> <out> --name MOUNT --mounting-holes`
+  writes the head ring (0.4 x the drill past the edge) as a keep-out the
+  router honours, and `python3 -X utf8 py_tools/check_mounting_holes.py <board> --ring MM`
+  names any other-net copper left inside it.
 - **Re-placing strands routed copper.** Strip the copper and re-route.
 
 **Routing**
