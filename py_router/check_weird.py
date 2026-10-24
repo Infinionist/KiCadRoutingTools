@@ -658,6 +658,78 @@ def stacked_copper_over_model(segs_by_net, vias_by_net, net_name):
     return findings
 
 
+def different_net_crossings(segs_by_net, is_new, net_name, cell: float = 1.0):
+    """Same-layer segment pairs of DIFFERENT nets whose centre lines meet,
+    where at least one segment is new this run (#1375).
+
+    Two such tracks are a short, whatever the clearance rule says: KiCad
+    reports tracks_crossing and check_drc a SEGMENT-CROSSING. A router that
+    retries a leg after a via-in-pad unblock searched the board without
+    some committed copper and laid a detour through it, and the run still
+    reported success. This audit runs on the copper about to be written, so
+    the pair is named before it ships. `is_new(segment)` says whether the run
+    laid it; `net_name` is a net_id -> str callable. Graphic copper is
+    immutable art and is skipped. Returns one dict per pair: the two nets,
+    the layer and a point on the first centre line."""
+    from collections import defaultdict
+    from geometry_utils import segment_to_segment_distance
+    items = []
+    boxes = []
+    isnew = []
+    buckets = defaultdict(list)
+    for nid, segs in segs_by_net.items():
+        for s in segs:
+            if getattr(s, 'graphic', False):
+                continue
+            i = len(items)
+            items.append((nid, s))
+            x0, x1 = sorted((s.start_x, s.end_x))
+            y0, y1 = sorted((s.start_y, s.end_y))
+            boxes.append((x0, x1, y0, y1))
+            isnew.append(bool(is_new(s)))
+            for cx in range(int(x0 // cell), int(x1 // cell) + 1):
+                for cy in range(int(y0 // cell), int(y1 // cell) + 1):
+                    buckets[(s.layer, cx, cy)].append(i)
+    out, seen = [], set()
+    for idx in buckets.values():
+        if len(idx) < 2:
+            continue
+        for a in range(len(idx)):
+            na, sa = items[idx[a]]
+            for b in range(a + 1, len(idx)):
+                nb, sb = items[idx[b]]
+                if na == nb or not (isnew[idx[a]] or isnew[idx[b]]):
+                    continue
+                ba, bb = boxes[idx[a]], boxes[idx[b]]
+                if (ba[1] < bb[0] - 1e-9 or bb[1] < ba[0] - 1e-9
+                        or ba[3] < bb[2] - 1e-9 or bb[3] < ba[2] - 1e-9):
+                    continue
+                key = (min(idx[a], idx[b]), max(idx[a], idx[b]))
+                if key in seen:
+                    continue
+                seen.add(key)
+                if segment_to_segment_distance(
+                        sa.start_x, sa.start_y, sa.end_x, sa.end_y,
+                        sb.start_x, sb.start_y, sb.end_x, sb.end_y) > 1e-9:
+                    continue
+                # Where the centre lines meet; a parallel touch reports the
+                # first segment's start.
+                px, py = sa.start_x, sa.start_y
+                d1x, d1y = sa.end_x - sa.start_x, sa.end_y - sa.start_y
+                d2x, d2y = sb.end_x - sb.start_x, sb.end_y - sb.start_y
+                den = d1x * d2y - d1y * d2x
+                if abs(den) > 1e-12:
+                    t = ((sb.start_x - sa.start_x) * d2y
+                         - (sb.start_y - sa.start_y) * d2x) / den
+                    if -1e-9 <= t <= 1 + 1e-9:
+                        px, py = sa.start_x + t * d1x, sa.start_y + t * d1y
+                out.append({'net_a': net_name(na), 'net_b': net_name(nb),
+                            'layer': sa.layer,
+                            'at': [round(px, 4), round(py, 4)]})
+    out.sort(key=lambda d: (d['net_a'], d['net_b'], d['at']))
+    return out
+
+
 def close_same_net_via_pairs(vias_by_net, is_new, hole_to_hole, net_name):
     """Same-net via pairs whose drills sit closer than `hole_to_hole` (edge to
     edge) where at least one via is new this run (#1414).

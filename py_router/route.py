@@ -5185,6 +5185,32 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         if len(close_via_findings) > 8:
             print(f"  {RED}... and {len(close_via_findings) - 8} more{RESET}")
 
+    # ---- DIFFERENT-NET CROSSINGS (#1375) ------------------------------------
+    # Two nets' tracks crossing on one layer are a short that no clearance
+    # setting forgives. Audit the copper about to be written and name every
+    # such pair this run laid, instead of reporting `failed 0` over it.
+    crossing_findings = []
+    try:
+        from check_weird import different_net_crossings
+        _new_seg_ids = {id(_s) for _r0 in results
+                        for _s in _r0.get('new_segments', [])}
+        _new_seg_ids |= {id(_s) for _s in all_swap_segments}
+        crossing_findings = different_net_crossings(
+            _segs_by_net, lambda _s: id(_s) in _new_seg_ids,
+            lambda _n: (pcb_data.nets[_n].name if _n in pcb_data.nets
+                        else f"Net {_n}"))
+    except Exception as _xe:
+        print(f"  (crossing check failed: {_xe})")
+    if crossing_findings:
+        print(f"\n{RED}WARNING: {len(crossing_findings)} different-net "
+              f"track crossing(s) on the write model (a short; KiCad "
+              f"tracks_crossing, check_drc SEGMENT-CROSSING):{RESET}")
+        for _f in crossing_findings[:8]:
+            print(f"  {RED}{_f['net_a']} x {_f['net_b']} on {_f['layer']} at "
+                  f"({_f['at'][0]}, {_f['at'][1]}){RESET}")
+        if len(crossing_findings) > 8:
+            print(f"  {RED}... and {len(crossing_findings) - 8} more{RESET}")
+
     _zones_by_net: Dict[int, list] = {}
     for _z in getattr(pcb_data, 'zones', []) or []:
         _zones_by_net.setdefault(_z.net_id, []).append(_z)
@@ -5914,6 +5940,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # the via dedup (additive; KiCad's DRC never flags same-net stacks,
         # so this key is the only disclosure).
         summary['stacked_copper'] = stacked_copper_findings
+    if crossing_findings:
+        # #1375: different-net tracks crossing on one layer, laid by this run
+        # (additive; check_drc's SEGMENT-CROSSING is the matching grade).
+        summary['different_net_crossings'] = crossing_findings
     if close_via_findings:
         # #1414: own vias under the drill hole-to-hole floor, laid by this
         # run (additive; check_drc's VIA-DRILL-HOLE is the matching grade).
