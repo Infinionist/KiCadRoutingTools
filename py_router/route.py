@@ -431,8 +431,19 @@ def _emit_summary_min(gate_report: Optional[dict] = None,
         print(f"  WARNING: could not emit JSON_SUMMARY_MIN: {_e}")
 
 
+def _oracle_checked_pours() -> bool:
+    """True when a pass of this run (the plane finalize's oracle) already read
+    the pours through KiCad's own fill."""
+    for _s in _SUMMARY_SINK:
+        _o = _s.get('oracle_reconnect') if isinstance(_s, dict) else None
+        if isinstance(_o, dict) and _o.get('available'):
+            return True
+    return False
+
+
 def _regrade_pour_fill(board, output_file: str,
-                       project_from: Optional[str]) -> Optional[dict]:
+                       project_from: Optional[str],
+                       force: bool = False) -> Optional[dict]:
     """Read `board`'s pours through KiCad's own refill of `output_file`, when
     no pass of this run checked them against it. Returns the record's
     `pour_fill` entry, or None when the board pours nothing or the plane
@@ -449,14 +460,17 @@ def _regrade_pour_fill(board, output_file: str,
     found 37 missing links on the same file.
 
     One refill of the written file (the oracle pays the same on a healthy
-    board), staged with the sibling project, else `project_from`'s."""
+    board), staged with the sibling project, else `project_from`'s.
+
+    `force` refills although the oracle ran (#1374): the oracle's own verdict
+    is per link, and a pour net the fill MODEL calls open but whose links the
+    oracle cleared is a model-only open -- only a read of KiCad's fill can
+    clear it."""
     from kicad_parser import pour_zones
     if not pour_zones(getattr(board, 'zones', None) or []):
         return None
-    for _s in _SUMMARY_SINK:
-        _o = _s.get('oracle_reconnect') if isinstance(_s, dict) else None
-        if isinstance(_o, dict) and _o.get('available'):
-            return None
+    if not force and _oracle_checked_pours():
+        return None
     try:
         from kicad_exact_fill import refill_islands_ex
         from plane_fill_model import install_kicad_fill
@@ -628,7 +642,7 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
                    routing_scope: List[str], input_signature,
                    orig_seg_by_net: Dict[int, list],
                    orig_via_by_net: Dict[int, list],
-                   orig_copper=None, exact_links=None,
+                   orig_copper=None, exact_links=None, exact_landed=(),
                    project_from: Optional[str] = None) -> Optional[dict]:
     """Grade the board this run SHIPS over every net it owns (#1069).
 
@@ -661,6 +675,9 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     pass of this run checked them against it (`_regrade_pour_fill`): the
     plane finalize's oracle is that check, and --quick skips it.
 
+    `exact_landed` names the nets whose forced link landed in the final
+    reconciliation (#1374): one landed link of several does not make the
+    net's pour whole, so they are graded on the exact fill too.
     `exact_links` are the oracle links still pending after the final
     reconciliation; a net among them that the fill model credits is graded on
     KiCad's exact fill instead (_exact_open_grades, #1339).
@@ -707,12 +724,31 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
                                 if n in id_of],
                         segs_by_net=segs_by_net, vias_by_net=vias_by_net)
     grades = {name_of[nid]: g for nid, g in graded.items()}
+    # #1374: the oracle ran, so the pours were not re-read through KiCad's
+    # fill -- but a pour net the fill MODEL calls broken may be a model-only
+    # open (a corridor the model's raster drops that KiCad pours), and nothing
+    # else clears it. Refill once for exactly that case and grade again.
+    if label == 'file' and _pour_fill is None and _oracle_checked_pours():
+        from kicad_parser import pour_zones as _pz1374
+        _pour_ids = {z.net_id for z in _pz1374(getattr(board, 'zones', None)
+                                               or [])}
+        if any(g['broken'] and id_of.get(n) in _pour_ids
+               for n, g in grades.items()):
+            _pour_fill = _regrade_pour_fill(board, output_file, project_from,
+                                            force=True)
+            if _pour_fill and _pour_fill.get('graded_on') == 'kicad_refill':
+                graded = grade_nets(
+                    board, [id_of[n] for n in list(named) + extra
+                            if n in id_of],
+                    segs_by_net=segs_by_net, vias_by_net=vias_by_net)
+                grades = {name_of[nid]: g for nid, g in graded.items()}
     # #1339: a pour net whose exact-fill links are still pending after the
     # final reconciliation is not connected because the fill MODEL says so --
     # multichannel_mixer's GND read "recovered" (failed 0) with the oracle's
     # 5 links open and KiCad's refill in 5 pieces. Grade those nets on the
     # exact fill of the shipped board, else on the oracle's verdict.
-    _pending = {lk[0] for lk in (exact_links or ()) if lk and lk[0]}
+    _pending = ({lk[0] for lk in (exact_links or ()) if lk and lk[0]}
+                | set(exact_landed or ()))
     _exact_open = _exact_open_grades(
         board, output_file if label == 'file' else None,
         sorted(n for n in _pending if n in grades and not grades[n]['broken']),
@@ -6732,6 +6768,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # #1339: the exact-fill links still pending after the final
     # reconciliation, for the end-of-run re-grade (None: no lap ran).
     _pending_links1339 = None
+    _landed_nets1339: list = []
     _zone_complete9 = set()
     # PLANE FINALIZE (#562): the pours-first chain's repair step, absorbed.
     # Measured (3-board arch chains): the standalone repair step's entire
@@ -8045,6 +8082,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                       None) or [])
             _pending_links1339 = [l for l in (_rk.get('oracle_links') or [])
                                   if l and l[0] not in _landed1339]
+            # #1374: a landed link is not a verdict -- the net keeps its
+            # exact-fill re-grade (a net with several links lands one and
+            # ships the rest split).
+            _landed_nets1339 = sorted(_landed1339)
             print("Note: the JSON_SUMMARY above covers only the "
                   "reconciliation subset (it carries scope="
                   "\"reconciliation-subset\"). The run's tally is the final "
@@ -8568,6 +8609,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 [_n for _n, _i in single_ended_nets], _input_sig1069,
                 _orig_seg_by_net, _orig_via_by_net,
                 orig_copper=_orig_copper_values,
+                exact_landed=_landed_nets1339,
                 exact_links=(list(_pending_links1339
                                   if _pending_links1339 is not None
                                   else list(_custody_links9)
