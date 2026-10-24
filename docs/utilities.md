@@ -985,15 +985,19 @@ clean; exit 0), **INCOMPLETE** (a component ran and could not answer, or an
 added instrument found something; exit 4) and **UNSOUND** (the board grades
 clean only against floors a DRC writeback lowered; exit 5). Ungraded
 components do not block DONE but are named in the verdict line -- except a
-component the BOARD declares and nothing grades (a project diff-pair net class
-with no `.kicad_dru` skew / `diff_pair_uncoupled` rule that binds it, or a
-`.kicad_dru` size rule `check_drc` cannot model), which makes the verdict
-INCOMPLETE. Net impedance declarations recorded by `route.py --impedance` are
-graded without a flag. `--authored-from` is the board the chain started from
-(its project carries the floors this one should still respect); without it
-the floors are graded against the project's recorded `fab_floor_origin` (what
-the board declared before the first routing step lowered anything), and
-`fab_floors` is named unexamined when the project records none. The
+`.kicad_dru` size rule `check_drc` cannot model, which makes the verdict
+INCOMPLETE. A component the BOARD declares and nothing grades (a project
+diff-pair net class with no `.kicad_dru` skew / `diff_pair_uncoupled` rule
+that binds it) is named apart, `DISCLOSED, not counted`. Net impedance
+declarations recorded by `route.py --impedance` and the power widths route.py
+was asked for are measured without a flag and reported by `board_score`
+(`impedance.declared_failing`, `net_widths.requested_under`), not graded.
+`--authored-from` is the board the chain started from (its project carries
+the floors this one should still respect); without it the floors are read
+against the project's recorded `fab_floor_origin` (what the board declared
+before the first routing step lowered anything) and copper below them is
+DISCLOSED in the reason, not graded, and `fab_floors` is named unexamined
+when the project records none. The
 copper-to-hole floor is graded by `kicad-cli` on the fill as shipped, and the
 reference excuses only the kinds of pair it also breaks, at least as badly.
 `--baseline` is handed to

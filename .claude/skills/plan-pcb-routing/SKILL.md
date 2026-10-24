@@ -587,9 +587,10 @@ for fine-pitch boards (#111/#115):**
   ships under it (`design_rules`, "class-width copper shipped under width"), but
   no DONE grader holds a board to it. **A width you REQUIRE of a net is a
   request, not a class value:** `--power-nets` / `--power-nets-widths` records
-  it in the output's `kicad_routing_tools` records, and `board_score` /
-  `check_complete` then grade it with no flag (`--net-min-widths` adds patterns
-  for nets that were not asked of route.py). Declare the width you need there.
+  it in the output's `kicad_routing_tools` records, and `board_score` measures
+  it with no flag and reports copper under it (`net_widths.requested_under`)
+  without counting it. A width the board MUST have goes in
+  `board_score --net-min-widths`, which grades it.
 - **Board Constraints** (`min_clearance`, `min_track_width`, `min_via_diameter`,
   `min_hole_to_hole`, `min_through_hole_diameter`): **these are the actual DRC
   floors.** `--design-rules` reads them from `design_settings.rules` and combines
@@ -2476,7 +2477,8 @@ Key options:
   board_score grade it, as KiCad does. A board whose project declares a
   diff-pair net class (a `diff_pair_gap`/`diff_pair_width` that differs from
   Default's) needs such a rule: board_score only MEASURES a pair nothing
-  grades, and `check_complete` is INCOMPLETE until a rule binds it, e.g.
+  grades, and `check_complete` names the declaration in its reason
+  (DISCLOSED, not counted) until a rule binds it, e.g.
   `(rule "pair skew" (condition "A.NetClass == '100ohm'") (constraint skew
   (max 0.15mm) (within_diff_pairs)))` in `<board>.kicad_dru`. A rule whose
   condition names a class or net the board lacks grades nothing, and check_drc

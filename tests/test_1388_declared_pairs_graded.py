@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """#1388: declared diff pairs are measured, never graded, and check_complete
-reads DONE.
+said nothing about them.
 
 board_score only grades a pair against a `.kicad_dru` skew / diff_pair_uncoupled
 rule (it will not invent a threshold), so a board whose project DECLARES a
@@ -10,7 +10,8 @@ And a rule whose condition matches no net counted as "graded, 0 violations".
 
   1. A project netclass whose diff_pair_gap/width differs from Default's,
      with pair nets in it, is a DECLARATION: with no rule, `diff_pairs` stays
-     ungraded but carries `declared`, and check_complete is INCOMPLETE.
+     ungraded but carries `declared`, and check_complete DISCLOSES it in its
+     reason (not counted: the verdict is whatever the rest of the board earns).
   2. A class that merely repeats Default's pair settings declares nothing.
   3. A rule that binds no net is not a rule that grades: board_score lists it
      in `unbound_rules` and treats the component as having no rule; check_drc
@@ -105,10 +106,11 @@ def main():
         run_utils.evidence(b + '.cc.json', 'check_complete json')
         with open(b + '.cc.json', encoding='utf-8') as fh:
             doc = json.load(fh)
-        check('check_complete: INCOMPLETE, naming the declaration',
-              doc['verdict'] == 'INCOMPLETE' and res.returncode == 4
-              and 'diff_pairs: the board DECLARES it (DP)' in doc['reason'],
-              doc['reason'][:300])
+        _disc = doc['reason'].split('DISCLOSED, not counted: ', 1)
+        check('check_complete: discloses the declaration, not as a reason',
+              res.returncode in (0, 4) and len(_disc) == 2
+              and 'diff_pairs: the board DECLARES it (DP)' in _disc[1]
+              and 'DECLARES' not in _disc[0], doc['reason'][-400:])
 
         # 2. a class that repeats Default's pair settings declares nothing
         b2 = stage(tmp, 'same.kicad_pcb', None)

@@ -57,6 +57,8 @@ _GATE_EXEMPT_WHY = {
     'container_class': 'a board-sized container is involved',
     'intent_declared': "named in the intent's overlap_waivers",
     'silk_drawn': 'a silk-drawn body, which never gates (#896)',
+    'silk_enclosed': ('inside a CLOSED silk-drawn body: gates when a member '
+                      'moved vs --baseline (#1401)'),
 }
 
 
@@ -735,6 +737,27 @@ def main():
         print("    A deliberate overlap is accepted by naming the pair in the "
               "intent's `overlap_waivers`, where the acceptance is visible.")
 
+    # #1401: a part inside another's CLOSED silk-drawn body gates when a
+    # member MOVED vs the baseline, as courtyard contacts do; report-only
+    # without --baseline, and never for a pair the baseline already carried.
+    silk_gating = []
+    _silk_pairs = g.get('silk_enclosed_pairs') or []
+    if _silk_pairs:
+        if moved_refs is not None:
+            silk_gating = [q for q in _silk_pairs
+                           if q.a in moved_refs or q.b in moved_refs]
+        print(f"  INSIDE A CLOSED SILK BODY ({len(_silk_pairs)}): "
+              + (f"{len(silk_gating)} GATE (a member moved vs the baseline)"
+                 if moved_refs is not None else
+                 "REPORT-ONLY: pass --baseline <the board the run started "
+                 "from> to gate the ones your moves created"))
+        for q in _silk_pairs:
+            _who = [r for r in (q.a, q.b) if moved_refs and r in moved_refs]
+            print(f"    {q.a} <-> {q.b}  {q.contained_frac:.0%} of the smaller "
+                  f"body" + (f"  GATES (moved: {' '.join(_who)})" if _who
+                             else "  baseline's own (no member moved)"
+                             if moved_refs is not None else ''))
+
     # #1250: a TEST POINT whose pad copper lies under another part's drawn
     # body -- no probe or bed-of-nails pin can reach it. The marker waiver
     # every other channel gives a test point (courtyard `blocking_waived`,
@@ -974,7 +997,7 @@ def main():
     # (`tp_gating`, above). #1255, the TENTH: a body inside the body-to-edge
     # band the intent DECLARES (`edge_band_gating`, empty when undeclared).
     not_buildable = bool(g['blocking'] or locked_contact or stack_groups
-                         or g['containment_blocking']
+                         or g['containment_blocking'] or silk_gating
                          or courtyard_gating or off_outline_pads or mating
                          or graphic_gating
                          or pin_hits or tp_gating or edge_band_gating
@@ -1050,6 +1073,7 @@ def main():
             # only because the project declares the rule an error.
             'courtyard_error_gating_pairs': [q._asdict()
                                              for q in courtyard_error_gating],
+            'silk_enclosed_gating_pairs': [q._asdict() for q in silk_gating],
             # #1095: the severity the courtyard channel was graded at (None
             # = KiCad's default, error) and the waiver label it gave.
             'courtyard_severity': g.get('courtyard_severity'),

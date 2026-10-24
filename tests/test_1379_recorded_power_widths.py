@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
-"""#1379: the power widths asked of route.py reach the DONE graders.
+"""#1379: the power widths asked of route.py reach the graders' report.
 
 route.py measured `power_widths` into JSON_SUMMARY and printed "N mm under the
-requested W", but recorded no width, so board_score saw `net_widths` as
-UNGRADED and check_complete said DONE on a board whose battery path was 72%
-under width. What must hold:
+requested W", but recorded no width, so nothing after the step could say a
+board's battery path was 72% under width. A request is what the router AIMED
+for -- it narrows where the width does not fit, and discloses it -- so it is
+measured and reported, not graded. What must hold:
 
   * the widths a step was asked for are recorded in the output's
     `kicad_routing_tools` records (`power_widths`, net name -> mm), and merge
     with the records of earlier steps;
-  * board_score reads them with no flag and grades `net_widths` against them
-    (exact net names, after any --net-min-widths patterns, which win);
+  * board_score reads them with no flag and MEASURES them into
+    `net_widths.requested_under` (exact net names), without grading or
+    counting them; a --net-min-widths pattern covering the net wins and is
+    graded;
   * a segment under the requirement is excused ONLY as a pad neck (#1318):
     inside the pad-entry zone of a narrower own-net pad, at no less than that
     pad's short side -- narrower than the pad, or beyond the zone, it counts,
     and what was excused is disclosed (`pad_neck_allowed_mm`);
   * a board with neither a file nor a record stays UNGRADED;
-  * END TO END: route.py with --power-nets-widths writes the record, board_score
-    exits 4 with net_widths failing, and check_complete is not DONE.
+  * END TO END: route.py with --power-nets-widths writes the record, and
+    board_score reports what ships under it while `net_widths` stays ungraded.
 
     python3 -X utf8 tests/test_1379_recorded_power_widths.py
 """
@@ -100,9 +103,10 @@ def t_record_and_grade():
               str(protected_nets.read_power_widths(pro)))
 
         r = board_score.score_net_widths(pcb, None)
-        det = (r.get('nets') or {}).get('PWR', {})
-        check('recorded request is graded with no flag',
-              r.get('ran') and r['count'] == 1 and det.get('required_mm') == 0.5, str(r))
+        det = (r.get('requested_under') or {}).get('PWR', {})
+        check('recorded request is measured with no flag, not graded',
+              r.get('ran') is False and r.get('count') is None
+              and det.get('required_mm') == 0.5 and not r.get('nets'), str(r))
         check('the pad neck at the pad width is excused and disclosed',
               abs(r['pad_neck_allowed_mm'].get('PWR', 0) - 1.0) < 1e-6, str(r))
         check('narrower than the pad, or far from it, still counts',
@@ -111,8 +115,17 @@ def t_record_and_grade():
         check('the segment at the requirement is not under',
               det.get('segments_total') == 4, str(det))
 
-        # an explicit file pattern outranks the record
+        # a file pattern is graded, with the same pad-neck allowance
         spec = os.path.join(d, 'w.json')
+        with open(spec, 'w', encoding='utf-8') as fh:
+            json.dump({'PWR': 0.5}, fh)
+        r = board_score.score_net_widths(pcb, spec)
+        check('a --net-min-widths pattern is graded',
+              r.get('ran') and r['count'] == 1
+              and (r['nets'].get('PWR') or {}).get('segments_under') == 2
+              and not r.get('requested_under'), str(r))
+
+        # an explicit file pattern outranks the record
         with open(spec, 'w', encoding='utf-8') as fh:
             json.dump({'PW*': 0.1}, fh)
         r = board_score.score_net_widths(pcb, spec)
@@ -139,14 +152,11 @@ def t_end_to_end():
         p = subprocess.run([sys.executable, '-X', 'utf8', tool('board_score.py'), out,
                             '--quiet', '--json', js], capture_output=True, text=True)
         nw = json.load(open(evidence(js), encoding='utf-8'))['components']['net_widths']
-        check('board_score grades net_widths unprompted and fails the board',
-              nw.get('ran') and nw['count'] >= 1 and p.returncode == 4,
-              f"exit {p.returncode} {nw.get('count')}")
-        c = subprocess.run([sys.executable, '-X', 'utf8', tool('check_complete.py'), out],
-                           capture_output=True, text=True, cwd=ROOT)
-        check('check_complete no longer says DONE',
-              'VERDICT: DONE' not in c.stdout and 'net_widths' not in
-              c.stdout.split('UNEXAMINED')[-1], c.stdout[-300:])
+        check('board_score measures the request unprompted, ungraded',
+              nw.get('ran') is False and nw.get('count') is None
+              and nw.get('requirements_from', {}).get('recorded') == 3
+              and isinstance(nw.get('requested_under'), dict),
+              f"exit {p.returncode} {nw}"[:300])
 
 
 for fn in (t_record_and_grade, t_end_to_end):

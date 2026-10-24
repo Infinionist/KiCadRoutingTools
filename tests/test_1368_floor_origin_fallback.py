@@ -4,10 +4,12 @@ floors the project once declared.
 
 The writeback rewrites the project's floors down to what the chain placed and
 records the originals in `kicad_routing_tools.fab_floor_origin`. check_complete
-used to answer "nothing left to compare against" and gate nothing. Now:
+used to answer "nothing left to compare against" and say nothing. Now:
 
   1. A recorded origin is the reference when no --authored-from is given:
-     copper below it is `relaxed` (UNSOUND, exit 5), source `fab_floor_origin`.
+     copper below it is `relaxed`, source `fab_floor_origin`, and DISCLOSED in
+     the verdict's reason -- not UNSOUND: the chain's own descent lowered it
+     and says so; --authored-from grades it.
   2. An origin the copper honours leaves nothing relaxed.
   3. With no origin and no --authored-from the floor check did not run, and
      the verdict NAMES fab_floors as unexamined with the reason.
@@ -86,8 +88,10 @@ def main():
         check('copper below the origin is relaxed',
               keys == ['min_track_width', 'min_via_diameter'], str(keys))
         code, doc = cc(b1)
-        check('verdict UNSOUND, exit 5', doc.get('verdict') == 'UNSOUND'
-              and code == 5, f"{doc.get('verdict')} exit {code}")
+        check('disclosed, not UNSOUND', doc.get('verdict') != 'UNSOUND'
+              and code != 5 and 'fab_floor_origin' in (doc.get('reason') or '')
+              and 'track width 5.0 -> 0.1' in (doc.get('reason') or ''),
+              f"{doc.get('verdict')} exit {code}: {(doc.get('reason') or '')[-300:]}")
 
         # 2. an origin the copper honours
         b2 = stage(tmp, 'honoured.kicad_pcb',

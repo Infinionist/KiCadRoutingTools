@@ -6,7 +6,8 @@ mark, not a housing. That left a part placed under a housing whose only body
 is a closed silk outline (a battery holder, an IC package that draws no .Fab)
 reading `buildable (blocking 0)`. The silk exemption now stands only for silk
 that does NOT close into a loop; a silk loop that holds another part's pad
-copper (>= 99.9%) is a body like any other.
+copper (>= 99.9%) is a body: the pair gates where a member MOVED vs
+--baseline, as courtyard contacts do, and is reported without one.
 
 Fixture: the tracked esp_prog board. U1 (SSOP) draws no courtyard and no .Fab,
 only a CLOSED silk rectangle; a 0402 put between its pad rows is under it.
@@ -49,6 +50,11 @@ class TestClosedSilkBody(unittest.TestCase):
                             '--baseline', os.path.join(td, 'base.kicad_pcb'))
             self.assertIn('NOT BUILDABLE', out, out[-800:])
             self.assertIn('CONTAINED 100%', out)
+            self.assertIn('GATES (moved: R1)', out)
+            # without a baseline nothing says who moved: reported, not gated
+            code, out = run(tool('check_assembly.py'), moved)
+            self.assertIn('INSIDE A CLOSED SILK BODY (1): REPORT-ONLY', out, out[-800:])
+            self.assertIn('buildable (blocking 0)', out, out[-800:])
 
     def test_open_silk_brackets_still_do_not_gate(self):
         code, out = run(tool('check_assembly.py'), BOARD)

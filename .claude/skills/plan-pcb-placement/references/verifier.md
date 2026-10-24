@@ -32,7 +32,7 @@ Trust nothing it told you. Measure it yourself, from the repo root.
 4. **`full` mode, also:**
    - `python3 -X utf8 py_tools/board_score.py <BOARD> --intent <INTENT> <SPEC FLAGS> --baseline <INPUT BOARD> --json <RUN DIR>/verify_<N>_score.json`: blocking 0, unrouted 0, broken 0;
    - `python3 -X utf8 check_complete.py <BOARD> --intent <INTENT> <SPEC FLAGS> --baseline <INPUT BOARD>`: DONE;
-   - `python3 -X utf8 check_complete.py <BOARD> --intent <INTENT> --baseline <INPUT BOARD> --authored-from <INPUT BOARD>`: **report it, not gating**, and name any floor it lists. (Without `--authored-from` check_complete grades the floors against the project's recorded `fab_floor_origin`, so a board routed below its Board Setup minimums is UNSOUND there too. The Board Setup minimums are the spec: pass `--min-track-width` / `--min-via-diameter` / `--min-via-drill` with them;)
+   - `python3 -X utf8 check_complete.py <BOARD> --intent <INTENT> --baseline <INPUT BOARD> --authored-from <INPUT BOARD>`: **report it, not gating**, and name any floor it lists. (Without `--authored-from` check_complete reads the floors against the project's recorded `fab_floor_origin` and DISCLOSES copper below them in its reason, without changing the verdict. The Board Setup minimums are the spec: pass `--min-track-width` / `--min-via-diameter` / `--min-via-drill` with them;)
    - `python3 -X utf8 py_router/check_connected.py <BOARD>`: no disconnected pads;
    - `python3 -X utf8 py_router/check_drc.py <BOARD> --baseline <INPUT BOARD> --clearance-margin 0.1`: no real violations.
 5. **Declared classes.** Name every `ungraded` component as UNEXAMINED. If the

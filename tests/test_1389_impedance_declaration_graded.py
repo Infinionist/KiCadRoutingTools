@@ -4,15 +4,18 @@
 A route step run with --impedance records each net's declaration (ohms and
 coplanar gap) in the sibling .kicad_pro. board_score graded impedance only for
 nets named by --impedance-nets, so a declared net whose coplanar promise was
-broken read "ungraded" -- and check_complete DONE. Now:
+broken was never looked at. Now the recorded nets are MEASURED and disclosed,
+not counted (a declaration nothing named is not made a blocker):
 
-  1. The recorded nets are graded with no flag at all, and `count` includes a
-     net whose declared coplanar gap the copper does not have (not only a
-     reference-plane crossing).
-  2. A declaration recorded `applied: false` carries no promise: not graded.
-  3. --impedance-nets names UNION the recorded ones; a net name containing
-     glob metacharacters is matched literally.
-  4. check_complete (which passes nothing) sees the same component.
+  1. The recorded nets are measured with no flag at all and named in
+     `declared_failing`; the component stays ungraded.
+  2. A graded net's `count` includes a net whose declared coplanar gap the
+     copper does not have (not only a reference-plane crossing).
+  3. A declaration recorded `applied: false` carries no promise: not measured.
+  4. --impedance-nets names are graded beside the measured declarations; a net
+     name containing glob metacharacters is matched literally.
+  5. check_complete (which passes nothing) carries the measured declaration
+     and does not grade it.
 
     python3 tests/test_1389_impedance_declaration_graded.py
 """
@@ -89,11 +92,11 @@ def main():
 
         b1 = stage(tmp, 'decl.kicad_pcb', {NET: dict(decl)})
         c = score(b1)
-        check('a recorded declaration is graded with no flag',
-              c.get('ran') is True and c.get('declared_nets') == [NET]
-              and c.get('nets_analyzed') == 1, str(c))
-        check('...with its reference-plane crossings counted',
-              c.get('count') == 1 and c.get('nets_with_crossing') == 1, str(c))
+        check('a recorded declaration is measured with no flag',
+              c.get('declared_nets') == [NET]
+              and c.get('declared_failing') == [NET], str(c))
+        check('...and not graded or counted',
+              c.get('ran') is False and c.get('count') is None, str(c))
 
         # A broken coplanar promise with no crossing at all counts too: the
         # report is stubbed so the case does not depend on a board's layers.
@@ -113,7 +116,7 @@ def main():
             return 1, ''
         board_score.run_tool = stub
         try:
-            c = board_score.score_impedance(ROOT, b1, [OTHER], tmp)
+            c = board_score.score_impedance(ROOT, b1, [NET], tmp)
         finally:
             board_score.run_tool = real
         check('a broken coplanar promise with no crossing counts',
@@ -123,15 +126,17 @@ def main():
         b2 = stage(tmp, 'unapplied.kicad_pcb',
                    {NET: dict(decl, applied=False)})
         c = score(b2)
-        check('a declaration recorded applied:false is not graded',
-              c.get('ran') is False, str(c))
+        check('a declaration recorded applied:false is not measured',
+              c.get('ran') is False and not c.get('declared_nets'), str(c))
 
         c = score(b1, '--impedance-nets', OTHER)
-        check('--impedance-nets unions with the recorded nets',
-              c.get('nets_analyzed') == 2 and c.get('declared_nets') == [NET],
-              str(c))
+        check('--impedance-nets is graded beside the measured declarations',
+              c.get('ran') is True and c.get('nets_analyzed') == 1
+              and c.get('declared_nets') == [NET]
+              and c.get('declared_failing') == [NET], str(c))
 
-        # check_complete passes no impedance flag and must see the component.
+        # check_complete passes no impedance flag: the declaration is carried,
+        # not graded.
         js = b1 + '.cc.json'
         subprocess.run([sys.executable, '-X', 'utf8',
                         os.path.join(ROOT, 'check_complete.py'), b1, '--skip-slow',
@@ -141,9 +146,9 @@ def main():
         with open(js, encoding='utf-8') as fh:
             doc = json.load(fh)
         imp = doc['score']['components']['impedance']
-        check('check_complete sees the graded component',
-              imp.get('ran') is True and 'impedance' not in doc.get('ungraded', ()),
-              str(imp)[:200])
+        check('check_complete carries the measured declaration, ungraded',
+              imp.get('ran') is False and imp.get('declared_failing') == [NET]
+              and 'impedance' in doc.get('ungraded', ()), str(imp)[:200])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print('FAILED: ' + ', '.join(failures) if failures else 'PASS')

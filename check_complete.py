@@ -379,6 +379,13 @@ def fab_floor_integrity(board, authored_from, hole_grader=None, timeout=3600):
                                   'declared': dec})
             continue
         row = {'key': key, 'label': label, 'authored': was, 'declared': dec}
+        if not authored_from:
+            # Against the recorded origin the floors are DISCLOSED, not
+            # graded (see _grade): a KiCad DRC run to measure one is not paid.
+            row['why'] = ('lowered since the recorded fab_floor_origin; pass '
+                          '--authored-from to have KiCad measure it')
+            unmeasured.append(row)
+            continue
         g = grade_holes(board, was) or {'error': 'no grade'}
         if g.get('error'):
             row['why'] = f'not measured: {g["error"]}'
@@ -567,10 +574,11 @@ def _grade(a, doc):
         reasons.append('a component RAN and could not answer: '
                        + ', '.join(unknown))
     reasons += [r for r in (ungraded_bad, unknown_bad) if r]
-    # #1388: a component nothing asked for is UNEXAMINED and does not block --
-    # unless the BOARD declares what it grades (a diff-pair class with no rule
-    # to grade its pairs). A declaration nothing grades is a promise nobody
-    # checked, so it blocks DONE like the placement verifier's rule 5 does.
+    # #1388: a component nothing asked for is UNEXAMINED and does not block.
+    # One the BOARD declares (a diff-pair class with no rule to grade its
+    # pairs) is named apart, so the promise nobody checked travels with the
+    # verdict -- disclosed, not a blocker.
+    notes = []
     _comps = (score.get('components') or {}) if isinstance(score, dict) else {}
     for _name in ungraded:
         if _name == 'undersized.dru_rules':
@@ -584,7 +592,7 @@ def _grade(a, doc):
             continue
         _c = _comps.get(_name)
         if isinstance(_c, dict) and _c.get('declared'):
-            reasons.append(f'{_name}: the board DECLARES it '
+            notes.append(f'{_name}: the board DECLARES it '
                            f'({", ".join(sorted(_c["declared"]))}) and nothing '
                            f'grades it -- {_c.get("reason")}')
     # ONE rule for what a `blocking` is (`converge.blocking_defect`, #1075):
@@ -616,7 +624,22 @@ def _grade(a, doc):
     # vanish, because `fab_floors.relaxed == []` is exactly the sentence a
     # reader takes for "every declared floor is honoured". Append it to the
     # INCOMPLETE reasons so it travels with the verdict.
-    if floors.get('unmeasured'):
+    # #1368: floors read against the recorded fab_floor_origin (no
+    # --authored-from) are DISCLOSED, not graded: the chain's own descent
+    # (escalation, an explicit --track-width / --via-size) lowered them, and
+    # says so in its design_rules. --authored-from grades them.
+    from_origin = floors.get('source') == 'fab_floor_origin'
+    if from_origin and (floors.get('relaxed') or floors.get('unmeasured')):
+        _lo = ', '.join(f'{r["label"]} {r["authored"]} -> '
+                        + (f'{r["on_board"]} on the board'
+                           if r.get('on_board') is not None
+                           else f'{r.get("declared")} declared')
+                        for r in list(floors.get('relaxed') or ())
+                        + list(floors.get('unmeasured') or ()))
+        notes.append(f'floors below the recorded fab_floor_origin ({_lo}); '
+                     f'confirm the fab supports them, or pass --authored-from '
+                     f'to grade them')
+    if floors.get('unmeasured') and not from_origin:
         _um = ', '.join(f'{r["label"]} (declared {r["authored"]}'
                         + (f', the project now declares {r["declared"]}'
                            if r.get('declared') is not None else '')
@@ -628,7 +651,7 @@ def _grade(a, doc):
                        f'honoured: {_um} -- grade the copper with KiCad\'s DRC '
                        f'at the authored value (check_drc\'s hole arms cover '
                        f'NPTH only)')
-    if floors.get('relaxed'):
+    if floors.get('relaxed') and not from_origin:
         worst = ', '.join(f'{r["label"]} {r["authored"]} -> {r["on_board"]}'
                           for r in floors['relaxed'])
         verdict, code_out = 'UNSOUND', UNSOUND
@@ -643,6 +666,8 @@ def _grade(a, doc):
         verdict, code_out = 'DONE', DONE
         why = 'every component that could be graded is graded and clean'
 
+    if notes:
+        why += '. DISCLOSED, not counted: ' + '; '.join(notes)
     if floors.get('reference_too'):
         def _ref(r):
             n = (f' over {r["violations"]}' if 'violations' in r else '')

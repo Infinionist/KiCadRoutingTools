@@ -1045,18 +1045,20 @@ def _glob_literal(name: str) -> str:
 def score_impedance(root: str, board: str, nets, tmp: str) -> dict:
     """check_impedance -- reference-plane continuity and declared-gap audit.
 
-    Graded: the nets named by ``--impedance-nets`` UNION every net the board's
-    project records an impedance declaration for (#1389) -- a declaration is a
-    promise the board makes whether or not the caller named it. `count` is the
-    nets that fail it: a reference-plane crossing, or a coplanar gap the
-    declaration promised and the copper does not have (the width was solved
-    ASSUMING it)."""
+    Graded: the nets named by ``--impedance-nets``. `count` is the nets that
+    fail: a reference-plane crossing, or a coplanar gap the declaration
+    promised and the copper does not have (the width was solved ASSUMING it).
+
+    Measured, not counted (#1389): every other net the board's project records
+    an impedance declaration for (``route.py --impedance``), reported as
+    `declared_failing` -- a declaration nothing named is disclosed rather than
+    made a blocker."""
+    import fnmatch
     declared = declared_impedance_nets(board)
-    globs = list(nets or [])
-    globs += [_glob_literal(n) for n in declared]
+    asked = list(nets or [])
+    globs = asked + [_glob_literal(n) for n in declared]
     if not globs:
-        return skipped('no --impedance-nets given and the project records no '
-                       'net impedance declaration; impedance is ungraded')
+        return skipped('no --impedance-nets given; impedance is ungraded')
     out_json = os.path.join(tmp, 'impedance.json')
     rc, out = run_tool(root, 'check_impedance.py', board, '--nets', *globs,
                        '--json', out_json)
@@ -1064,8 +1066,24 @@ def score_impedance(root: str, board: str, nets, tmp: str) -> dict:
         return skipped(f'check_impedance.py exited {rc}: {out.strip()[-200:]}')
     with open(out_json, encoding='utf-8') as f:
         d = json.load(f)
-    tot = d.get('totals') or {}
-    if not tot.get('nets_analyzed'):
+    rows = d.get('nets') or []
+
+    def named(n):
+        return any(fnmatch.fnmatchcase(n, g) for g in asked)
+    failing = sorted(r['net_name'] for r in rows
+                     if r.get('crossings')
+                     or (r.get('length_no_ground_mm', 0.0)
+                         + r.get('length_gap_wrong_mm', 0.0)) > 0.01)
+    extra = {}
+    if declared:
+        extra = {'declared_nets': declared,
+                 'declared_failing': [n for n in failing if not named(n)]}
+    if not asked:
+        return dict(skipped('no --impedance-nets given; impedance is ungraded '
+                            '(the project\'s impedance declarations are measured '
+                            'in declared_failing, not graded)'), **extra)
+    graded = [r for r in rows if named(r['net_name'])]
+    if not graded:
         # Asked for, but nothing matched -- that is a FINDING (the globs are
         # wrong, or the nets are unrouted), not a pass. ran=True with count=None
         # routes this to UNKNOWN (blocking None, exit 4), never to `ungraded`:
@@ -1073,23 +1091,19 @@ def score_impedance(root: str, board: str, nets, tmp: str) -> dict:
         # four whole runs on one board while blocking summed without the
         # component and the exit code read 0 (test-board run 5, journal [11]).
         return {'ran': True, 'count': None,
-                'reason': 'no routed nets matched ' + (
-                    '--impedance-nets' if nets else 'the recorded impedance '
-                    'declarations')}
-    rows = d.get('nets') or []
-    broken = sorted(r['net_name'] for r in rows
+                'reason': 'no routed nets matched --impedance-nets', **extra}
+    broken = sorted(r['net_name'] for r in graded
                     if (r.get('length_no_ground_mm', 0.0)
                         + r.get('length_gap_wrong_mm', 0.0)) > 0.01)
-    crossing = sorted(r['net_name'] for r in rows if r.get('crossings'))
-    out = {'ran': True, 'count': len(set(broken) | set(crossing)),
-           'nets_with_crossing': int(tot.get('nets_with_crossing') or 0),
-           'nets_broken_promise': broken,
-           'nets_analyzed': tot.get('nets_analyzed'),
-           'crossings': tot.get('crossings'),
-           'segments_over_void': tot.get('segments_over_void')}
-    if declared:
-        out['declared_nets'] = declared
-    return out
+    crossing = sorted(r['net_name'] for r in graded if r.get('crossings'))
+    return {'ran': True, 'count': len(set(broken) | set(crossing)),
+            'nets_with_crossing': len(crossing),
+            'nets_broken_promise': broken,
+            'nets_analyzed': len(graded),
+            'crossings': sum(int(r.get('crossings') or 0) for r in graded),
+            'segments_over_void': sum(int(r.get('segments_over_void') or 0)
+                                      for r in graded),
+            **extra}
 
 
 def score_length(board: str, groups_file: str) -> dict:
@@ -1209,20 +1223,21 @@ def score_net_widths(board: str, spec_file: str) -> dict:
     and a pair spec'd at 0.8 mm that came out at 0.16 mm would not be caught
     either, because 0.16 mm clears every board-wide floor.
 
-    The requirements come from two places, and both are specs:
+    The requirements are `spec_file`, a JSON file of
+    ``{"<net glob>": <min mm>}``, e.g.::
 
-      * `spec_file`, a JSON file of ``{"<net glob>": <min mm>}``, e.g.::
+        {"USB_D*": 0.8, "VCC3V3": 0.4, "VBUS": 0.4, "XIN": 0.15}
 
-            {"USB_D*": 0.8, "VCC3V3": 0.4, "VBUS": 0.4, "XIN": 0.15}
+    First matching glob wins, so list the specific patterns before the broad
+    ones. They are graded: a net under its requirement counts.
 
-        First matching glob wins, so list the specific patterns before the
-        broad ones;
-      * the widths the routing steps were ASKED for (route.py's --power-nets /
-        --power-nets-widths), recorded in the board's `kicad_routing_tools`
-        records (#1379) and matched by exact net name after the file's
-        patterns. A request that was never graded was a request nobody could
-        hold the board to: a board shipping 72% of its battery path under the
-        requested width scored BLOCKING 0 and DONE.
+    The widths the routing steps were ASKED for (route.py's --power-nets /
+    --power-nets-widths, recorded in the board's `kicad_routing_tools`
+    records, #1379) are MEASURED the same way for every net no file pattern
+    covers and reported as `requested_under`, without counting: the router
+    narrows a power route where its width does not fit and discloses it
+    (neck-down), so a request is what it aimed for, not what the board owes.
+    To hold a net to a width, put it in `spec_file`.
 
     A segment under its requirement is still excused where it is a PAD NECK
     (#1318): within the router's pad-entry zone of a pad of its own net that is
@@ -1256,8 +1271,7 @@ def score_net_widths(board: str, spec_file: str) -> dict:
     except Exception:                                           # noqa: BLE001
         recorded = {}
     if not want and not recorded:
-        return skipped('no --net-min-widths given and the board records no '
-                       'requested power widths; per-net widths are ungraded')
+        return skipped('no --net-min-widths given; per-net widths are ungraded')
     pcb = parse_kicad_pcb(board)
     by_id = {n.net_id: n.name for n in pcb.nets.values()}
     seen = defaultdict(list)
@@ -1269,10 +1283,13 @@ def score_net_widths(board: str, spec_file: str) -> dict:
                                seg))
 
     def required(name):
+        """(mm, graded): a file pattern's requirement is graded, a recorded
+        request only measured."""
         for pat, mm in want.items():
             if fnmatch.fnmatchcase(name, pat):
-                return mm
-        return recorded.get(name)
+                return mm, True
+        mm = recorded.get(name)
+        return (mm, False) if mm is not None else (None, False)
 
     zone = _pad_neck_zone_mm()
     pads_of = defaultdict(list)
@@ -1290,9 +1307,9 @@ def score_net_widths(board: str, spec_file: str) -> dict:
                 return True
         return False
 
-    failures, detail, allowed = 0, {}, {}
+    failures, detail, allowed, requested_under = 0, {}, {}, {}
     for name, widths in sorted(seen.items()):
-        req = required(name)
+        req, graded = required(name)
         if req is None:
             continue
         under, excused = [], 0.0
@@ -1305,14 +1322,14 @@ def score_net_widths(board: str, spec_file: str) -> dict:
         if excused:
             allowed[name] = round(excused, 2)
         if under:
-            failures += 1
             # #1033: LENGTH, not only a segment count. A count cannot tell
             # a 0.2 mm pad neck from a 59 mm pad-to-pad run at the signal
             # width -- run 32's +3V3 read 561/1143 segments, which hid that
             # a third of its copper LENGTH was at 0.127.
             _tot = sum(L for _w, L, _s in widths)
             _und = sum(L for _w, L in under)
-            detail[name] = {'required_mm': float(req),
+            (detail if graded else requested_under)[name] = {
+                            'required_mm': float(req),
                             'narrowest_mm': round(min(w for w, _L in under), 4),
                             'segments_under': len(under),
                             'segments_total': len(widths),
@@ -1320,12 +1337,19 @@ def score_net_widths(board: str, spec_file: str) -> dict:
                             'length_total_mm': round(_tot, 2),
                             'length_under_share': (round(_und / _tot, 4)
                                                    if _tot > 0 else 0.0)}
+            if graded:
+                failures += 1
     unmatched = [p for p in want
                  if not any(fnmatch.fnmatchcase(n, p) for n in seen)]
+    extra = {'requested_under': requested_under,
+             'requirements_from': {'file': len(want), 'recorded': len(recorded)},
+             'pad_neck_allowed_mm': allowed}
+    if not want:
+        return dict(skipped('no --net-min-widths given; per-net widths are '
+                            'ungraded (the requested power widths are measured '
+                            'in requested_under, not graded)'), **extra)
     return {'ran': True, 'count': failures, 'nets': detail,
-            'patterns_matching_no_routed_net': unmatched,
-            'requirements_from': {'file': len(want), 'recorded': len(recorded)},
-            'pad_neck_allowed_mm': allowed}
+            'patterns_matching_no_routed_net': unmatched, **extra}
 
 
 def _point_segment_distance(px, py, seg) -> float:
@@ -1552,7 +1576,8 @@ def build_parser():
                         'USB pair, 0.4mm rails) is invisible to it. First '
                         'matching glob wins. The widths route.py was ASKED for '
                         '(--power-nets-widths) are read from the board\'s '
-                        'records with no flag, after the file\'s patterns')
+                        'records with no flag and MEASURED for the nets no '
+                        'pattern covers (requested_under), not graded')
     p.add_argument('--length-groups', metavar='JSON',
                    help='JSON FILE of {"group": {"nets": [...], '
                         '"tolerance_mm": 0.1, "mode": "pin_pair"}} -- enables '
@@ -1746,6 +1771,23 @@ def main():
         if _dp.get('no_coupled_copper'):
             print(f"  NO COUPLED COPPER (P and N never run side by side): "
                   f"{', '.join(_dp['no_coupled_copper'])}")
+    # Measured, not counted (#1379, #1389): what the routing steps were asked
+    # for, and the impedance declarations no --impedance-nets named.
+    _ru = (score['components'].get('net_widths') or {}).get('requested_under') or {}
+    if _ru:
+        print(f"REQUESTED POWER WIDTHS (measured, not graded): {len(_ru)} net(s) "
+              f"ship copper under the width route.py was asked for: " + ', '.join(
+                  f"{n} {r['length_under_mm']:.1f} of {r['length_total_mm']:.1f} mm "
+                  f"under {r['required_mm']:g}" for n, r in sorted(_ru.items())[:6])
+              + (', ...' if len(_ru) > 6 else '')
+              + " -- name a net in --net-min-widths to grade it")
+    _df = (score['components'].get('impedance') or {}).get('declared_failing') or []
+    if _df:
+        print(f"DECLARED IMPEDANCE (measured, not graded): {len(_df)} net(s) the "
+              f"project records an impedance for fail reference-plane continuity "
+              f"or their coplanar gap: {', '.join(_df[:8])}"
+              + (', ...' if len(_df) > 8 else '')
+              + " -- name them in --impedance-nets to grade them")
     # WHICH LEVER. `unrouted` looks the same whether the router had a path and
     # missed it (parameter-shaped) or the net has fewer than 2 pads ON the
     # board (placement-shaped, and no router setting will ever fix it). The

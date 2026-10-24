@@ -992,13 +992,13 @@ Routing Completes): run them once, here, not again inside the routing.
 - **`route.py` finishes the planes; a repair step does not (#562, #1112).**
   Pour first (`route_planes.py`), then route with the plane nets inside
   `--nets` (`'*'` covers them). Do not end on `repair_planes.py`.
-- **Widths are requests, and requests are specs.** After each route, read
+- **Widths are requests.** After each route, read
   `power_widths.<net>.under_mm`. The widths `route.py` was asked for
-  (`--power-nets-widths`) are recorded with the board and `board_score` /
-  `check_complete` grade them with no flag, excusing only a pad neck at the
-  pad's own width; widths required of nets that were not asked of route.py go
-  in `--net-min-widths`. A board's net-class `track_width` is not graded (the
-  router discloses copper under it); to hold a net to a width, request it.
+  (`--power-nets-widths`) are recorded with the board, and `board_score`
+  measures them with no flag (`net_widths.requested_under`, a pad neck at the
+  pad's own width excused) and reports them without counting them. A width a
+  net MUST have goes in `--net-min-widths`, which is graded. A board's
+  net-class `track_width` is not graded (the router discloses copper under it).
 - **Around a 0.8 mm BGA, the router can run out of lanes:** finer tracks and
   vias, a cheaper ground-plane layer cost (`--layer-costs`). Both go below
   the board's authored floors, so disclose that (§6). On later steps of a

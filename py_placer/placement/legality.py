@@ -3301,11 +3301,14 @@ def grade_body_overlap(pcb_data, clearance: float,
     # orangecrab's J5<->J6, all pre-existing.
     # #1401: the one silk drawing that DOES decide. A silk-sourced part whose
     # silk CLOSES into a loop has drawn a housing, and another part whose pad
-    # copper lies wholly inside that loop is under it -- One-Air-Max's
-    # battery holder stopped gating when #1201 rejected the 0.06 mm F.Fab dot
-    # that had been its body, and its capacitors sat inside it as `buildable`.
-    # Open silk (corner brackets, side ticks: the SOT89 above) never closes,
-    # so it keeps its structural exemption.
+    # copper lies wholly inside that loop is under it -- a battery holder
+    # stopped gating when #1201 rejected the 0.06 mm F.Fab dot that had been
+    # its body, and its capacitors sat inside it as `buildable`. Such a pair is
+    # listed apart (`silk_enclosed_pairs`) and gates only where a member MOVED
+    # (check_assembly --baseline), as courtyard contacts do: a human board's
+    # own library silk is not this tool's to fail. Open silk (corner brackets,
+    # side ticks: the SOT89 above) never closes, so it keeps its structural
+    # exemption.
     _silk_loops: Dict[str, object] = {}
 
     def _closed_silk_loop(ref):
@@ -3340,11 +3343,14 @@ def grade_body_overlap(pcb_data, clearance: float,
         return False
 
     def _silk_drawn_pair(p) -> bool:
-        return ((p.a in silk_sourced or p.b in silk_sourced)
-                and not _closed_silk_encloses(p))
+        return p.a in silk_sourced or p.b in silk_sourced
     containment_blocking = [p for p in contained
                             if p.waiver not in _GATE_EXEMPT
                             and not _silk_drawn_pair(p)]
+    silk_enclosed = [p for p in contained
+                     if p.waiver not in _GATE_EXEMPT and _silk_drawn_pair(p)
+                     and _closed_silk_encloses(p)]
+    _enclosed_ids = {id(p) for p in silk_enclosed}
 
     # #1201: name each contained pair's reason for not gating, READ OFF the
     # gate above rather than re-derived beside it (a second copy could
@@ -3358,12 +3364,15 @@ def grade_body_overlap(pcb_data, clearance: float,
             return ''
         if p.waiver in _GATE_EXEMPT:
             return p.waiver
+        if id(p) in _enclosed_ids:
+            return 'silk_enclosed'
         return 'silk_drawn'
     _stamped = {id(p): p._replace(gate_exempt=_gate_exempt(p))
                 for p in contained}
     pairs = [_stamped.get(id(p), p) for p in pairs]
     advisory = [_stamped.get(id(p), p) for p in advisory]
     containment_blocking = [_stamped[id(p)] for p in containment_blocking]
+    silk_enclosed = [_stamped[id(p)] for p in silk_enclosed]
     contained = [_stamped[id(p)] for p in contained]
     # Courtyard BLOCKING (run-23): the subset of courtyard pairs that gates --
     # `courtyard_blocking`'s floors and `PairWaivers.blocking_waived`'s ladder,
@@ -3401,6 +3410,9 @@ def grade_body_overlap(pcb_data, clearance: float,
             'containment_pairs': contained,
             'containment_blocking': len(containment_blocking),
             'containment_blocking_pairs': containment_blocking,
+            # #1401: pairs inside a CLOSED silk-drawn body; the caller gates
+            # the ones a member MOVED into (check_assembly --baseline).
+            'silk_enclosed_pairs': silk_enclosed,
             # Parts whose footprint draws no .Fab outline at all, so the fab
             # channel CANNOT judge them (parser.extract_fab_sides skips them
             # and the loop above continues past them). An unjudged part is not
