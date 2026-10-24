@@ -88,6 +88,9 @@ REGISTRY = {
     'persist_protected_nets': ['_write_drc_floors', 'update_live_drc_floors'],
     # #521 companion: per-net impedance declarations recorded the same way.
     'persist_impedance_specs': ['_write_drc_floors', 'update_live_drc_floors'],
+    # #1379 companion: the power-net widths a step was asked for, recorded so
+    # board_score / check_complete hold the board to them.
+    'persist_power_widths': ['_write_drc_floors', 'update_live_drc_floors'],
     # #678 companion: the balls a BGA fanout promised to serve by fill contact,
     # recorded in the sibling .kicad_pro so a later route step's plane finalize
     # can audit the promise. Same shape and same two GUI writeback sites as its
@@ -351,6 +354,7 @@ _TERMINAL = (ast.Return, ast.Raise, ast.Continue, ast.Break)
 SAME_SYMBOL_TWINS = {
     'persist_protected_nets',
     'persist_impedance_specs',
+    'persist_power_widths',
     'persist_pour_served_pads',
     'fanout_fix_kwargs',
     'plane_fix_kwargs',

@@ -894,6 +894,9 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
             persist_protected_nets(_pro, consume_protection_candidates(),
                                    board=board)
             persist_impedance_specs(_pro, consume_impedance_specs(), board=board)
+            # #1379: the power widths this step was asked for, to be graded.
+            from protected_nets import consume_power_widths, persist_power_widths
+            persist_power_widths(_pro, consume_power_widths(), board=board)
             # #678: the fanout tab's pour-served balls, same step boundary.
             persist_pour_served_pads(_pro, consume_pour_served_pads(),
                                      board=board)

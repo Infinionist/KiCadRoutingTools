@@ -1081,6 +1081,16 @@ def score_length(board: str, groups_file: str) -> dict:
 
 
 
+def _pad_neck_zone_mm() -> float:
+    """Length of the router's pad-entry zone: the stretch of a power route at
+    each pad end that may run at the pad's own width (#1318)."""
+    try:
+        from routing_config import GridRouteConfig
+        return float(GridRouteConfig.__dataclass_fields__['neckdown_length'].default)
+    except Exception:                                           # noqa: BLE001
+        return 2.5
+
+
 def score_net_widths(board: str, spec_file: str) -> dict:
     """Per-net REQUIRED widths -- the gap `undersized` structurally cannot see.
 
@@ -1092,29 +1102,55 @@ def score_net_widths(board: str, spec_file: str) -> dict:
     and a pair spec'd at 0.8 mm that came out at 0.16 mm would not be caught
     either, because 0.16 mm clears every board-wide floor.
 
-    `spec_file` is a JSON file of ``{"<net glob>": <min mm>}``, e.g.::
+    The requirements come from two places, and both are specs:
 
-        {"USB_D*": 0.8, "VCC3V3": 0.4, "VBUS": 0.4, "XIN": 0.15}
+      * `spec_file`, a JSON file of ``{"<net glob>": <min mm>}``, e.g.::
 
-    First matching glob wins, so list the specific patterns before the broad
-    ones. Nets with no copper are not counted here -- that is `unrouted`'s job.
+            {"USB_D*": 0.8, "VCC3V3": 0.4, "VBUS": 0.4, "XIN": 0.15}
+
+        First matching glob wins, so list the specific patterns before the
+        broad ones;
+      * the widths the routing steps were ASKED for (route.py's --power-nets /
+        --power-nets-widths), recorded in the board's `kicad_routing_tools`
+        records (#1379) and matched by exact net name after the file's
+        patterns. A request that was never graded was a request nobody could
+        hold the board to: a board shipping 72% of its battery path under the
+        requested width scored BLOCKING 0 and DONE.
+
+    A segment under its requirement is still excused where it is a PAD NECK
+    (#1318): within the router's pad-entry zone of a pad of its own net that is
+    narrower than the requirement, at no less than that pad's short side --
+    the width the router lays a pad entry at where the full width cannot sit
+    on the pad. Narrower than the pad, or beyond the zone, it counts. What was
+    excused is disclosed per net (`pad_neck_allowed_mm`).
+
+    Nets with no copper are not counted here -- that is `unrouted`'s job.
     """
-    if not spec_file:
-        return skipped('no --net-min-widths given; per-net widths are ungraded')
-    if not os.path.isfile(spec_file):
-        return skipped(f'net-min-widths file not found: {spec_file}')
     import fnmatch
     import math
     from collections import defaultdict
     from kicad_parser import parse_kicad_pcb
 
-    with open(spec_file, encoding='utf-8') as fh:
-        want = json.load(fh)
-    # Non-numeric values are annotations (a "_comment" key), not net patterns;
-    # letting them through pollutes patterns_matching_no_routed_net -- the
-    # exact field a reader scans for typo'd globs. Same idiom as check_dru's
-    # floors filter.
-    want = {k: v for k, v in want.items() if isinstance(v, (int, float))}
+    want = {}
+    if spec_file:
+        if not os.path.isfile(spec_file):
+            return skipped(f'net-min-widths file not found: {spec_file}')
+        with open(spec_file, encoding='utf-8') as fh:
+            want = json.load(fh)
+        # Non-numeric values are annotations (a "_comment" key), not net
+        # patterns; letting them through pollutes patterns_matching_no_routed_net
+        # -- the exact field a reader scans for typo'd globs. Same idiom as
+        # check_dru's floors filter.
+        want = {k: v for k, v in want.items() if isinstance(v, (int, float))}
+    recorded = {}
+    try:
+        from protected_nets import read_power_widths, pro_path_for_board
+        recorded = read_power_widths(pro_path_for_board(board))
+    except Exception:                                           # noqa: BLE001
+        recorded = {}
+    if not want and not recorded:
+        return skipped('no --net-min-widths given and the board records no '
+                       'requested power widths; per-net widths are ungraded')
     pcb = parse_kicad_pcb(board)
     by_id = {n.net_id: n.name for n in pcb.nets.values()}
     seen = defaultdict(list)
@@ -1122,25 +1158,55 @@ def score_net_widths(board: str, spec_file: str) -> dict:
         name = by_id.get(seg.net_id)
         if name:
             seen[name].append((seg.width, math.hypot(seg.end_x - seg.start_x,
-                                                     seg.end_y - seg.start_y)))
+                                                     seg.end_y - seg.start_y),
+                               seg))
 
-    failures, detail = 0, {}
+    def required(name):
+        for pat, mm in want.items():
+            if fnmatch.fnmatchcase(name, pat):
+                return mm
+        return recorded.get(name)
+
+    zone = _pad_neck_zone_mm()
+    pads_of = defaultdict(list)
+    for n_id, name in by_id.items():
+        for pad in pcb.pads_by_net.get(n_id, ()) or ():
+            pads_of[name].append((pad.global_x, pad.global_y,
+                                  min(pad.size_x, pad.size_y),
+                                  max(pad.size_x, pad.size_y)))
+
+    def is_pad_neck(name, seg, req):
+        for px, py, short, long_ in pads_of.get(name, ()):
+            if short >= req - 1e-9 or seg.width < short - 1e-3:
+                continue
+            if _point_segment_distance(px, py, seg) <= zone + long_ / 2.0:
+                return True
+        return False
+
+    failures, detail, allowed = 0, {}, {}
     for name, widths in sorted(seen.items()):
-        req = next((mm for pat, mm in want.items() if fnmatch.fnmatchcase(name, pat)),
-                   None)
+        req = required(name)
         if req is None:
             continue
-        under = [(w, L) for w, L in widths if w < float(req) - 1e-9]
+        under, excused = [], 0.0
+        for w, L, seg in widths:
+            if w < float(req) - 1e-9:
+                if is_pad_neck(name, seg, float(req)):
+                    excused += L
+                else:
+                    under.append((w, L))
+        if excused:
+            allowed[name] = round(excused, 2)
         if under:
             failures += 1
             # #1033: LENGTH, not only a segment count. A count cannot tell
             # a 0.2 mm pad neck from a 59 mm pad-to-pad run at the signal
             # width -- run 32's +3V3 read 561/1143 segments, which hid that
             # a third of its copper LENGTH was at 0.127.
-            _tot = sum(L for _w, L in widths)
+            _tot = sum(L for _w, L, _s in widths)
             _und = sum(L for _w, L in under)
             detail[name] = {'required_mm': float(req),
-                            'narrowest_mm': round(min(w for w, _L in widths), 4),
+                            'narrowest_mm': round(min(w for w, _L in under), 4),
                             'segments_under': len(under),
                             'segments_total': len(widths),
                             'length_under_mm': round(_und, 2),
@@ -1150,7 +1216,19 @@ def score_net_widths(board: str, spec_file: str) -> dict:
     unmatched = [p for p in want
                  if not any(fnmatch.fnmatchcase(n, p) for n in seen)]
     return {'ran': True, 'count': failures, 'nets': detail,
-            'patterns_matching_no_routed_net': unmatched}
+            'patterns_matching_no_routed_net': unmatched,
+            'requirements_from': {'file': len(want), 'recorded': len(recorded)},
+            'pad_neck_allowed_mm': allowed}
+
+
+def _point_segment_distance(px, py, seg) -> float:
+    import math
+    dx, dy = seg.end_x - seg.start_x, seg.end_y - seg.start_y
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 <= 0 else max(0.0, min(1.0, ((px - seg.start_x) * dx
+                                                + (py - seg.start_y) * dy) / L2))
+    return math.hypot(px - (seg.start_x + t * dx), py - (seg.start_y + t * dy))
+
 
 def _floors(board: str, sizes: dict) -> dict:
     """The size floors this score was graded against, and where each came from.
@@ -1365,7 +1443,9 @@ def build_parser():
                         'requirements. `undersized` only sees BOARD-WIDE floors, '
                         'so a spec demanding a particular net be wider (a 0.8mm '
                         'USB pair, 0.4mm rails) is invisible to it. First '
-                        'matching glob wins')
+                        'matching glob wins. The widths route.py was ASKED for '
+                        '(--power-nets-widths) are read from the board\'s '
+                        'records with no flag, after the file\'s patterns')
     p.add_argument('--length-groups', metavar='JSON',
                    help='JSON FILE of {"group": {"nets": [...], '
                         '"tolerance_mm": 0.1, "mode": "pin_pair"}} -- enables '

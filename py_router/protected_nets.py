@@ -46,6 +46,7 @@ PRO_NAMESPACE = "kicad_routing_tools"
 PRO_KEY = "protected_nets"
 IMPEDANCE_KEY = "net_impedance"
 SNPC_KEY = "same_net_pad_clearance"
+POWER_WIDTHS_KEY = "power_widths"
 
 _GLOB_CHARS = set('*?[')
 
@@ -87,6 +88,18 @@ def note_impedance_specs(mapping: Dict[str, dict]) -> None:
 
 def consume_impedance_specs() -> Dict[str, dict]:
     return _consume(IMPEDANCE_KEY)
+
+
+def note_power_widths(mapping: Dict[str, float]) -> None:
+    """Record the track widths this step was ASKED to give power nets
+    (--power-nets / --power-nets-widths, resolved to net names): {net: mm}.
+    A request is a spec, so a later grader (board_score, check_complete) reads
+    it back and holds the board to it without being handed a width file."""
+    _note(POWER_WIDTHS_KEY, mapping)
+
+
+def consume_power_widths() -> Dict[str, float]:
+    return _consume(POWER_WIDTHS_KEY)
 
 
 def pro_path_for_board(board_path: str) -> str:
@@ -212,6 +225,14 @@ def persist_impedance_specs(pro_path: str, mapping: Dict[str, dict],
                         board=board)
 
 
+def persist_power_widths(pro_path: str, mapping: Dict[str, float],
+                         verbose: bool = True, board=None) -> bool:
+    return _persist_map(pro_path, POWER_WIDTHS_KEY,
+                        {k: round(float(v), 4) for k, v in mapping.items()},
+                        "Power-net widths (graded by board_score)", verbose,
+                        board=board)
+
+
 def persist_same_net_pad_clearance(pro_path: str, value: float,
                                    verbose: bool = True, board=None) -> bool:
     """Record an ACTIVE (> 0) same-net pad via clearance (#581) so every later
@@ -294,6 +315,24 @@ def read_impedance_specs(pro_path: str) -> Dict[str, dict]:
 
 def read_impedance_for_pcb_data(pcb_data, input_file: Optional[str] = None) -> Dict[str, dict]:
     return _dict_map_from(_pcb_data_namespace(pcb_data, input_file), IMPEDANCE_KEY)
+
+
+def _widths_from(ns: dict) -> Dict[str, float]:
+    m = (ns or {}).get(POWER_WIDTHS_KEY) or {}
+    out: Dict[str, float] = {}
+    if isinstance(m, dict):
+        for k, v in m.items():
+            try:
+                out[str(k)] = float(v)
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def read_power_widths(pro_path: str) -> Dict[str, float]:
+    """Power-net widths the board's routing steps were asked for
+    ({} when none were recorded)."""
+    return _widths_from(_namespace(pro_path))
 
 
 # --- #678: pour-served balls are a COMMITMENT, carried down the chain -------

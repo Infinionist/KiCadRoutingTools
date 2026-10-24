@@ -1732,6 +1732,11 @@ class PlanExecutor:
                                        board=_live)
                 persist_impedance_specs(_pro, consume_impedance_specs(),
                                         board=_live)
+                # #1379: the plan's power-net width requests, to be graded.
+                from protected_nets import (consume_power_widths,
+                                            persist_power_widths)
+                persist_power_widths(_pro, consume_power_widths(),
+                                     board=_live)
                 # #678: the plan's fanout steps' pour-served balls.
                 persist_pour_served_pads(_pro, consume_pour_served_pads(),
                                          board=_live)
