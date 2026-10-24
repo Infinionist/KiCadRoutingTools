@@ -5167,8 +5167,15 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
 
 def _facing_tail(f) -> str:
     """The CLI's `; facing ...` clause for one evidence row (#1155), or ''."""
-    if not f or f.get('disposition') in (None, 'exempt'):
+    if not f or f.get('disposition') is None:
         return ''
+    if f['disposition'] == 'exempt':
+        # #1392: said, not silent -- a side-push switch whose actuator points
+        # along its edge read "pass" with no facing word at all. Declaring a
+        # `mating_face` grades it (`edge_facing_policy`).
+        why = str(f.get('policy') or '').replace('exempt: ', '', 1)
+        return (f"; facing exempt ({why or 'by policy'}: not graded unless "
+                f"the entry declares a mating_face)")
     if f['disposition'] == 'abstained':
         return f"; facing abstained ({f.get('reason') or 'no face'})"
     if f['disposition'] == 'no_edge':

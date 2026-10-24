@@ -330,14 +330,16 @@ python3 -X utf8 py_tools/check_floorplan.py wk/<run>/fixed.kicad_pcb --intent wk
 ```
 
 For each edge connector, read its edge, its facing (`facing ... pass`, or
-`facing abstained (...)` when its body names no face) and the group you gave
-it. Then decide, from the part's function and its datasheet:
+`facing abstained (...)` when its body names no face, `facing exempt (...)`
+when its class is not graded for a face) and the group you gave it. Then decide, from the part's function and its datasheet:
 
 - **The edge, and roughly where along it** when that matters (a USB or
   barrel jack where the enclosure opens, a debug header out of the user's
   way): `edge`, and `along_edge_band` as fractions of the edge.
 - **The mating face of a connector whose facing abstained** (a side-entry
-  JST drawn symmetric about its pads): find the side its opening is on in the
+  JST drawn symmetric about its pads) **or is exempt** (a side-push switch
+  of class `edge_actuator`, whose actuator points one way and is graded only
+  once a face is declared): find the side its opening is on in the
   datasheet's PCB-layout drawing and write `mating_face` (`+x`/`-x`/`+y`/`-y`,
   the footprint's own frame). The side of its solder tabs, away from the
   contact row, is a hint to check against the drawing, not a rule: it is
