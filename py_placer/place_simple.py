@@ -91,6 +91,11 @@ import _path  # noqa: F401  (py_placer -> py_router/py_tools on sys.path)
 MOVES_PER_PART = 500
 #: Further anneals, each from a fresh start, when one leaves parts illegal.
 RESTARTS = 2
+#: mm a part's courtyard may come within of a neighbour's when no run gives it
+#: a legal pose at the board clearance: the part is then legal at that
+#: closeness (reported as `tight`), and only then -- the board clearance is
+#: broken only where it is the one thing between the board and buildable.
+TIGHT_CLEARANCE_MM = 0.01
 #: The default seeds (an OUT carrying {seed}, no seed named): how many are
 #: placed with each start, and how many of the legal ones of lowest
 #: `final.cost` are named for a judging route. Over 11 boards, 6 scattered + 6
@@ -372,6 +377,29 @@ def arity_text(rec):
             f"{', '.join(rec['nets'])}{rails}, but check_floorplan grades the ONE closest "
             f"pad pair, so the objective can call it broken while the grade passes it; "
             f"name the facing pads in `pads` so both read the same ones")
+
+
+def settled(pcb, state, model, movable):
+    """The run place_simple keeps, once it is chosen: a no-op the placement
+    movie hooks (`placement_story.install`), since the kept run may be one
+    built before the last."""
+
+
+def _face_board(base, pcb, choice, out_dir, tag, board):
+    """`base` written to `out_dir` with each part of `choice` ({ref: why}) on
+    the other face of the one it has in `pcb` (the writer's flip, at its
+    pose), the board's siblings beside it; the new path."""
+    from placement.faces import face_of, other
+    from placement.portfolio import copy_siblings
+    from placement.writer import write_placed_output
+    out = os.path.join(out_dir, f"{tag}_{os.path.basename(base)}")
+    fps = pcb.footprints
+    write_placed_output(base, out, [
+        {'reference': r, 'new_x': round(fps[r].x, 6), 'new_y': round(fps[r].y, 6),
+         'new_rotation': (fps[r].rotation or 0.0) % 360.0, 'new_side': other(face_of(fps[r]))}
+        for r in sorted(choice)])
+    copy_siblings(board, out)
+    return out
 
 
 def _bga_field(path):
@@ -827,6 +855,17 @@ def main(argv=None):
     from placement import simple_anneal
     from placement.simple import legal
     state, model, movable, notes = build(pcb, src, doc, base, a, intent, blocks, set(fixed))
+    # FACES the groups file leaves open (`flippable`, placement/faces.py): a
+    # part keeps its face unless the front has no room for it (after the
+    # anneal, below)
+    from placement import faces
+    flip_ok, face_notes = faces.flippable_refs(doc, movable, sides, intent.assembly_sides())
+    for r, why in sorted(faces.flip_refusals(src, flip_ok).items() if flip_ok else ()):
+        face_notes.append(f"{r} is flippable but stays: {why}")
+        flip_ok.discard(r)
+    face_src, face_pcb = src, pcb       # the board before any face of our choosing
+    for n in face_notes:
+        print(f"  NOTE: {n}")
     for n in notes:
         print(f"  NOTE: {n}")
     for r, why in sorted(model.edge_unseated.items()):
@@ -890,6 +929,28 @@ def main(argv=None):
             fits = legal(st, r, p.x, p.y, p.rot)
         return fits and st.intent_clear(r, p.grade_rects(p.x, p.y, p.rot))
 
+    def tight_ok(r, st=None, mdl=None):
+        """`ok` with the seat's courtyard clearance down to TIGHT_CLEARANCE_MM."""
+        st = st or state
+        was = st.clearance
+        if was <= TIGHT_CLEARANCE_MM:
+            return False
+        st.clearance = TIGHT_CLEARANCE_MM
+        try:
+            return ok(r, st, mdl)
+        finally:
+            st.clearance = was
+
+    def settle(st, mdl, kp):
+        """`kp` with its poses applied and its parts that are legal only
+        closer than the board clearance (`tight_ok`) no longer illegal."""
+        for r, pose in kp[1].items():
+            st.parts[r].ensure_rotation(pose[2])
+            st.apply_move(r, *pose)
+        mdl.reprice_all()
+        close = [r for r in kp[0] if r not in too_big and tight_ok(r, st, mdl)]
+        return ([r for r in kp[0] if r not in close],) + tuple(kp[1:])
+
     def runs(st, mdl):
         """The restarts on one state: `(kept, k)`, the run that left the
         fewest parts illegal -- (illegal refs, poses, res), the earlier on a
@@ -939,6 +1000,54 @@ def main(argv=None):
             kept2, k2 = runs(st2, mdl2)
             if len(kept2[0]) < len(kept[0]):
                 state, model, kept, k, fallback = st2, mdl2, kept2, k2, sorted(skip)
+    # a flippable part the front had no room for goes to the back, or makes
+    # room by sending its group's flippable parts there, and the board is
+    # annealed again: kept only when it leaves fewer parts without room (no
+    # legal pose, then decap limits, then claim limits), never for cost
+    # alone -- a part stays on its face unless the other face is needed
+    from placement import decap_repair
+    face_report = {'flippable': sorted(flip_ok), 'needed': {},
+                   'needed_kept': None}
+
+    def outcome(st, mdl, kp):
+        """Rank of a run (its poses applied): parts without a legal pose
+        (a tight one counts as legal), decap limits, claim limits, cost."""
+        for r, pose in kp[1].items():
+            st.parts[r].ensure_rotation(pose[2])
+            st.apply_move(r, *pose)
+        mdl.reprice_all()
+        return (len(set(kp[0]) - too_big), len(decap_repair.residual(mdl)),
+                mdl.claims_broken(), mdl.total()['cost'])
+    if movable:
+        kept = settle(state, model, kept)
+    if flip_ok and movable:
+        before = outcome(state, model, kept)
+        want = faces.needed_flips(faces.needs(model, set(kept[0]) - too_big),
+                                  flip_ok, doc, set())
+        if want:
+            face_report['needed'] = want
+            print("  NOTE: no room on their face, annealing again with them on the other: "
+                  + ', '.join(f"{r} ({why})" for r, why in sorted(want.items())))
+            tmp = tmp or tempfile.mkdtemp(prefix='place_simple_')
+            src2 = _face_board(face_src, face_pcb, want, tmp, 'needed', a.board)
+            pcb2 = parse_kicad_pcb(src2)
+            blocks2, _problems = floorplan.resolve_blocks(intent, pcb2, sources)
+            st2, mdl2, _m2, _n2 = build(pcb2, src2, doc, base, a, intent, blocks2, set(fixed))
+            kept2, k2 = runs(st2, mdl2)
+            kept2 = settle(st2, mdl2, kept2)
+            after = outcome(st2, mdl2, kept2)
+            better = after[:3] < before[:3]
+            face_report['needed_kept'] = better
+            print(f"  NOTE: with them flipped: {after[0]} part(s) without a legal pose, "
+                  f"{after[1]} decap limit(s), {after[2]} claim limit(s) broken, cost "
+                  f"{after[3]:.1f}, against {before[0]}, {before[1]}, {before[2]}, "
+                  f"{before[3]:.1f}; {'kept' if better else 'not kept: no part gained room'}")
+            if better:
+                state, model, kept, k, src, pcb = st2, mdl2, kept2, k2, src2, pcb2
+                blocks, fallback = blocks2, []
+            else:
+                outcome(state, model, kept)
+    settled(pcb, state, model, movable)
     _ill, poses, res = kept
     for r, pose in poses.items():
         state.parts[r].ensure_rotation(pose[2])
@@ -970,11 +1079,25 @@ def main(argv=None):
     # a refused declared pose is the intent's, the same in every seed: it is
     # reported apart (`refused`), not counted against the seed (#1297)
     illegal = [r for r in movable if not ok(r)]
+    # closer than the board clearance only where no run found it a legal pose
+    # (TIGHT_CLEARANCE_MM): legal, and named with the gap it stands at
+    from placement.simple import rect_gap
+    tight = {}
+    for r in [r for r in illegal if r not in too_big and tight_ok(r)]:
+        P = state.parts[r]
+        gap, near = min(((rect_gap(P.rect(), q.rect()), o) for o, q in state.parts.items()
+                         if o != r and P.sides & q.sides), default=(None, None))
+        tight[r] = {'gap_mm': None if gap is None else round(gap, 4), 'neighbour': near}
+    illegal = [r for r in illegal if r not in tight]
     print(f"place_simple: annealed {res['moves']} moves in {t2 - t1:.1f} s; {_line(final)}")
     if res.get('repaired'):
         print("  NOTE: the last run never came clean; its overlaps were shoved apart where it stood")
     if res['reseated']:
         print(f"  NOTE: moved to the nearest legal pose after the anneal: {', '.join(res['reseated'])}")
+    for r, t in sorted(tight.items()):
+        print(f"  NOTE: {r} has no legal pose at the board clearance "
+              f"({state.clearance:g} mm); seated {t['gap_mm']:g} mm from {t['neighbour']}, "
+              f"legal down to {TIGHT_CLEARANCE_MM:g} mm because nothing else seats it")
     if illegal:
         print(f"  WARNING: no legal pose found for: {', '.join(illegal)}")
     if mended is not None:
@@ -1047,21 +1170,21 @@ def main(argv=None):
                         else 'scattered'), 'runs': k + 1,
               'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
-              'illegal': illegal, 'refused': refused, 'estimate_fallback': fallback,
+              'illegal': illegal, 'tight': tight, 'refused': refused, 'estimate_fallback': fallback,
               'oversubscribed': model.edge_oversubscribed, 'claim_arity': model.claim_arity,
               'floorplan': fp, 'assembly': asm, 'bga_field': bga_field,
               'decap_residual': resid, 'decap_repair': mended,
               'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'hints_saturated': saturated, 'template_keepout': tk, 'pad_overhang': wide,
-              'template_off': off,
+              'template_off': off, 'faces': face_report,
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
     if a.json:
         json.dump(report, open(a.json, 'w', encoding='utf-8'), indent=1)
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
-                                          ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
+                                          ('final', 'moves', 'seed', 'start', 'reseated', 'illegal', 'tight',
                                            'refused', 'oversubscribed', 'claim_arity', 'floorplan',
-                                           'assembly', 'bga_field', 'template_off', 'decap_residual', 'hints_saturated', 'estimate_fallback', 'seconds')}))
+                                           'assembly', 'bga_field', 'template_off', 'decap_residual', 'hints_saturated', 'estimate_fallback', 'faces', 'seconds')}))
     return 4 if illegal or refused or model.edge_oversubscribed else 0
 
 

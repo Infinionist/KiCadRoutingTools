@@ -198,9 +198,11 @@ function buildParts(sc, root) {
 function poseParts(fr) {
   const d = S.sc.thickness;
   S.parts.forEach((part, i) => {
-    const [x, y, rot, h] = fr.p[i];
+    // a fifth value turns the part over about its own x axis: a part drawn
+    // by the face it ends on, shown on the face it was on then (record.py)
+    const [x, y, rot, h, turn] = fr.p[i];
     part.grp.position.set(x, h, y);
-    part.grp.rotation.set(0, rad(rot), 0);
+    part.grp.rotation.set(rad(turn || 0), rad(rot), 0, 'YXZ');
     // the far face's copper shows only while the part stands on the board
     const onBoard = Math.abs(h - (part.up > 0 ? d : 0)) < 1e-3;
     for (const m of part.far) m.visible = onBoard;
