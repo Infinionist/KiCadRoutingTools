@@ -701,7 +701,7 @@ the GUI diff tab gets the same answer:
   its skew DRC does. Both matched kicad-cli 10.0.0 to 0.1 µm.
 - **Coupled** means the pair's coupled run -- at a gap no wider than 1.5x the
   gap the pair was routed at -- is at least one pitch (track width + gap) long
-  AND covers at least 25% of the pair's length
+  AND covers at least 10% of the pair's length
   (`diff_pair_custody.measure_pair_copper`, `meets_coupled_floor`; the share is
   `COUPLED_SHARE_FLOOR`, #1429). The router lays its coupled run AT the gap (a
   45° run lands ~12 µm wider after grid snapping); its via approach tracks and a

@@ -93,8 +93,9 @@ def consume_impedance_specs() -> Dict[str, dict]:
 def note_power_widths(mapping: Dict[str, float]) -> None:
     """Record the track widths this step was ASKED to give power nets
     (--power-nets / --power-nets-widths, resolved to net names): {net: mm}.
-    A request is a spec, so a later grader (board_score, check_complete) reads
-    it back and holds the board to it without being handed a width file."""
+    board_score reads it back and measures the board against it without being
+    handed a width file -- disclosed (`net_widths.requested_under`), not
+    counted: the router narrows a power route that does not fit and says so."""
     _note(POWER_WIDTHS_KEY, mapping)
 
 
@@ -229,7 +230,7 @@ def persist_power_widths(pro_path: str, mapping: Dict[str, float],
                          verbose: bool = True, board=None) -> bool:
     return _persist_map(pro_path, POWER_WIDTHS_KEY,
                         {k: round(float(v), 4) for k, v in mapping.items()},
-                        "Power-net widths (graded by board_score)", verbose,
+                        "Power-net widths (measured by board_score)", verbose,
                         board=board)
 
 

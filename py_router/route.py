@@ -3048,9 +3048,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         power_net_widths = identify_power_nets(pcb_data, power_nets, power_nets_widths)
         if power_net_widths:
             config.power_net_widths = power_net_widths
-            # #1379: the widths asked of this step are a spec the finished
-            # board is graded against (board_score / check_complete read the
-            # record back); the writeback sites persist it with the rest.
+            # #1379: the widths asked of this step are recorded so board_score
+            # can measure the finished board against them (disclosed, not
+            # counted); the writeback sites persist it with the rest.
             from protected_nets import note_power_widths
             note_power_widths({pcb_data.nets[_n].name: _w
                                for _n, _w in power_net_widths.items()
@@ -10321,7 +10321,7 @@ For differential pair routing, use route_diff.py:
             _pro = pro_path_for_board(args.output_file)
             persist_protected_nets(_pro, consume_protection_candidates())
             persist_impedance_specs(_pro, consume_impedance_specs())
-            # #1379: the power widths this step was asked for, to be graded.
+            # #1379: the power widths this step was asked for, measured and disclosed.
             from protected_nets import consume_power_widths, persist_power_widths
             persist_power_widths(_pro, consume_power_widths())
             # #581: an explicit active flag on this step is recorded so later
