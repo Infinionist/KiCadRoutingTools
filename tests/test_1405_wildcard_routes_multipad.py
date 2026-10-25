@@ -3,7 +3,8 @@
 
 Such a net is one footprint's same-number pads (shield or mounting tabs, a
 reversible footprint's doubled pins). KiCad counts it unconnected until copper
-joins the pads, so the wildcard no longer drops it. Two kinds stay out:
+joins the pads, so the wildcard no longer drops it, and routes it after the
+named nets (a join no signal depends on). Two kinds stay out:
 a single-pad no-connect (nothing to join) and a footprint that declares its
 same-number pads jumpered (the part is the conductor).
 
@@ -25,6 +26,7 @@ from test_1405_multipad_noconnect_open import board, write, NC   # noqa: E402
 from check_connected import run_connectivity_check               # noqa: E402
 from kicad_parser import parse_kicad_pcb                         # noqa: E402
 from net_queries import expand_net_patterns, multipad_unconnected_to_route  # noqa: E402
+from net_ordering import order_pin_joins_last                    # noqa: E402
 
 failures = []
 
@@ -66,6 +68,15 @@ def main():
         '      (net 9 "%s"))\n    (pad "1"' % NC, '      (net 0 ""))\n    (pad "1"'))
     check('a single-pad no-connect is never included',
           NC not in wildcard(one) and multipad_unconnected_to_route(parse_kicad_pcb(one)) == {})
+
+    # The joins route after every named net, each partition in its own order.
+    order = [('unconnected-(U1-Pad14)', 5), ('ROW 2', 1), (NC, 9), ('COL 0', 2)]
+    check('pin-join nets move behind the named nets',
+          order_pin_joins_last(order) == [('ROW 2', 1), ('COL 0', 2),
+                                          ('unconnected-(U1-Pad14)', 5), (NC, 9)])
+    only = [(NC, 9), ('unconnected-(U1-Pad14)', 5)]
+    check('a run of only pin-join nets keeps its order',
+          order_pin_joins_last(only) == only)
 
     # End to end: route.py '*' joins the tabs, check_connected agrees.
     out = os.path.join(tmp, 'out.kicad_pcb')

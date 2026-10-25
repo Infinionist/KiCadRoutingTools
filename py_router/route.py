@@ -91,7 +91,7 @@ from memory_debug import (
 from single_ended_loop import route_single_ended_nets
 from reroute_loop import run_reroute_loop
 from phase3_routing import run_phase3_tap_routing
-from net_ordering import order_nets_mps, order_nets_inside_out
+from net_ordering import order_nets_mps, order_nets_inside_out, order_pin_joins_last
 from routing_common import (
     setup_bga_exclusion_zones, resolve_net_ids, filter_already_routed,
     run_length_matching, sync_pcb_data_segments,
@@ -3440,6 +3440,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             print(f"  ({len(_big_ids)} BIG net(s) held OUT of direct-first to cut "
                   f"rip churn: {', '.join(_names[:6])}"
                   f"{', ...' if len(_names) > 6 else ''})")
+
+    net_ids = order_pin_joins_last(net_ids)
 
     # All nets are single-ended in this tool
     single_ended_nets = net_ids
