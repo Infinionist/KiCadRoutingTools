@@ -250,6 +250,24 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
   the regulator sits by its power entry -- say `near` its entry's group.
 - **Faces:** give a group a `side` (`F`/`B`) only to put all its parts on that
   face; without one each part keeps its face.
+- **`flippable`: the group's parts that may stand on the back.** A part stays
+  on the front unless place_simple needs the room for it. List one only when
+  the board is assembled on both faces: set the intent's `assembly.sides` to
+  `"both"` (the emitter writes what the pile shows, `"F"`, which forbids
+  every flip). On the 171 of 437 human boards that use both faces (share of
+  boards with any on the back, of those that have the kind):
+  - **list** SMD passives of any size (85% of boards put some on the back),
+    SMD diodes (68%), SMD transistors (55%), resistor networks, small SMD ICs
+    (SOT, SOIC, QFN under 50 mm2 of courtyard, about 50%), and internal SMD
+    connectors: FPC (8 of 17), card slots (10 of 22), wire-to-board (10 of 25);
+  - **do not list** big parts (SMD over 150 mm2: 31%; over 500 mm2: 1 of 27),
+    BGAs (5 of 32), QFPs (6 of 30), modules (4 of 16), through-hole parts
+    (passives 3 of 26, DIP 0 of 11, switches 8 of 47), LEDs and switches the
+    user sees or presses, a switching stage's inductor and loop caps (the
+    loop stays on one face), and every connector facing the outside (barrel
+    0 of 14, RJ45 0 of 11, HDMI 0 of 9, USB 1 of 13 SMD);
+  - two-layer boards use the back far less (73 of 230, against 69 of 165
+    four-layer), so list little there.
 - **Name the template candidates** in the group that holds each one, as
   `"templates": [{"chip": "U2", "kind": "switching stage", "why": "buck
   converter; its datasheet's layout figure"}]`. §3.5 copies each one's
