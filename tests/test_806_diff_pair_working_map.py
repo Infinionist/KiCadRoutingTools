@@ -101,12 +101,15 @@ def test_end_to_end(verbose):
         check("route_diff exited 0 (no traceback)", r.returncode == 0
               and 'Traceback' not in txt, txt[-600:])
         # The pair actually routed: the population must contain routed copper.
+        # A pair whose coupled run covers under 25% of its length is routed
+        # copper too, listed as uncoupled (#1429).
         routed = []
         for line in txt.splitlines():
             if line.startswith('JSON_SUMMARY:'):
                 try:
-                    routed = json.loads(line[len('JSON_SUMMARY:'):]).get(
-                        'routed_diff_pairs', [])
+                    _js = json.loads(line[len('JSON_SUMMARY:'):])
+                    routed = (_js.get('routed_diff_pairs', [])
+                              + _js.get('uncoupled_diff_pairs', []))
                 except Exception:
                     routed = []
         check("the pair routed (population carries routed copper)", bool(routed),

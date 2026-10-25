@@ -1269,8 +1269,9 @@ class DifferentialTab(wx.Panel):
             _kept = sorted(r['pair'] for r in results_data.get('pair_reports') or []
                            if r.get('outcome') == 'uncoupled' and r.get('protected'))
             msg += (f"Not coupled: {len(uncoupled_pairs)} "
-                    f"(routed, but no coupled run on the board - not counted "
-                    f"as routed): {', '.join(uncoupled_pairs)}\n")
+                    f"(routed, but the board carries no coupled run over "
+                    f"enough of the pair's length - not counted as routed): "
+                    f"{', '.join(uncoupled_pairs)}\n")
             if _kept:
                 msg += (f"  still alongside, so protected: {', '.join(_kept)}\n")
         # Companion GND return vias with no legal site (the CLI prints the

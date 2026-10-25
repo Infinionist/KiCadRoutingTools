@@ -228,6 +228,9 @@ def protection_candidates(routed_results, pcb_data, pairs=None):
 def coupled_protection_pairs(pairs, pair_copper, member_audit=None):
     """#1303: the pairs #521 may protect -- every pair of the run except one
     whose shipped copper `diff_pair_custody.measure_pair_copper` found SPLIT.
+    `coupled` and `alongside` both need one pitch AND
+    `diff_pair_custody.COUPLED_SHARE_FLOOR` of the pair's length (#1429), so a
+    pair coupled or alongside over a sliver only is not protected.
     Split copper is two single-ended routes, which a later step can redo, so
     freezing it only takes rip room away; imx6ulz DQS0 (P on In2.Cu, N on
     B.Cu) was recorded protected before #1303.
@@ -2189,8 +2192,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         def _uc(name):
             c = pair_copper.get(name) or {}
             sk = c.get('skew_mm')
+            _sh = c.get('coupled_share')
             return (f"{name} ({c.get('coupled_mm', 0):.3f}mm coupled of "
-                    f"{max(c.get('length_p_mm', 0), c.get('length_n_mm', 0)):.3f}mm; "
+                    f"{max(c.get('length_p_mm', 0), c.get('length_n_mm', 0)):.3f}mm"
+                    + (f" ({_sh:.1%})" if _sh is not None else '') + "; "
                     f"P on {'/'.join(c.get('layers_p') or ['-'])}, "
                     f"N on {'/'.join(c.get('layers_n') or ['-'])}"
                     + (f"; skew {sk:.3f}mm" if sk is not None else '')
@@ -2198,8 +2203,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                     f"{ALONGSIDE_GAP_MM:g}mm, "
                     + ('protected' if _uc_prot.get(name) else 'not protected')
                     + ")")
+        from diff_pair_custody import COUPLED_SHARE_FLOOR
         print(f"  {RED}Not coupled:   {len(uncoupled_diff_pairs)} pair(s) routed whose "
-              f"shipped copper is not coupled (#1303; not credited as routed; "
+              f"shipped copper is not coupled (#1303: under one pitch or "
+              f"{COUPLED_SHARE_FLOOR:.0%} of the pair's length, #1429; not credited as routed; "
               f"protected only while the members still run alongside, #1361): "
               f"{'; '.join(_uc(n) for n in sorted(uncoupled_diff_pairs))}"
               f" — JSON_SUMMARY.uncoupled_diff_pairs{RESET}")
