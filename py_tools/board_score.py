@@ -1041,9 +1041,11 @@ def declared_impedance_nets(board: str) -> list:
 
 
 def _glob_literal(name: str) -> str:
-    """``name`` as an fnmatch pattern that matches only itself (a net named
-    ``/DQ[0]`` would otherwise be a character class)."""
-    return re.sub(r'([*?\[])', r'[\1]', name)
+    """``name`` as a check_impedance ``--nets`` pattern that matches only
+    itself: a net named ``/DQ[0]`` would otherwise be a character class, and
+    an active-low ``!RESET`` an exclusion."""
+    lit = re.sub(r'([*?\[])', r'[\1]', name)
+    return '\\' + lit if lit.startswith('!') else lit
 
 
 def score_impedance(root: str, board: str, nets, tmp: str) -> dict:
@@ -1056,24 +1058,42 @@ def score_impedance(root: str, board: str, nets, tmp: str) -> dict:
     Measured, not counted (#1389): every other net the board's project records
     an impedance declaration for (``route.py --impedance``), reported as
     `declared_failing` -- a declaration nothing named is disclosed rather than
-    made a blocker."""
-    import fnmatch
+    made a blocker.
+
+    The graded nets are exactly the ones check_impedance would select for
+    ``--nets <--impedance-nets>``: the selection is check_impedance's own
+    matcher (`net_queries.matches_net_filter`), so a sheet-path net
+    (``USB_D*`` names ``/USB_DP``) and ``!`` exclusions select the same nets
+    here as there."""
+    from net_queries import matches_net_filter, split_net_patterns
     declared = declared_impedance_nets(board)
     asked = list(nets or [])
-    globs = asked + [_glob_literal(n) for n in declared]
-    if not globs:
+    if not asked and not declared:
         return skipped('no --impedance-nets given; impedance is ungraded')
+    # One check_impedance run measures the union of the asked selection and
+    # the declarations. An exclusion in the asked list cannot be OR-ed with
+    # the declared literals inside one filter (it would exclude across both,
+    # and an exclusion-only list would stop meaning "every other net"), so
+    # then every routed net is measured and the split is made below.
+    if not declared:
+        sel = asked
+    elif split_net_patterns(asked)[1]:
+        sel = []
+    else:
+        sel = asked + [_glob_literal(n) for n in declared]
     out_json = os.path.join(tmp, 'impedance.json')
-    rc, out = run_tool(root, 'check_impedance.py', board, '--nets', *globs,
-                       '--json', out_json)
+    rc, out = run_tool(root, 'check_impedance.py', board,
+                       *(['--nets', *sel] if sel else []), '--json', out_json)
     if not os.path.isfile(out_json):
         return skipped(f'check_impedance.py exited {rc}: {out.strip()[-200:]}')
     with open(out_json, encoding='utf-8') as f:
         d = json.load(f)
     rows = d.get('nets') or []
 
+    declared_set = set(declared)
+
     def named(n):
-        return any(fnmatch.fnmatchcase(n, g) for g in asked)
+        return bool(asked) and matches_net_filter(n, asked)
     failing = sorted(r['net_name'] for r in rows
                      if r.get('crossings')
                      or (r.get('length_no_ground_mm', 0.0)
@@ -1081,7 +1101,8 @@ def score_impedance(root: str, board: str, nets, tmp: str) -> dict:
     extra = {}
     if declared:
         extra = {'declared_nets': declared,
-                 'declared_failing': [n for n in failing if not named(n)]}
+                 'declared_failing': [n for n in failing
+                                      if n in declared_set and not named(n)]}
     if not asked:
         return dict(skipped('no --impedance-nets given; impedance is ungraded '
                             '(the project\'s impedance declarations are measured '
@@ -1247,8 +1268,10 @@ def score_net_widths(board: str, spec_file: str) -> dict:
     (#1318): within the router's pad-entry zone of a pad of its own net that is
     narrower than the requirement, at no less than that pad's short side --
     the width the router lays a pad entry at where the full width cannot sit
-    on the pad. Narrower than the pad, or beyond the zone, it counts. What was
-    excused is disclosed per net (`pad_neck_allowed_mm`).
+    on the pad. Narrower than the pad, or beyond the zone, it counts: only the
+    LENGTH of a segment inside the zone is excused, so a long run that merely
+    starts at the pad counts for everything past it. What was excused is
+    disclosed per net (`pad_neck_allowed_mm`).
 
     Nets with no copper are not counted here -- that is `unrouted`'s job.
     """
@@ -1303,13 +1326,14 @@ def score_net_widths(board: str, spec_file: str) -> dict:
                                   min(pad.size_x, pad.size_y),
                                   max(pad.size_x, pad.size_y)))
 
-    def is_pad_neck(name, seg, req):
-        for px, py, short, long_ in pads_of.get(name, ()):
-            if short >= req - 1e-9 or seg.width < short - 1e-3:
-                continue
-            if _point_segment_distance(px, py, seg) <= zone + long_ / 2.0:
-                return True
-        return False
+    def neck_length(name, seg, req):
+        """The LENGTH of `seg` that lies in a pad-entry zone of a qualifying
+        own-net pad -- only that much is a neck; the rest of the segment is
+        not excused by touching the zone at one end."""
+        spans = [_segment_span_in_disc(seg, px, py, zone + long_ / 2.0)
+                 for px, py, short, long_ in pads_of.get(name, ())
+                 if short < req - 1e-9 and seg.width >= short - 1e-3]
+        return _union_length(s for s in spans if s)
 
     failures, detail, allowed, requested_under = 0, {}, {}, {}
     for name, widths in sorted(seen.items()):
@@ -1319,10 +1343,10 @@ def score_net_widths(board: str, spec_file: str) -> dict:
         under, excused = [], 0.0
         for w, L, seg in widths:
             if w < float(req) - 1e-9:
-                if is_pad_neck(name, seg, float(req)):
-                    excused += L
-                else:
-                    under.append((w, L))
+                neck = min(L, neck_length(name, seg, float(req)))
+                excused += neck
+                if L - neck > 1e-6:
+                    under.append((w, L - neck))
         if excused:
             allowed[name] = round(excused, 2)
         if under:
@@ -1356,13 +1380,40 @@ def score_net_widths(board: str, spec_file: str) -> dict:
             'patterns_matching_no_routed_net': unmatched, **extra}
 
 
-def _point_segment_distance(px, py, seg) -> float:
+def _segment_span_in_disc(seg, cx, cy, r):
+    """(start, end) distances along `seg` of its part inside the disc of
+    radius `r` around (cx, cy), or None when no part of it is."""
     import math
     dx, dy = seg.end_x - seg.start_x, seg.end_y - seg.start_y
-    L2 = dx * dx + dy * dy
-    t = 0.0 if L2 <= 0 else max(0.0, min(1.0, ((px - seg.start_x) * dx
-                                                + (py - seg.start_y) * dy) / L2))
-    return math.hypot(px - (seg.start_x + t * dx), py - (seg.start_y + t * dy))
+    fx, fy = seg.start_x - cx, seg.start_y - cy
+    a = dx * dx + dy * dy
+    c = fx * fx + fy * fy - r * r
+    if a <= 0:
+        return (0.0, 0.0) if c <= 0 else None
+    b = 2.0 * (fx * dx + fy * dy)
+    disc = b * b - 4.0 * a * c
+    if disc < 0:
+        return None
+    root = math.sqrt(disc)
+    t0 = max(0.0, (-b - root) / (2.0 * a))
+    t1 = min(1.0, (-b + root) / (2.0 * a))
+    if t1 <= t0:
+        return None
+    L = math.sqrt(a)
+    return (t0 * L, t1 * L)
+
+
+def _union_length(spans) -> float:
+    """Total length covered by (start, end) intervals, overlaps counted once."""
+    total, end = 0.0, None
+    for a, b in sorted(spans):
+        if end is None or a > end:
+            total += b - a
+            end = b
+        elif b > end:
+            total += b - end
+            end = b
+    return total
 
 
 def _floors(board: str, sizes: dict) -> dict:

@@ -52,10 +52,10 @@ def check(name, cond, detail=''):
 PAD_X, PAD_Y = 10.0, 10.0
 
 
-def board_text():
+def board_text(segs=None):
     seg = ('\t(segment\n\t\t(start %s %s)\n\t\t(end %s %s)\n\t\t(width %s)\n'
            '\t\t(layer "F.Cu")\n\t\t(net 1)\n\t\t(uuid "s%d")\n\t)\n')
-    segs = [
+    segs = segs or [
         (PAD_X, PAD_Y, PAD_X + 1.0, PAD_Y, 0.3),          # at the pad's short side, in the zone
         (PAD_X, PAD_Y + 0.5, PAD_X + 1.0, PAD_Y + 0.5, 0.15),  # in the zone, narrower than the pad
         (60.0, 60.0, 70.0, 60.0, 0.3),                    # far from any pad
@@ -133,6 +133,51 @@ def t_record_and_grade():
               r.get('ran') and r['count'] == 0, str(r))
 
 
+def t_neck_is_clipped_to_the_zone():
+    """Only the length INSIDE the pad-entry zone is a neck: a long run that
+    leaves the pad at the pad's width counts for everything past the zone, on
+    both the graded (--net-min-widths) and the measured (recorded) path."""
+    import board_score
+    zone = board_score._pad_neck_zone_mm()
+    reach = zone + 0.6 / 2.0                 # the zone, from the pad's centre
+    check('the pad-entry zone is shorter than the long run (non-vacuous)',
+          0 < reach < 30.0, str(reach))
+    long_run = [(PAD_X, PAD_Y, PAD_X + 30.0, PAD_Y, 0.3)]
+    short_neck = [(PAD_X, PAD_Y, PAD_X + 1.0, PAD_Y, 0.3)]
+    with tempfile.TemporaryDirectory() as d:
+        spec = os.path.join(d, 'w.json')
+        with open(spec, 'w', encoding='utf-8') as fh:
+            json.dump({'PWR': 0.5}, fh)
+        for label, segs in (('long', long_run), ('short', short_neck)):
+            pcb = os.path.join(d, label + '.kicad_pcb')
+            with open(pcb, 'w', encoding='utf-8') as fh:
+                fh.write(board_text(segs))
+            write_project(os.path.join(d, label + '.kicad_pro'))
+            graded = board_score.score_net_widths(pcb, spec)
+            protected_nets.persist_power_widths(
+                os.path.join(d, label + '.kicad_pro'), {'PWR': 0.5},
+                verbose=False)
+            measured = board_score.score_net_widths(pcb, None)
+            for path, r, rows in (('graded', graded, 'nets'),
+                                  ('recorded', measured, 'requested_under')):
+                det = (r.get(rows) or {}).get('PWR') or {}
+                ok_neck = r.get('pad_neck_allowed_mm', {}).get('PWR', 0)
+                if label == 'long':
+                    check(f'{path}: a 30 mm run off the pad is excused only '
+                          f'inside the zone',
+                          abs(ok_neck - reach) < 1e-6
+                          and abs(det.get('length_under_mm', 0)
+                                  - round(30.0 - reach, 2)) < 1e-6
+                          and det.get('segments_under') == 1
+                          and (path != 'graded' or r.get('count') == 1),
+                          str(r))
+                else:
+                    check(f'{path}: a short neck inside the zone is wholly '
+                          f'excused', abs(ok_neck - 1.0) < 1e-6 and not det
+                          and (path != 'graded' or r.get('count') == 0),
+                          str(r))
+
+
 def t_end_to_end():
     src = os.path.join(ROOT, 'kicad_files', 'esp_prog.kicad_pcb')
     evidence(src)
@@ -159,7 +204,7 @@ def t_end_to_end():
               f"exit {p.returncode} {nw}"[:300])
 
 
-for fn in (t_record_and_grade, t_end_to_end):
+for fn in (t_record_and_grade, t_neck_is_clipped_to_the_zone, t_end_to_end):
     fn()
 
 print('\nFAILED: ' + ', '.join(fails) if fails else '\nall passed')

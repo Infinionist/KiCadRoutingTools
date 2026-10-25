@@ -16,6 +16,10 @@ not counted (a declaration nothing named is not made a blocker):
      name containing glob metacharacters is matched literally.
   5. check_complete (which passes nothing) carries the measured declaration
      and does not grade it.
+  6. --impedance-nets selects with check_impedance's own matcher: an
+     unqualified pattern names a sheet-path net (`USB_D*` is `/USB_DP`), and
+     an exclusion-only list grades every other measured net; a declared
+     active-low name stays a literal, never an exclusion.
 
     python3 tests/test_1389_impedance_declaration_graded.py
 """
@@ -122,6 +126,60 @@ def main():
         check('a broken coplanar promise with no crossing counts',
               c.get('count') == 1 and c.get('nets_broken_promise') == [NET]
               and c.get('nets_with_crossing') == 0, str(c))
+
+        # 6. The selection is check_impedance's. Rows are stubbed; the stub
+        # records each call so a case that never reached it cannot pass.
+        calls = []
+
+        def rows_stub(rows):
+            def _stub(root, tool, board, *a):
+                calls.append(list(a))
+                out = a[a.index('--json') + 1]
+                with open(out, 'w', encoding='utf-8') as fh:
+                    json.dump({'nets': rows}, fh)
+                return 1, ''
+            return _stub
+
+        def row(name, bad):
+            return {'net_name': name, 'crossings': 1 if bad else 0,
+                    'length_no_ground_mm': 0.0, 'length_gap_wrong_mm': 0.0}
+
+        b3 = stage(tmp, 'sheet.kicad_pcb', {'/USB_DP': dict(decl)})
+        board_score.run_tool = rows_stub([row('/USB_DP', True),
+                                          row('/USB_DM', False)])
+        try:
+            c = board_score.score_impedance(ROOT, b3, ['USB_D*'], tmp)
+        finally:
+            board_score.run_tool = real
+        check('an unqualified pattern grades the sheet-path net it names',
+              len(calls) == 1 and c.get('count') == 1
+              and c.get('nets_analyzed') == 2
+              and c.get('declared_failing') == [], str(c))
+        check('...and check_impedance was asked for the pattern and the '
+              'declaration', calls and 'USB_D*' in calls[-1]
+              and '/USB_DP' in calls[-1], str(calls[-1:]))
+
+        calls.clear()
+        board_score.run_tool = rows_stub([row(NET, True), row(OTHER, False),
+                                          row('/GND', True)])
+        try:
+            c = board_score.score_impedance(ROOT, b1, ['!GND'], tmp)
+        finally:
+            board_score.run_tool = real
+        check('an exclusion-only list grades every other measured net',
+              len(calls) == 1 and c.get('count') == 1
+              and c.get('nets_analyzed') == 2
+              and c.get('nets_with_crossing') == 1
+              and c.get('declared_failing') == [], str(c))
+        check('...measured unfiltered, since an exclusion cannot be OR-ed '
+              'with the declared literal', calls and '--nets' not in calls[-1],
+              str(calls[-1:]))
+
+        from net_queries import matches_net_filter
+        lit = board_score._glob_literal('!RESET')
+        check('a declared active-low name is a literal, not an exclusion',
+              matches_net_filter('!RESET', [lit])
+              and not matches_net_filter('/X', [lit]), lit)
 
         b2 = stage(tmp, 'unapplied.kicad_pcb',
                    {NET: dict(decl, applied=False)})
