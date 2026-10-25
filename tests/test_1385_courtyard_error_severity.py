@@ -114,6 +114,19 @@ class TestCourtyardErrorSeverity(unittest.TestCase):
         self.assertIn('courtyard_error_pairs', pose_ops.worsened(before, after))
         self.assertEqual(pose_ops.worsened(after, after), [])
 
+    def test_place_pose_honours_the_intents_courtyard_waivers(self):
+        # check_assembly hands the intent's waivers to its courtyard grade, so
+        # place_pose must too: a waived pair is not an error pair.
+        from kicad_parser import parse_kicad_pcb
+        from placement import pose_ops
+        with tempfile.TemporaryDirectory() as td:
+            path = board(td, SLIVER, 'error')
+            pcb = parse_kicad_pcb(path)
+            for waivers in ((), ()), ((('A', 'B'),), ()), ((), (('B', 'A'),)):
+                got = pose_ops.grade(pcb, path, 0.1, waivers=waivers)
+                self.assertEqual(got['courtyard_error_pairs'],
+                                 [] if any(waivers) else [['A', 'B']], waivers)
+
 
 if __name__ == '__main__':
     unittest.main()

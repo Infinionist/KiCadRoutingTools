@@ -578,7 +578,7 @@ def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
 # ---------------------------------------------------------------------------
 
 def grade(pcb_data, board_path: str, clearance: float,
-          board_edge_clearance=None, declared_keepouts=()) -> Dict:
+          board_edge_clearance=None, declared_keepouts=(), waivers=((), ())) -> Dict:
     """`grade_pad_legality` at this board's own poses -- never a re-derivation.
 
     `pcb_file` is passed so `PadClearanceModel` can read the netclasses, the
@@ -587,6 +587,8 @@ def grade(pcb_data, board_path: str, clearance: float,
     would, and one that declares them is graded the way check_drc will.
     `declared_keepouts` is the intent's keep-outs (#1098): a declared
     `mating:<ref>` replaces the derived plug region, as in the seeder.
+    `waivers` is the intent's (`waiver_pairs()`, `fixed_pose_courtyard_waivers()`),
+    which check_assembly hands its courtyard grade too (`intent_waivers`).
     #1064: plus `pad_stack_census`, check_assembly's own pad_intersection
     channel, because `grade_pad_legality` skips a same-net pad pair before it
     measures anything and so never sees two parts' pads stacked on one net.
@@ -596,11 +598,13 @@ def grade(pcb_data, board_path: str, clearance: float,
                            edge_margin=board_edge_clearance,
                            declared_keepouts=declared_keepouts)
     g.update(pad_stack_census(pcb_data, clearance))
-    g['courtyard_error_pairs'] = courtyard_error_pairs(pcb_data, board_path)
+    g['courtyard_error_pairs'] = courtyard_error_pairs(pcb_data, board_path,
+                                                       waivers)
     return g
 
 
-def courtyard_error_pairs(pcb_data, board_path: str) -> List[List[str]]:
+def courtyard_error_pairs(pcb_data, board_path: str,
+                          waivers=((), ())) -> List[List[str]]:
     """`[[a, b], ...]`: the courtyard pairs KiCad reports as ERRORS on this
     board (#1385) -- every real, unwaived pair, whatever its size -- when its
     project declares `courtyards_overlap` an error; `[]` otherwise (the
@@ -611,7 +615,8 @@ def courtyard_error_pairs(pcb_data, board_path: str) -> List[List[str]]:
     if courtyard_severity_of(board_path)[0] != 'error':
         return []
     with contextlib.redirect_stdout(io.StringIO()):
-        pairs = CourtyardCensus(pcb_data, board_path).grade().error_pairs
+        pairs = CourtyardCensus(pcb_data, board_path, intent_waivers=waivers[0],
+                                courtyard_waivers=waivers[1]).grade().error_pairs
     return sorted([q.a, q.b] for q in pairs)
 
 
@@ -1072,7 +1077,7 @@ def shift_rows(pcb_data, rows: Sequence[Dict], dx: float, dy: float) -> List[Dic
 def search_replicate(board_path: str, pcb, cand: str, before: Dict,
                      placements: Sequence[Dict], targets: Sequence[Dict], *,
                      clearance: float, board_edge_clearance, declared_keepouts,
-                     strict: bool, guarded) -> Tuple[Optional[List[Dict]], List[Dict]]:
+                     strict: bool, guarded, waivers=((), ())) -> Tuple[Optional[List[Dict]], List[Dict]]:
     """`replicate --search MM` (#1211): fit each searched target's copy
     nearest its default offset. `(placements, census)`; `placements` is None
     when some target found no accepted offset.
@@ -1113,7 +1118,7 @@ def search_replicate(board_path: str, pcb, cand: str, before: Dict,
             with contextlib.redirect_stdout(io.StringIO()):
                 base = grade(_without(parse_kicad_pcb(board_path), later),
                              board_path, clearance, board_edge_clearance,
-                             declared_keepouts)
+                             declared_keepouts, waivers)
         else:
             base = before
         lattice = search_offsets(t['radius'], t['step'])
@@ -1149,7 +1154,8 @@ def search_replicate(board_path: str, pcb, cand: str, before: Dict,
                     continue
                 copy_siblings(board_path, cand)
                 g = grade(_without(parse_kicad_pcb(cand), later), cand,
-                          clearance, board_edge_clearance, declared_keepouts)
+                          clearance, board_edge_clearance, declared_keepouts,
+                          waivers)
             b = worsened(base, g)
             if not b and (not strict or is_clean(g)):
                 found = shifted
@@ -1270,6 +1276,9 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
     # #1098: the intent's keep-outs reach every grade below, so a declared
     # `mating:<ref>` is the region this verb holds a move to.
     declared_keepouts = tuple(getattr(intent, 'keepouts', None) or ())
+    # ...and its courtyard waivers, as check_assembly grades them (#1385).
+    cy_waivers = ((intent.waiver_pairs(), intent.fixed_pose_courtyard_waivers())
+                  if intent is not None else ((), ()))
 
     # A KiCad lock is a DECISION someone recorded in the file -- the seeder
     # stamps the intent's must_lock refs there, and run 25 stamped its rotation
@@ -1351,7 +1360,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
         summary['replicate'] = replicated
 
     before = grade(pcb, board_path, clearance, board_edge_clearance,
-                   declared_keepouts)
+                   declared_keepouts, cy_waivers)
     stage = tempfile.TemporaryDirectory(prefix='place_pose_')
     try:
         cand = os.path.join(stage.name, 'candidate.kicad_pcb')
@@ -1372,7 +1381,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
         copy_siblings(board_path, cand)
         cand_pcb = parse_kicad_pcb(cand)
         after = grade(cand_pcb, cand, clearance, board_edge_clearance,
-                      declared_keepouts)
+                      declared_keepouts, cy_waivers)
         bad = worsened(before, after)
         snap_ran = False
         search_finding = None
@@ -1400,7 +1409,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 board_path, pcb, cand, before, placements, search_targets,
                 clearance=clearance, board_edge_clearance=board_edge_clearance,
                 declared_keepouts=declared_keepouts, strict=strict,
-                guarded=guarded)
+                guarded=guarded, waivers=cy_waivers)
             for t, c in zip(search_targets, census):
                 t['report']['search'] = c
             for t in search_targets[len(census):]:
@@ -1428,7 +1437,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 copy_siblings(board_path, cand)
                 cand_pcb = parse_kicad_pcb(cand)
                 after = grade(cand_pcb, cand, clearance, board_edge_clearance,
-                              declared_keepouts)
+                              declared_keepouts, cy_waivers)
                 bad = worsened(before, after)
             else:
                 miss = census[-1]
@@ -1523,7 +1532,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 copy_siblings(board_path, cand)
                 pcb_c = parse_kicad_pcb(cand)
                 g = grade(pcb_c, cand, clearance, board_edge_clearance,
-                          declared_keepouts)
+                          declared_keepouts, cy_waivers)
                 b = worsened(before, g)
                 if b or (strict and not is_clean(g)):
                     for k, pairs in regrade_refusal(before, g, b,
@@ -1648,7 +1657,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 copy_siblings(board_path, cand)
                 cand_pcb = parse_kicad_pcb(cand)
                 after = grade(cand_pcb, cand, clearance, board_edge_clearance,
-                              declared_keepouts)
+                              declared_keepouts, cy_waivers)
                 bad = worsened(before, after)
 
         # A `face` op's rotation is PREDICTED (FACE_CYCLE) and then MEASURED on
