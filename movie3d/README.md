@@ -109,7 +109,11 @@ on its footprint.
     height is a guess from the footprint name or the reference prefix
     (`NAME_HEIGHTS` and `PREFIX_HEIGHTS` in `record.py`).
   - Fixed parts are grey and see-through, so they never hide the parts that
-    move. Unassembled parts with no model (test pads, solder jumpers) get no
+    move. A COVER -- a part other parts may stand under (#1443): a module, a
+    shield can, a socket whose card the intent declares -- is see-through
+    too, in its group's colour, so the parts under it stay in view; a
+    declared card, which has no model of its own, is a see-through slab from
+    its declared underside, moving with its connector. Unassembled parts with no model (test pads, solder jumpers) get no
     body. A back-side part hangs below the board. Parts off the board lie on
     the table.
 - **Airwires**: the nets the objective prices (ground is left out), as one

@@ -248,6 +248,19 @@ class Recorder(Story):
         area = (bb[2] - bb[0]) * (bb[3] - bb[1]) if bb else 0.0
         parts = [part_scene(r, pcb.footprints[r], st.parts.get(r), colour.get(r, fixed_rgb),
                             r not in self.movable, area) for r in self.refs]
+        # #1443: a part other parts may stand under -- measured room under
+        # its model, or a cover the intent declares -- is drawn see-through,
+        # so the parts under it stay in view; a declared cover's body (a card
+        # with no model of its own) is drawn as a slab from its underside
+        covers = getattr(getattr(st, 'heights', None), 'covers', None) or {}
+        for p in parts:
+            c = covers.get(p['ref'])
+            if c is None:
+                continue
+            p['cover'] = True
+            decl = getattr(c, 'decl', None)
+            if decl is not None:
+                p['card'] = [round(float(v), 4) for v in decl[0]] + [round(float(decl[1]), 4)]
         self.colour, self.fixed_rgb, self.area = colour, fixed_rgb, area
         self.side = {p['ref']: p['side'] for p in parts}
         # each part's face as drawn, 0 front up, 180 turned onto the back:

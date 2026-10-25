@@ -88,6 +88,7 @@ Fast, grid-based A\* routing with a native Rust core (~10× faster than pure Pyt
 **Placement, fanout & optimization**
 - [Placement by function](py_placer/placement/README.md): parts sorted into functional groups, one objective annealed (`place_simple.py`) over 12 seeds (6 started scattered, 6 with each group gathered), and a fast route (`route.py --quick 2`) of the 6 the objective rates best to keep the best (`/plan-pcb-placement`)
 - [The design brief](docs/design-brief.md) — state what the board is FOR, in a sibling the toolchain reads: which connectors are user-facing, which edge each belongs on and where along it
+- [Parts under other parts](docs/floorplan-intent.md#covers-and-heights-what-stands-over-the-board) — part heights read off the 3D models, so a low part may stand under a module or shield can where it fits; a card in its socket (M.2) or a module on a stacking connector is declared in the brief and moves with its connector, admitting only parts known to fit under it
 - [Floorplan intent, graded](docs/floorplan-intent.md) — declare where parts belong and check the board against it, so "the render looks fine" stops being a verdict
 - BGA / QFN fanout with decoupling-cap placement cleanup, Hungarian target-swap, and schematic sync
 
@@ -985,6 +986,7 @@ Every tool prints its full option list with `--help`, and **[docs/configuration.
 | `judge_seeds.py` | The seed judge: the seeds judge.json names routed by one quick (level 2) chain and scored | [Utilities](docs/utilities.md#seed-judge-runner-judge_seedspy) |
 | `board_brief.py` | Assemble what a placement author needs to read, in one artifact | [Utilities](docs/utilities.md#board-brief-board_briefpy) · [Design Brief](docs/design-brief.md) |
 | `check_floorplan.py` | Grade a board against a declared floorplan intent | [Floorplan Intent](docs/floorplan-intent.md) |
+| `cover_facts.py` | What the board knows about a card or module over it: connector heights, card models and their undersides, standoffs on its axes, the parts under it | [Floorplan Intent](docs/floorplan-intent.md#covers-and-heights-what-stands-over-the-board) |
 | `check_*.py` | DRC / connectivity / hygiene / pad checks | [Utilities](docs/utilities.md) |
 | `check_complete.py` | Is the board DONE? One fail-closed verdict over the checks | [Utilities](docs/utilities.md#completion-check-check_completepy) |
 | `krt_registry.py` | Every runnable tool in the clone, what it is for, and which door (placement / routing) serves it | [Utilities](docs/utilities.md#tool-inventory-krt_registrypy-krt_capabilitiespy) |

@@ -335,7 +335,8 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
   On the human boards, 157 put 2898 parts inside another part's outline and
   KiCad flags 87 of them: the covers draw no courtyard where parts go under.
   A card in a socket or a module on stacking connectors is DECLARED in the
-  intent (`covers[]`, from `cover_facts.py` and the datasheets): its body
+  design brief (`covers[]`, from `cover_facts.py` and the datasheets,
+  compiled into the intent; `removable` lets a test point under it): its body
   moves with its connector, a part goes under it only when its height is
   known and fits, and its standoffs are held at their lengths as template
   members. `heights[]` declares a part's height or underside from its

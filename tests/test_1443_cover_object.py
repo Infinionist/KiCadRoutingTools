@@ -32,6 +32,7 @@ and without.
 import contextlib
 import io
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -333,12 +334,78 @@ def facts(path):
           r.stdout[-600:] + r.stderr[-300:])
 
 
+def brief(tmp):
+    """A design brief beside the board declares the cover and a height; the
+    emitted intent carries them 1:1, and an intent without them drifts."""
+    print('7. the design brief')
+    path = board(os.path.join(tmp, 'br.kicad_pcb'))
+    with open(os.path.join(tmp, 'br.design-brief.json'), 'w', encoding='utf-8') as f:
+        json.dump({'schema': 1, 'kind': 'design-brief', 'units': 'mm', 'covers': [COVER],
+                   'heights': [{'ref': 'U9', 'height_mm': 0.8, 'source': 'U9 datasheet'}]}, f)
+    py = [sys.executable, '-X', 'utf8', os.path.join(REPO, 'py_tools', 'check_floorplan.py'), path]
+    out = os.path.join(tmp, 'br_intent.json')
+    r = subprocess.run(py + ['--emit-intent', out, '--allow-unplaced'],
+                       capture_output=True, text=True, timeout=600)
+    doc = json.load(open(out, encoding='utf-8')) if os.path.isfile(out) else {}
+    cov = doc.get('covers') or [{}]
+    check('the emitted intent carries the brief\'s cover and height, reader 15',
+          r.returncode == 0 and cov[0].get('connector') == 'J1'
+          and cov[0].get('underside_mm') == 2.5 and cov[0].get('removable') is True
+          and (doc.get('heights') or [{}])[0].get('ref') == 'U9'
+          and doc.get('min_reader', 0) >= 15, (r.stdout + r.stderr)[-600:])
+    ip = os.path.join(tmp, 'br_bare.json')
+    with open(ip, 'w', encoding='utf-8') as f:
+        json.dump({'schema': 1, 'kind': 'floorplan-intent'}, f)
+    r = subprocess.run(py + ['--intent', ip], capture_output=True, text=True, timeout=600)
+    check('an intent without them reports the brief\'s cover and height as drift',
+          'J1: the brief declares this in covers[]' in r.stdout
+          and 'U9: the brief declares this in heights[]' in r.stdout, r.stdout[-800:])
+    bad = os.path.join(tmp, 'bad.design-brief.json')
+    with open(bad, 'w', encoding='utf-8') as f:
+        json.dump({'schema': 1, 'kind': 'design-brief', 'units': 'mm',
+                   'covers': [{k: v for k, v in COVER.items() if k != 'removable'}]}, f)
+    r = subprocess.run(py + ['--brief', bad, '--emit-intent', os.path.join(tmp, 'x.json'),
+                             '--allow-unplaced'], capture_output=True, text=True, timeout=600)
+    check('a brief cover row missing a field is refused by the intent\'s own loader',
+          r.returncode == 2 and 'removable' in (r.stdout + r.stderr), (r.stdout + r.stderr)[-400:])
+
+
+def pose(tmp):
+    """place_pose --intent judges a hand move by the declared cover: a part
+    moved under the card where it does not fit is refused, and --snap finds
+    the nearest pose clear of it."""
+    print('8. place_pose')
+    base = board(os.path.join(tmp, 'pp.kicad_pcb'), c2=(65, 10))
+    with open(os.path.join(tmp, 'pp.kicad_pro'), 'w', encoding='utf-8') as f:
+        json.dump({'board': {'design_settings': {'rule_severities': {
+            'courtyards_overlap': 'error'}}}}, f)
+    ip = os.path.join(tmp, 'pp_intent.json')
+    with open(ip, 'w', encoding='utf-8') as f:
+        json.dump(intent(), f)
+    py = [sys.executable, '-X', 'utf8', os.path.join(REPO, 'py_placer', 'place_pose.py'), base]
+
+    def run(out, *extra):
+        r = subprocess.run(py + [os.path.join(tmp, out)] + list(extra) + ['set', 'C2', '30', '30'],
+                           capture_output=True, text=True, timeout=600)
+        return r.returncode, r.stdout + r.stderr
+    rc, out = run('pp0.kicad_pcb')
+    check('without the intent, C2 under the card is accepted (nothing declared)', rc == 0,
+          out[-400:])
+    rc, out = run('pp1.kicad_pcb', '--intent', ip)
+    check('with it, refused naming the pair', rc == 4 and 'height_pairs new: C2/J1' in out,
+          out[-600:])
+    rc, out = run('pp2.kicad_pcb', '--intent', ip, '--snap', '--radius', '10')
+    m = re.search(r'C2\s+\[[^]]*\] -> \[([-\d.]+), ([-\d.]+),', out)
+    check('--snap seats it clear of the card (off y 14..36)',
+          rc == 0 and m is not None and not 14.0 < float(m.group(2)) < 36.0, out[-600:])
+
+
 def placement(tmp):
     from kicad_parser import parse_kicad_pcb
     from placement import heights
     from placement.body import board_bodies
     from placement.floorplan import intent_from_dict
-    print('7. place_simple: the standoff is carried, the card judged')
+    print('9. place_simple: the standoff is carried, the card judged')
     src = board(os.path.join(tmp, 'p.kicad_pcb'), h1=(70, 45))
     ip, gp = os.path.join(tmp, 'pi.json'), os.path.join(tmp, 'pg.json')
     with open(ip, 'w', encoding='utf-8') as f:
@@ -386,6 +453,8 @@ def main():
         grades(tmp, path)
         keepout(tmp, path)
         facts(path)
+        brief(tmp)
+        pose(tmp)
         placement(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

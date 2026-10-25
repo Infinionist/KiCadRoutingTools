@@ -427,13 +427,15 @@ under a card, and a tall part can be placed there.
    (the lowest card the socket takes) and say so in the hand-back.
 3. **Choose the standoff for each card length** the board takes (the facts
    list each with its distance), and the card's width and reach.
-4. **Write the row** into the intent's `covers[]`: `connector`, `side`,
+4. **Write the row** into the design brief's `covers[]`
+   (`<board>.design-brief.json` beside the board, which travels with it and
+   compiles into the intent on every emit; re-emit, §3.2): `connector`, `side`,
    `axis_deg` (the facts' axis), `width_mm`, `underside_mm`, `length_mm`
    (how far the body reaches from the connector's origin), `offset_mm` (the
    standoff's "off" when the card's centre line misses the connector's
    origin), `standoffs` (each `ref` with `length_mm`, the facts' distance
-   along), `removable` and `source` (the datasheets and figures). Set
-   `min_reader` 15. **`removable`, case by case:** true when the body comes
+   along), `removable` and `source` (the datasheets and figures). The
+   emitted intent then carries it with `min_reader` 15. **`removable`, case by case:** true when the body comes
    off in service -- a card in its socket, a module on a connector it can be
    pulled from -- so a test point under it can still be probed with it out;
    false when it stays (soldered, glued, a fixed shield or one the enclosure
@@ -446,8 +448,8 @@ under a card, and a tall part can be placed there.
 admits a part under the body only when its height is known and its top is
 0.5 mm or more under the underside; check_assembly gates one that is not. A
 part whose height nothing gives (no 3D model, no IPC-7351 name) is never put
-under it: declare its height in `heights[]` (`ref`, `height_mm`, `source`)
-only from its datasheet, never a guess. A module whose 3D model is drawn
+under it: declare its height in the brief's `heights[]` (`ref`,
+`height_mm`, `source`) only from its datasheet, never a guess. A module whose 3D model is drawn
 solid down to the board takes its datasheet's underside the same way
 (`underside_mm`). An enclosure's height limit over an area is a keep-out
 with `max_height_mm`.
