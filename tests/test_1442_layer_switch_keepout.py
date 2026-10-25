@@ -12,7 +12,12 @@ go through now ask check_drc's own keep-out measurement (`keepout_refusal`):
      and passes the same via with the area elsewhere (non-vacuity);
   2. stub_clear_of_foreign_pads refuses a stub moved onto the area's layer,
      and passes it moved onto a layer the area does not cover;
-  3. _bare_pad_pair_vias_fit refuses a swap via inside the area.
+  3. _bare_pad_pair_vias_fit refuses a swap via inside the area;
+  4. the router's terminal bridge from a through via of the net (on the board,
+     or one the same path drills) to the path's first grid cell, both inside
+     the via's copper, is dropped when it would
+     reach into an area forbidding tracks on that (routable) layer -- the via
+     already joins both ends -- and kept where no area forbids it.
 
     python3 tests/test_1442_layer_switch_keepout.py
 """
@@ -34,6 +39,7 @@ from routing_config import GridRouteConfig                     # noqa: E402
 from stub_layer_switching import (via_barrel_clear_of_foreign_copper,  # noqa: E402
                                   stub_clear_of_foreign_pads)
 from layer_swap_optimization import _bare_pad_pair_vias_fit    # noqa: E402
+from single_ended_routing import _bridge_inside_own_through_via  # noqa: E402
 import run_utils                                               # noqa: E402
 
 BOARD = os.path.join(ROOT, 'kicad_files', 'esp_prog.kicad_pcb')
@@ -92,6 +98,27 @@ def main():
         ok, why = _bare_pad_pair_vias_fit(here, [via], cfg)
         check('swap via inside the area: refused',
               not ok and 'keep-out rule area KO' in why, why)
+
+        # 4. the terminal bridge inside the net's own through via -- first
+        # one the same path drills (not on the board yet), then one on it
+        own = Via(x=X, y=Y, size=0.45, drill=0.2, layers=['F.Cu', 'B.Cu'],
+                  net_id=net)
+        a, b = (X, Y), (X + 0.05, Y)
+        check('bridge into the area, no via on the board: kept',
+              _bridge_inside_own_through_via(here, net, cfg, 'B.Cu', a, b) is False)
+        check('...the via this path drills there: dropped',
+              _bridge_inside_own_through_via(here, net, cfg, 'B.Cu', a, b,
+                                             path_vias=[own]) is True)
+        for pcb in (here, away):
+            pcb.vias.append(own)
+        a, b = (X, Y), (X + 0.05, Y)
+        check('bridge into the area on a routable layer: dropped',
+              _bridge_inside_own_through_via(here, net, cfg, 'B.Cu', a, b) is True)
+        check('the same bridge with the area elsewhere: kept (non-vacuity)',
+              _bridge_inside_own_through_via(away, net, cfg, 'B.Cu', a, b) is False)
+        check('a bridge leaving the via\'s copper: kept',
+              _bridge_inside_own_through_via(here, net, cfg, 'B.Cu', a,
+                                             (X + 0.5, Y)) is False)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

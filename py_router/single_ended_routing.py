@@ -5958,7 +5958,8 @@ def _tap_target_layer(tgt_pad, layer_names, path_end_layer) -> str:
     return path_end_layer
 
 
-def _bridge_inside_own_through_via(pcb_data, net_id, config, layer, a, b) -> bool:
+def _bridge_inside_own_through_via(pcb_data, net_id, config, layer, a, b,
+                                   path_vias=()) -> bool:
     """True when a terminal bridge a->b would be a track on `layer`, a layer
     `config` forbids track on, and both ends lie in the copper of ONE through
     via of this net (#1294).
@@ -5972,13 +5973,31 @@ def _bridge_inside_own_through_via(pcb_data, net_id, config, layer, a, b) -> boo
     on the plane layer, inside the via. A through via's disc is on every
     copper layer, so it already overlaps the copper at both ends wherever
     that copper is, and the bridge joins nothing it does not. A blind or
-    micro via, or an end outside the disc, keeps its bridge."""
-    if pcb_data is None or layer not in config.layers \
-            or layer in config.routable_layers():
+    micro via, or an end outside the disc, keeps its bridge.
+
+    The same holds on a ROUTABLE layer where the bridge would reach into a
+    keep-out rule area forbidding tracks there (#1442): the via already joins
+    both ends, and the stub is copper check_drc reports (as it measures it,
+    `keepout_refusal`). There the via may be one the same path places
+    (`path_vias`: a path whose first move is a layer change drills at its
+    own end), not yet on the board."""
+    if pcb_data is None or layer not in config.layers:
         return False
+    if layer in config.routable_layers():
+        if not getattr(pcb_data.board_info, 'keepouts', None):
+            return False
+        from check_drc import keepout_refusal
+        if not keepout_refusal(pcb_data, segments=[Segment(
+                start_x=a[0], start_y=a[1], end_x=b[0], end_y=b[1],
+                width=config.get_net_track_width(net_id, layer),
+                layer=layer, net_id=net_id)]):
+            return False
     from geometry_utils import via_on_layer
     tol = 1e-6
-    for v in pcb_data.vias:
+    cands = list(pcb_data.vias)
+    if layer in config.routable_layers():
+        cands += list(path_vias)
+    for v in cands:
         if v.net_id != net_id:
             continue
         radius = (getattr(v, 'size', 0) or 0) / 2.0
@@ -6152,6 +6171,7 @@ def _path_to_segments_vias(
 
     # Add connecting segment from original start to first path point if needed
     # (skipped when merged: the first path segment now ends at the exact point)
+    start_bridge = None
     if start_original and not merge_start:
         first_grid_x, first_grid_y = pts[0]
         orig_x, orig_y, orig_layer = start_original
@@ -6164,18 +6184,16 @@ def _path_to_segments_vias(
         if ((abs(orig_x - first_grid_x) > 0.001 or abs(orig_y - first_grid_y) > 0.001)
                 and (orig_layer == path_start_layer or pcb_data is None
                      or _terminal_copper_on_layer(pcb_data, net_id, orig_x, orig_y,
-                                                  path_start_layer))
-                and not _bridge_inside_own_through_via(
-                    pcb_data, net_id, config, path_start_layer,
-                    (orig_x, orig_y), (first_grid_x, first_grid_y))):
-            seg = Segment(
+                                                  path_start_layer))):
+            # decided after the path's own vias exist (the bridge guard
+            # counts a via this path drills at its start)
+            start_bridge = (Segment(
                 start_x=orig_x, start_y=orig_y,
                 end_x=first_grid_x, end_y=first_grid_y,
                 width=config.get_net_track_width(net_id, path_start_layer),
                 layer=path_start_layer,
                 net_id=net_id
-            )
-            segments.append(seg)
+            ), path_start_layer, (orig_x, orig_y), (first_grid_x, first_grid_y))
 
     # Convert path points to segments and vias
     for i in range(len(path) - 1):
@@ -6235,6 +6253,11 @@ def _path_to_segments_vias(
                 )
                 segments.append(seg)
 
+    if start_bridge is not None and not _bridge_inside_own_through_via(
+            pcb_data, net_id, config, start_bridge[1], start_bridge[2],
+            start_bridge[3], path_vias=vias):
+        segments.insert(0, start_bridge[0])
+
     # Add connecting segment from last path point to original end if needed
     # (skipped when merged: the last path segment now ends at the exact point)
     if end_original and not merge_end:
@@ -6250,7 +6273,8 @@ def _path_to_segments_vias(
                                                   path_end_layer))
                 and not _bridge_inside_own_through_via(
                     pcb_data, net_id, config, path_end_layer,
-                    (last_grid_x, last_grid_y), (orig_x, orig_y))):
+                    (last_grid_x, last_grid_y), (orig_x, orig_y),
+                    path_vias=vias)):
             seg = Segment(
                 start_x=last_grid_x, start_y=last_grid_y,
                 end_x=orig_x, end_y=orig_y,
