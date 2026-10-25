@@ -882,7 +882,12 @@ def via_size_for_annular_ring(via_size, via_drill, copper_layer_count,
     ring = min_via_annular_ring(copper_layer_count, tier, overrides)
     if ring is None or (via_size - via_drill) / 2.0 >= ring - 1e-9:
         return via_size
-    return round(via_drill + 2.0 * ring, 4)
+    # Rounded UP to the 0.1 um grid, never to nearest: an imperial drill
+    # (0.35052 = 13.8 mil) plus 2 x 0.05 is 0.45052, which round() made
+    # 0.4505 -- a ring of 0.04999, 10 nm under the floor the pin exists to
+    # meet, and every pinned via graded short.
+    import math
+    return math.ceil((via_drill + 2.0 * ring) * 1e4 - 1e-6) / 1e4
 
 
 def check_param_floors(copper_layer_count, tier=None, overrides=None, **params):

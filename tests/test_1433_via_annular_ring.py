@@ -74,6 +74,11 @@ def main():
           fab_tiers.via_size_for_annular_ring(0.45, 0.25, 2) == 0.45)
     check('a via exactly at the ring floor is left alone',
           fab_tiers.via_size_for_annular_ring(0.25, 0.15, 2) == 0.25)
+    # An imperial drill: 0.35052 + 2 x 0.05 = 0.45052, which round-to-nearest
+    # made 0.4505 -- a ring 10 nm under the floor, graded short on every via.
+    _s = fab_tiers.via_size_for_annular_ring(0.45, 0.35052, 2)
+    check('an imperial drill pins UP to the 0.1 um grid: the ring holds',
+          _s == 0.4506 and (_s - 0.35052) / 2.0 >= 0.05, str(_s))
     check('a missing value is passed through',
           fab_tiers.via_size_for_annular_ring(None, 0.3, 2) is None
           and fab_tiers.via_size_for_annular_ring(0.45, None, 2) == 0.45)
