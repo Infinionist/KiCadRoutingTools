@@ -1449,6 +1449,27 @@ Present the plan to the user as a numbered list with explanations:
 
 ## Step-by-Step Routing Commands
 
+### Step 0 of the example chain: Keep copper out from under the screw heads (mounting holes, #1442)
+A mounting hole is checked against the board's hole clearance only: the screw
+head, washer or standoff that sits on it is not in the board file, so a route
+can run right up to the hole and pass every DRC. Before the first step, write
+each bare mounting hole's screw-head ring as a copper keep-out (tracks and vias
+forbidden, the pour allowed):
+
+python3 -X utf8 py_router/add_rule_area.py board.kicad_pcb board_step0.kicad_pcb \
+    --name MOUNT --mounting-holes 2>&1 | tee /tmp/step0_mount.txt
+
+A mounting hole here is a footprint that is one round drill of 2 mm or more
+with no signal net; a hole whose pad carries a net (a ground ring) gets no area,
+since its own copper has to reach it. The ring reaches 0.4 x the drill past the
+hole's edge (an ISO 7380 head); pass `--ring MM` for a wider washer or standoff.
+Read the list it prints: a hole that takes no screw (a test-fixture or alignment
+hole) needs no ring -- leave the step out then. When it writes nothing ("no
+mounting hole to write a ring for"), go on from `board.kicad_pcb`; otherwise
+every later step reads `board_step0.kicad_pcb` in its place, and check_drc
+grades the areas like any keep-out (`keepout`). Measured over the corpus's
+mounting-hole boards, the rings cost the routed result nothing.
+
 ### Step 1: Pour the Power Planes (FIRST — before fanout and routing, #424/#562)
 A bare pour: nets and layers ONLY. No `--add-gnd-vias`, no `--stitch-*` —
 those adapt to signals that don't exist yet and run in Step 3 instead. **The pour runs FIRST, before fanout**: the fanout's
