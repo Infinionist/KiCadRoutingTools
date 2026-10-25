@@ -103,7 +103,7 @@ def stuck_text(r: Dict) -> str:
         return (f"; a legal pose inside the limit exists but would put {who} past its "
                 f"own limit")
     if r.get('reach') is None:
-        return "; the cap has no legal pose to try"
+        return "; no cap on the rail had a legal pose to try"
     return f"; no legal pose of the cap got closer than {r['reach']:.2f} mm"
 
 

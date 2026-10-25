@@ -62,7 +62,8 @@ the same way.
    ch32v003_usb (22 movable parts) the whole run takes about 2.5 s.
    The intent's decap limits are a soft term, so a seed can end a fraction
    of a mm past one: each limit still broken is WARNED (rail, cap, pin, the
-   distance against the limit) and carried in the report as `decap_residual`,
+   distance against the limit; none with `--decap-limit-weight 0`, which
+   leaves the limits to check_floorplan) and carried in the report as `decap_residual`,
    and `--repair-decaps` first moves each such cap to the nearest legal pose
    inside its limit that worsens no other limit, naming the cap no legal pose
    frees (`placement/decap_repair.py`). A BGA's far-face parts under its ball

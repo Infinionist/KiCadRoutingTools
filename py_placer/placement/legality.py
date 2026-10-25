@@ -2216,8 +2216,8 @@ def courtyard_gating(blocking_pairs, moved) -> list:
 
 
 #: The thinnest courtyard overlap KiCad's `courtyards_overlap` reports (mm of
-#: `overlap_thickness`). MEASURED against kicad-cli 10.0 on the tracked rp2350
-#: board under an `error` project: the six pairs it reports are 0.027-0.2 mm
+#: `overlap_thickness`). MEASURED against kicad-cli 10.0 on a tracked board
+#: under an `error` project: the six pairs it reports are 0.027-0.2 mm
 #: deep, and the six slivers this census also finds are 0.0-0.0075 mm -- the
 #: polygon round-off of two courtyards that touch.
 COURTYARD_ERROR_MIN_DEPTH_MM = 0.01

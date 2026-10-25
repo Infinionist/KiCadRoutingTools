@@ -415,7 +415,9 @@ def main(argv=None):
                                                           baseline, full=True), pick))
             confirmed = sorted((r for r in full if 'score' in r),
                                key=lambda r: judge_key(r['score']))
-            failed += [r for r in full if 'failed' in r]
+            # a seed whose confirm route fails was still judged at level 2
+            failed += [dict(r, stage='full-route confirm') for r in full
+                       if 'failed' in r]
             if confirmed:
                 print('judge_seeds: confirmed ranking (full route, same key):')
                 for r in confirmed:
@@ -431,7 +433,9 @@ def main(argv=None):
               f"{CLOSE_COPPER:.0%}): level 2 cannot rank them. Re-run with --confirm close "
               f"to route them at the full level")
     for r in failed:
-        print(f"  WARNING: seed {r['seed']} not judged: {r['failed']}")
+        print(f"  WARNING: seed {r['seed']} "
+              f"{r['stage'] + ' failed' if r.get('stage') else 'not judged'}: "
+              f"{r['failed']}")
     print('JSON_SUMMARY: ' + json.dumps({
         'seeds': {str(r['seed']): ({'failed': r['failed']} if 'failed' in r else {
             'blocking': r['score'].get('blocking'),
