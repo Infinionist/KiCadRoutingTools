@@ -1395,12 +1395,12 @@ def _segment_span_in_disc(seg, cx, cy, r):
     if disc < 0:
         return None
     root = math.sqrt(disc)
-    t0 = max(0.0, (-b - root) / (2.0 * a))
-    t1 = min(1.0, (-b + root) / (2.0 * a))
-    if t1 <= t0:
+    f0 = max(0.0, (-b - root) / (2.0 * a))
+    f1 = min(1.0, (-b + root) / (2.0 * a))
+    if f1 <= f0:
         return None
     L = math.sqrt(a)
-    return (t0 * L, t1 * L)
+    return (f0 * L, f1 * L)
 
 
 def _union_length(spans) -> float:
