@@ -1081,6 +1081,9 @@ def apply_step_selection(step, dialog, all_steps=None):
     elif action == "route_diff":
         tab = dialog.differential_tab
         wanted = step.get("pairs") or ["*"]
+        # The step's raw patterns, as route_diff.py passes its --nets: a glob
+        # is no #521 override, so --force-reroute keeps protected pairs.
+        dialog._plan_net_globs = [str(w) for w in wanted]
         # A plan's "pairs" may be base names ("/USB/D") OR the individual P/N
         # net names the recorded route_diff --nets carried ("/USB/D+",
         # "/USB/D-"). manifest_to_plan forwards --nets verbatim, so match a pair
@@ -1735,7 +1738,7 @@ class PlanExecutor:
                                        board=_live)
                 persist_impedance_specs(_pro, consume_impedance_specs(),
                                         board=_live)
-                # #1379: the plan's power-net width requests, to be graded.
+                # #1379: the plan's power-net width requests, measured and disclosed.
                 from protected_nets import (consume_power_widths,
                                             persist_power_widths)
                 persist_power_widths(_pro, consume_power_widths(),
