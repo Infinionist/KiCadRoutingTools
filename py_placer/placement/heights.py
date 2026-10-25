@@ -38,6 +38,14 @@ part's top and a cover's underside was 0.52 mm (a 2.0 mm shield lid);
 library models, the overhang rule refuses only parts whose models
 interpenetrate (two connectors drawn over each other, either-or footprints).
 
+An intent may DECLARE what the models cannot say (`with_declared`):
+`covers[]`, a body a connector carries over the board -- a card in a socket,
+a module on a stacking connector -- whose underside depends on the socket
+and on the card fitted, so it is never read off a model; and `heights[]`, a
+part's height or the room under its body, from its datasheet. A declared
+body moves with its connector, and under it a part must be KNOWN to fit
+(`MARGIN_MM`): a part of unknown height is refused there.
+
 The heights come from one `kicad-cli pcb export glb` of the board, cached by
 the footprints' models (not their poses) in `~/.cache/krt_heights`, so the
 seeds of one placement export once. Without kicad-cli every height is
@@ -128,15 +136,19 @@ class Cover:
     is the likeliest to stand off its footprint); its raised body past the
     occupancy still binds."""
 
-    __slots__ = ('ref', 'x0', 'y0', 'lo', 'court', 'lift_box', 'solid')
+    __slots__ = ('ref', 'x0', 'y0', 'lo', 'court', 'lift_box', 'solid', 'decl')
 
-    def __init__(self, ref, x0, y0, lo, court=None, solid=False):
+    def __init__(self, ref, x0, y0, lo, court=None, solid=False, decl=None):
         import numpy as np
         self.ref = ref
         self.solid = solid
         self.x0, self.y0 = x0, y0
         self.lo = lo
         self.court = court if court is not None else np.zeros(lo.shape, bool)
+        #: a DECLARED body (`covers[]`): (its rect, local frame; its
+        #: underside, mm; the refs it does not judge -- its standoffs and pad-less
+        #: footprints, a logo or a drawing), or None
+        self.decl = decl
         raised = np.isfinite(lo) & (lo >= LIFT_MIN_MM)
         if raised.any():
             ii, jj = np.nonzero(raised)
@@ -144,6 +156,11 @@ class Cover:
                              x0 + (ii.max() + 1) * CELL_MM, y0 + (jj.max() + 1) * CELL_MM)
         else:
             self.lift_box = None
+        if decl is not None:
+            r = decl[0]
+            lb = self.lift_box or r
+            self.lift_box = (min(lb[0], r[0]), min(lb[1], r[1]),
+                             max(lb[2], r[2]), max(lb[3], r[3]))
 
     def _window(self, box):
         """The cell index ranges over local `box`, clipped, and whether the box
@@ -204,7 +221,36 @@ class Cover:
         if not ok.any():
             return 0.0
         w = self.lo[ii[ok], jj[ok]]
-        return int(((w >= LIFT_MIN_MM) & (w < hv[ok] + OVERHANG_MARGIN_MM)).sum()) * CELL_MM * CELL_MM
+        hit = (w >= LIFT_MIN_MM) & (w < hv[ok] + OVERHANG_MARGIN_MM)
+        if self.decl is not None:
+            # the declared body is judged by `declared_area`, not the model
+            r = self.decl[0]
+            p = pts[ok]
+            hit &= ~((p[:, 0] >= r[0]) & (p[:, 0] <= r[2]) & (p[:, 1] >= r[1]) & (p[:, 1] <= r[3]))
+        return int(hit.sum()) * CELL_MM * CELL_MM
+
+    def declared_area(self, box, top, body=None) -> float:
+        """The declared body (`covers[]`) against a part: 0.0 when the part
+        fits under it (its top `MARGIN_MM` under the declared underside), else
+        mm^2 of the part under it -- its model cell by cell where it has one
+        (`body`, this cover's frame), else its occupancy `box` (local to this
+        cover). `top` is `inf` for a part whose height is unknown: nothing is
+        risked under a declared body on a guess."""
+        if self.decl is None:
+            return 0.0
+        r, under = self.decl[0], self.decl[1]
+        if top + MARGIN_MM <= under:
+            return 0.0
+        if body is not None and math.isfinite(top):
+            pts, hv = body
+            if not len(pts):
+                return 0.0
+            inside = ((pts[:, 0] >= r[0]) & (pts[:, 0] <= r[2]) & (pts[:, 1] >= r[1])
+                      & (pts[:, 1] <= r[3]) & (hv + MARGIN_MM > under))
+            return int(inside.sum()) * CELL_MM * CELL_MM
+        w = min(box[2], r[2]) - max(box[0], r[0])
+        h = min(box[3], r[3]) - max(box[1], r[1])
+        return w * h if w > 0 and h > 0 else 0.0
 
 
 def to_local(box, pose):
@@ -278,22 +324,35 @@ class Heights:
         ins = None
         for cov, x, px, ox, y, py, oy, ty in ((ca, a, pose_a, occ_a, b, pose_b, occ_b, tb),
                                               (cb, b, pose_b, occ_b, a, pose_a, occ_a, ta)):
-            if cov is None or ty is None:
+            if cov is None:
+                continue
+            # a declared body judges a part of unknown height too: refused
+            decl = cov.decl is not None and y not in cov.decl[2]
+            if ty is None and not decl:
                 continue
             judged = True
             box = to_local(to_board(oy, py), px)
-            if inside and not (box[0] >= ox[2] + grow or ox[0] >= box[2] + grow
-                               or box[1] >= ox[3] + grow or ox[1] >= box[3] + grow):
+            if ty is not None and inside and not (
+                    box[0] >= ox[2] + grow or ox[0] >= box[2] + grow
+                    or box[1] >= ox[3] + grow or ox[1] >= box[3] + grow):
                 v = cov.inside_area(ox, box, ty, grow)
                 if v is not None:
                     cleared = cleared or v == 0.0
                     ins = v if ins is None else min(ins, v)
             lb = cov.lift_box
             bb = self.bodies.get(y)
+            meet = 0.0
             if lb is not None and bb is not None:
                 ext = to_local(to_board(bb[2], py), px)
                 if ext[0] < lb[2] and lb[0] < ext[2] and ext[1] < lb[3] and lb[1] < ext[3]:
-                    over = max(over, cov.over_area(self._body_in(y, py, px)))
+                    meet = cov.over_area(self._body_in(y, py, px))
+            if decl:
+                r = cov.decl[0]
+                if box[0] < r[2] and r[0] < box[2] and box[1] < r[3] and r[1] < box[3]:
+                    meet += cov.declared_area(
+                        box, math.inf if ty is None else ty,
+                        self._body_in(y, py, px) if bb is not None else None)
+            over = max(over, meet)
         if not judged:
             return None
         return cleared, over, ins or 0.0
@@ -354,15 +413,163 @@ EMPTY = Heights(note='no heights')
 _MEMO: Dict[str, Heights] = {}
 
 
-def for_board(pcb_data, pcb_file: Optional[str] = None) -> Heights:
-    """The board's `Heights`, measured once per process and cached on disk.
-    Never raises: a board it cannot measure has no heights, and every pair
-    keeps its occupancy test."""
+def for_board(pcb_data, pcb_file: Optional[str] = None, declared=None) -> Heights:
+    """The board's `Heights`, measured once per process and cached on disk,
+    with the intent's `declared` covers and heights over it
+    (`with_declared`). Never raises: a board it cannot measure has no
+    measured heights, and every pair keeps its occupancy test."""
     try:
-        return _for_board(pcb_data, pcb_file)
+        h = _for_board(pcb_data, pcb_file)
     except Exception as ex:                                  # noqa: BLE001
-        return Heights(note=f'no heights: the measurement failed ({type(ex).__name__}: '
-                            f'{str(ex)[:120]})')
+        h = Heights(note=f'no heights: the measurement failed ({type(ex).__name__}: '
+                         f'{str(ex)[:120]})')
+    return with_declared(h, declared, pcb_data, pcb_file)
+
+
+def _axis(row):
+    """A `covers[]` row's axis and its left, unit vectors in the connector's
+    local frame (`axis_deg` is a quarter turn)."""
+    a = math.radians(float(row['axis_deg']))
+    ux, uy = round(math.cos(a)), round(math.sin(a))
+    return (ux, uy), (-uy, ux)
+
+
+def cover_rect(row) -> Tuple[float, float, float, float]:
+    """A `covers[]` row's body, in its connector's LOCAL frame: from the
+    connector's origin along `axis_deg` (0 = local +x, 90 = local +y) to
+    `length_mm`, else to its farthest standoff's `length_mm`, `width_mm`
+    wide about a centre line `offset_mm` to the axis's left (local +y for an
+    axis of 0)."""
+    (ux, uy), (vx, vy) = _axis(row)
+    length = row.get('length_mm')
+    if length is None:
+        length = max(float(s['length_mm']) for s in row['standoffs'])
+    off, half = float(row.get('offset_mm') or 0.0), float(row['width_mm']) / 2.0
+    xs, ys = [], []
+    for t in (0.0, float(length)):
+        for w in (off - half, off + half):
+            xs.append(t * ux + w * vx)
+            ys.append(t * uy + w * vy)
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def standoff_at(row, standoff) -> Tuple[float, float]:
+    """Where a `covers[]` row puts one of its standoffs, connector's local
+    frame: `length_mm` along the axis, on the centre line."""
+    (ux, uy), (vx, vy) = _axis(row)
+    t, w = float(standoff['length_mm']), float(row.get('offset_mm') or 0.0)
+    return t * ux + w * vx, t * uy + w * vy
+
+
+def along_axis(row, local_xy) -> Tuple[float, float]:
+    """A local point as (distance along the row's axis, distance to the left
+    of its centre line): what `standoff_at` inverts."""
+    (ux, uy), (vx, vy) = _axis(row)
+    x, y = local_xy
+    return x * ux + y * uy, x * vx + y * vy - float(row.get('offset_mm') or 0.0)
+
+
+_DECL_MEMO: Dict[tuple, Heights] = {}
+
+
+def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
+    """`h` with the intent's declarations over it (`Intent.height_declarations`):
+    each `heights[]` row's `height_mm` a known height and its `underside_mm`
+    the room under the part across its occupancy (outside its drawn courtyard
+    and pads); each `covers[]` row a declared body on its connector
+    (`Cover.decl`), which moves with it. Declared values win over measured
+    ones. `h` itself when nothing is declared."""
+    if not declared or not (declared.get('covers') or declared.get('heights')):
+        return h
+    key = (id(h), id(pcb_data), json.dumps(declared, sort_keys=True, default=str))
+    got = _DECL_MEMO.get(key)
+    if got is not None:
+        return got
+    import numpy as np
+    fps = pcb_data.footprints or {}
+    top, covers = dict(h.top), dict(h.covers)
+    n_h = n_u = n_c = 0
+    unders = []
+    for row in declared.get('heights') or ():
+        r = row.get('ref')
+        if r not in fps:
+            continue
+        if row.get('height_mm') is not None:
+            top[r] = (float(row['height_mm']), 'declared')
+            n_h += 1
+        if row.get('underside_mm') is not None:
+            unders.append(row)
+    if unders:
+        try:
+            from placement.body import board_bodies
+            geo = board_bodies(pcb_data, pcb_file)
+        except Exception:                                    # noqa: BLE001
+            geo = {}
+        for row in unders:
+            r = row['ref']
+            g = geo.get(r)
+            occ = getattr(g, 'occupancy_local', None)
+            if occ is None:
+                continue
+            base = covers.get(r)
+            x0, y0, lo = _grid_union(base, occ)
+            nx, ny = lo.shape
+            cx = x0 + (np.arange(nx) + 0.5) * CELL_MM
+            cy = y0 + (np.arange(ny) + 0.5) * CELL_MM
+            inb = (((cx >= occ[0]) & (cx <= occ[2]))[:, None]
+                   & ((cy >= occ[1]) & (cy <= occ[3]))[None, :])
+            lo[inb] = float(row['underside_mm'])
+            court = _mask(_no_go(fps[r], getattr(g, 'court_shape_local', None)),
+                          x0, y0, nx, ny)
+            covers[r] = Cover(r, x0, y0, lo, court, r in h.reached,
+                              base.decl if base is not None else None)
+            n_u += 1
+    # a footprint with no pads is no part (a logo, a mechanical drawing)
+    padless = frozenset(k for k, f in fps.items() if not f.pads)
+    for row in declared.get('covers') or ():
+        r = row.get('connector')
+        if r not in fps:
+            continue
+        decl = (cover_rect(row), float(row['underside_mm']),
+                frozenset(s['ref'] for s in row.get('standoffs') or ()) | padless)
+        base = covers.get(r)
+        if base is not None:
+            covers[r] = Cover(r, base.x0, base.y0, base.lo, base.court, base.solid, decl)
+        else:
+            # no measured room: its own occupancy keeps its occupancy test
+            covers[r] = Cover(r, 0.0, 0.0, np.full((1, 1), np.inf), None, True, decl)
+        n_c += 1
+    note = h.note
+    said = [f'{n} {w}' for n, w in ((n_c, 'cover(s)'), (n_h, 'height(s)'),
+                                     (n_u, 'underside(s)')) if n]
+    if said:
+        note = f"{note}; declared: {', '.join(said)}"
+    out = Heights(top, covers, note=note, reached=h.reached, bodies=h.bodies)
+    if len(_DECL_MEMO) > 64:
+        _DECL_MEMO.clear()
+    _DECL_MEMO[key] = out
+    return out
+
+
+def _grid_union(base, box):
+    """(x0, y0, lo) of a raster spanning `base`'s and local `box`, on
+    `base`'s cell grid (else one aligned to the cell size), `base`'s cells
+    copied in and `inf` elsewhere."""
+    import numpy as np
+    if base is None:
+        x0 = math.floor(box[0] / CELL_MM) * CELL_MM
+        y0 = math.floor(box[1] / CELL_MM) * CELL_MM
+        nx = int(math.ceil((box[2] - x0) / CELL_MM))
+        ny = int(math.ceil((box[3] - y0) / CELL_MM))
+        return x0, y0, np.full((max(nx, 1), max(ny, 1)), np.inf)
+    bx, by = base.lo.shape
+    i0 = min(0, math.floor((box[0] - base.x0) / CELL_MM))
+    j0 = min(0, math.floor((box[1] - base.y0) / CELL_MM))
+    i1 = max(bx, math.ceil((box[2] - base.x0) / CELL_MM))
+    j1 = max(by, math.ceil((box[3] - base.y0) / CELL_MM))
+    lo = np.full((i1 - i0, j1 - j0), np.inf)
+    lo[-i0:-i0 + bx, -j0:-j0 + by] = base.lo
+    return base.x0 + i0 * CELL_MM, base.y0 + j0 * CELL_MM, lo
 
 
 def _for_board(pcb_data, pcb_file):
@@ -414,6 +621,9 @@ def _for_board(pcb_data, pcb_file):
     h = _load(raw, pcb_data, path, names) if raw is not None else Heights(
         top=_ipc_tops(pcb_data, {}, names),
         note=f'{failed}: heights from IPC names only')
+    #: the measurement as read, every part's raster unfiltered: the facts a
+    #: cover is declared from (`py_tools/cover_facts.py`)
+    h.raw = raw
     _MEMO[key] = h
     return h
 

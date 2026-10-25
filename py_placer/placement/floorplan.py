@@ -195,12 +195,25 @@ EDGE_BAND_SANITY_MM = 5.0
 #: promote, so the rule above mandates the bump; an older build refuses both
 #: keys by name, and `fit_template.py` stamps `min_reader` 14 on a row that
 #: carries either.
-READER_VERSION = 14
+#: 15 (#1443): `covers[]` -- a body a connector carries over the board (a
+#: card in a socket, a module on a stacking connector), its underside and
+#: its standoffs at their lengths; `heights[]` -- a part's declared height
+#: or underside; and a keep-out's `max_height_mm`. Each changes what the
+#: placer may put where and what check_assembly gates, so the rule above
+#: mandates the bump; an older build refuses every one of them by name.
+READER_VERSION = 15
 #: The reader version that first reads `templates[]`.
 TEMPLATES_READER = 13
 #: The reader version that first reads a template row's `kind` and
 #: `ground_return_mm`.
 TEMPLATE_KIND_READER = 14
+#: The reader version that first reads `covers[]`, `heights[]` and a
+#: keep-out's `max_height_mm` (#1443).
+COVERS_READER = 15
+#: How far (mm) a cover's standoff may sit from where the row puts it -- its
+#: length along the axis, on the centre line -- before the `cover` rule
+#: reports it: room for the anneal's final legality step, as a template's.
+COVER_STANDOFF_TOLERANCE_MM = 0.3
 
 #: #1357. A row's FREE TEXT -- the author's reason for it, which no rule
 #: grades -- has ONE meaning and three spellings. `why` is canonical;
@@ -244,7 +257,7 @@ _TOP_LEVEL_KEYS = {
     'keepouts', 'edge_connectors', 'decaps', 'must_lock', 'legality_budget',
     'health', 'severity', 'context', 'overlap_waivers', 'min_reader',
     'assembly', 'proximity', 'dispositions', 'arrays', 'fixed_poses',
-    'keep_away', 'replicate', 'templates',
+    'keep_away', 'replicate', 'templates', 'covers', 'heights',
 }
 #: #959 (#997). WRITTEN answers to "why is this not graded", one map per kind
 #: of question: a rule the plan leaves dark, a budget key the emitter withheld,
@@ -327,8 +340,23 @@ _ASSEMBLY_SIDES = ('F', 'B', 'both')
 # pinned against them by tests/test_549_floorplan_grade.py -- so a new emitted
 # key fails there, rather than as an artifact that stops loading months later.
 _ENVELOPE_KEYS = {'rect', 'tolerance_mm'}
-_KEEPOUT_KEYS = {'name', 'rect', 'circle', 'sides', 'allow',
+_KEEPOUT_KEYS = {'name', 'rect', 'circle', 'sides', 'allow', 'max_height_mm',
                  'context'} | _FREE_TEXT_KEYS
+#: #1443. One `covers[]` row: a body `connector` carries over the board on
+#: face `side`, `width_mm` wide and `underside_mm` above the face, along
+#: `axis_deg` (the connector's frame, a quarter turn) to `length_mm` (else
+#: its farthest standoff), its centre line `offset_mm` to the axis's left;
+#: each standoff `{ref, length_mm, rot?}` held that far along the axis.
+#: `source` says where the numbers came from (a datasheet, a model).
+_COVER_KEYS = {'connector', 'side', 'axis_deg', 'width_mm', 'underside_mm',
+               'length_mm', 'offset_mm', 'standoffs', 'source',
+               'context'} | _FREE_TEXT_KEYS
+_COVER_STANDOFF_KEYS = {'ref', 'length_mm', 'rot'}
+#: #1443. One `heights[]` row: a part's `height_mm` (its top above its face)
+#: and/or `underside_mm` (the room under its body, across its occupancy),
+#: from `source`.
+_HEIGHT_KEYS = {'ref', 'height_mm', 'underside_mm', 'source',
+                'context'} | _FREE_TEXT_KEYS
 #: `source`, `suspect`, `suspect_reason`, `overhang_capped` and
 #: `observed_overhang_mm` are emitter-written and read by nothing today; they
 #: are accepted because `emit_intent` writes them and the round trip must
@@ -586,6 +614,41 @@ class Intent:
     #: not the board. Seated and carried by `place_simple`; graded by
     #: `template`.
     templates: Tuple[Dict[str, object], ...] = ()
+    #: #1443. Declared covers, `[{connector, side, axis_deg, width_mm,
+    #: underside_mm, length_mm?, offset_mm?, standoffs[{ref, length_mm,
+    #: rot?}], source}]`. NEVER emitted: a card's underside depends on the
+    #: socket and on the card fitted, which the board does not say. Judged by
+    #: `placement.heights` (a part under the body must be KNOWN to fit), the
+    #: standoffs held by `place_simple` as a template on the connector
+    #: (`cover_templates`), graded by `cover`.
+    covers: Tuple[Dict[str, object], ...] = ()
+    #: #1443. Declared part heights, `[{ref, height_mm?, underside_mm?,
+    #: source}]`, over the 3D models' (`placement.heights.with_declared`).
+    heights: Tuple[Dict[str, object], ...] = ()
+
+    def height_declarations(self) -> Optional[Dict[str, list]]:
+        """The `covers[]` and `heights[]` rows as plain data for
+        `placement.heights.for_board`, or None when there are none."""
+        if not self.covers and not self.heights:
+            return None
+        return {'covers': [dict(c) for c in self.covers],
+                'heights': [dict(h) for h in self.heights]}
+
+    def cover_templates(self) -> List[Dict[str, object]]:
+        """Each cover's standoffs as a `templates[]` row anchored on its
+        connector, at the lengths the cover gives them -- what `place_simple`
+        seats and carries, as a datasheet template's members."""
+        from .heights import standoff_at
+        out = []
+        for c in self.covers:
+            if not c['standoffs']:
+                continue
+            out.append({'anchor': c['connector'],
+                        'members': [{'ref': s['ref'], 'at': list(standoff_at(c, s)),
+                                     'rot': s['rot']} for s in c['standoffs']],
+                        'tolerance_mm': COVER_STANDOFF_TOLERANCE_MM,
+                        'why': f"cover on {c['connector']}: standoffs at their lengths"})
+        return out
 
     def assembly_sides(self) -> str:
         """The declared policy, or 'both' -- which constrains nothing.
@@ -1062,6 +1125,130 @@ def _template_claims(raw: Dict) -> List[Dict]:
         raise IntentError(str(ex)) from ex
 
 
+def _source(row, where: str) -> str:
+    """A declaration's `source`: a non-empty string (#1443 -- a height or a
+    cover is read from a datasheet or a model, and says which)."""
+    s = row.get('source')
+    if not isinstance(s, str) or not s.strip():
+        raise IntentError(f"{where}.source: say where the numbers come from "
+                          f"(a datasheet, a 3D model), got {s!r}")
+    return s
+
+
+def _cover_claims(raw: Dict) -> List[Dict]:
+    """Validate `covers[]` (#1443), AT LOAD: the placement tools act on it
+    and never call `validate_intent`. Every number is the author's: nothing
+    is filled in. What needs the board -- the refs, the connector's face, the
+    standoffs where the row puts them -- is the `cover` rule's question."""
+    got = raw.get('covers')
+    if got is None:
+        return []
+    if not isinstance(got, list):
+        raise IntentError(f"covers: expected a list of rows, got {type(got).__name__}")
+    out: List[Dict] = []
+    owner: Dict[str, str] = {}
+    for i, c in enumerate(got):
+        where = f"covers[{i}]"
+        if not isinstance(c, dict):
+            raise IntentError(f"{where}: expected an object with `connector`")
+        _reject_unknown(c, _COVER_KEYS, where)
+        _entry_context(c, where)
+        row = dict(c)
+        con = c.get('connector')
+        if not isinstance(con, str) or not con.strip():
+            raise IntentError(f"{where}.connector: expected a reference, got {con!r}")
+        if con in owner:
+            raise IntentError(f"{where}.connector: {con} is already {owner[con]}")
+        owner[con] = where
+        for k in ('side', 'axis_deg', 'width_mm', 'underside_mm'):
+            if k not in c:
+                raise IntentError(f"{where}: needs `{k}` -- a cover's numbers are "
+                                  f"declared, never assumed")
+        if c['side'] not in ('F', 'B'):
+            raise IntentError(f"{where}.side: 'F' or 'B', got {c['side']!r}")
+        a = _number(c['axis_deg'], f"{where}.axis_deg")
+        if abs(a / 90.0 - round(a / 90.0)) > 1e-6:
+            raise IntentError(f"{where}.axis_deg: a quarter turn (0, 90, 180, 270) in "
+                              f"the connector's frame, got {a!r}")
+        row['axis_deg'] = float(round(a / 90.0) * 90 % 360)
+        row['width_mm'] = _number(c['width_mm'], f"{where}.width_mm", lo=0.0)
+        if row['width_mm'] <= 0:
+            raise IntentError(f"{where}.width_mm: expected > 0")
+        row['underside_mm'] = _number(c['underside_mm'], f"{where}.underside_mm", lo=0.0)
+        for k in ('length_mm', 'offset_mm'):
+            if c.get(k) is not None:
+                row[k] = _number(c[k], f"{where}.{k}", lo=0.0 if k == 'length_mm' else None)
+        row['source'] = _source(c, where)
+        sts = c.get('standoffs') or []
+        if not isinstance(sts, list):
+            raise IntentError(f"{where}.standoffs: expected a list of {{ref, length_mm}}")
+        clean = []
+        for j, s in enumerate(sts):
+            w = f"{where}.standoffs[{j}]"
+            if not isinstance(s, dict):
+                raise IntentError(f"{w}: expected an object with `ref` and `length_mm`")
+            _reject_unknown(s, _COVER_STANDOFF_KEYS, w)
+            r = s.get('ref')
+            if not isinstance(r, str) or not r.strip() or r == con:
+                raise IntentError(f"{w}.ref: expected a reference other than the "
+                                  f"connector, got {r!r}")
+            if r in owner:
+                raise IntentError(f"{w}.ref: {r} is already {owner[r]}")
+            owner[r] = w
+            if 'length_mm' not in s:
+                raise IntentError(f"{w}: needs `length_mm`, its distance along the "
+                                  f"axis from the connector's origin")
+            ln = _number(s['length_mm'], f"{w}.length_mm", lo=0.0)
+            rot = _number(s.get('rot', 0.0), f"{w}.rot")
+            if abs(rot / 90.0 - round(rot / 90.0)) > 1e-6:
+                raise IntentError(f"{w}.rot: a quarter turn, got {rot!r}")
+            clean.append({'ref': r, 'length_mm': ln, 'rot': float(rot) % 360.0})
+        row['standoffs'] = clean
+        if not clean and row.get('length_mm') is None:
+            raise IntentError(f"{where}: needs `length_mm` or a standoff -- nothing "
+                              f"says how far the body reaches")
+        if row.get('length_mm') is None and max(s['length_mm'] for s in clean) <= 0:
+            raise IntentError(f"{where}: its body reaches nowhere (every length is 0)")
+        out.append(row)
+    return out
+
+
+def _height_claims(raw: Dict) -> List[Dict]:
+    """Validate `heights[]` (#1443), AT LOAD: one row per part, each
+    carrying `height_mm` and/or `underside_mm`, and its `source`."""
+    got = raw.get('heights')
+    if got is None:
+        return []
+    if not isinstance(got, list):
+        raise IntentError(f"heights: expected a list of rows, got {type(got).__name__}")
+    out: List[Dict] = []
+    seen: Dict[str, int] = {}
+    for i, h in enumerate(got):
+        where = f"heights[{i}]"
+        if not isinstance(h, dict):
+            raise IntentError(f"{where}: expected an object with `ref`")
+        _reject_unknown(h, _HEIGHT_KEYS, where)
+        _entry_context(h, where)
+        r = h.get('ref')
+        if not isinstance(r, str) or not r.strip():
+            raise IntentError(f"{where}.ref: expected a reference, got {r!r}")
+        if r in seen:
+            raise IntentError(f"{where}.ref: {r} repeats heights[{seen[r]}]")
+        seen[r] = i
+        row = dict(h)
+        if h.get('height_mm') is None and h.get('underside_mm') is None:
+            raise IntentError(f"{where}: declares neither `height_mm` nor "
+                              f"`underside_mm`, so it says nothing")
+        for k in ('height_mm', 'underside_mm'):
+            if h.get(k) is not None:
+                row[k] = _number(h[k], f"{where}.{k}", lo=0.0)
+        if row.get('height_mm') is not None and row['height_mm'] <= 0:
+            raise IntentError(f"{where}.height_mm: expected > 0")
+        row['source'] = _source(h, where)
+        out.append(row)
+    return out
+
+
 def _along_edge_claim(c: Dict, i: int) -> None:
     """Validate `center_on_edge` / `along_edge_band` on one entry (#712).
 
@@ -1502,6 +1689,11 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
                               f"`circle`")
         k['sides'] = tuple(k.get('sides') or ('F', 'B'))
         k['allow'] = _str_tuple(k.get('allow'), f"keepouts[{i}].allow")
+        if k.get('max_height_mm') is not None:
+            # #1443: a part whose height is KNOWN and no more than this may
+            # stand in it; an unknown height is never risked
+            k['max_height_mm'] = _number(k['max_height_mm'],
+                                         f"keepouts[{i}].max_height_mm", lo=0.0)
         keepouts.append(k)
 
     conns = []
@@ -1776,7 +1968,19 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         keep_away=tuple(_keep_away_claims(raw)),
         replicate=tuple(_replicate_claims(raw)),
         templates=tuple(_template_claims(raw)),
+        covers=tuple(_cover_claims(raw)),
+        heights=tuple(_height_claims(raw)),
     )
+    _covered = {s['ref']: f"covers ({c['connector']})"
+                for c in intent.covers for s in c['standoffs']}
+    _covered.update({c['connector']: f"covers ({c['connector']})" for c in intent.covers})
+    for t in intent.templates:
+        for r in [t['anchor']] + [m['ref'] for m in t['members']]:
+            if r in _covered:
+                raise IntentError(
+                    f"templates ({t['anchor']}) and {_covered[r]} both place {r}: a "
+                    f"cover holds its standoffs at their lengths as a template "
+                    f"anchored on its connector, so the two cannot share a part")
     # A disposition for a rule the intent ARMS says "this is not graded" about
     # a rule that is -- the two statements cannot both be true, and a reader
     # trusting the disposition would skip a live finding. Checked here, where
@@ -2432,9 +2636,12 @@ def _circle_hits_rect(cx, cy, radius, rect) -> bool:
 # implementations.
 # --------------------------------------------------------------------------
 
-def keepouts_for_ref(keepouts, ref: str, sides) -> Tuple[Dict, ...]:
+def keepouts_for_ref(keepouts, ref: str, sides, height=None) -> Tuple[Dict, ...]:
     """The keep-out entries that BIND `ref`: not exempted by `allow`, and
-    sharing at least one face with it.
+    sharing at least one face with it -- nor, for a keep-out with a
+    `max_height_mm` (#1443), by `ref`'s KNOWN `height` being no more than
+    that (an unknown height, None, is bound: nothing is risked on a guess;
+    so is a part on both faces).
 
     Pose-INVARIANT by construction -- an fnmatch against a reference and the
     set of faces a part occupies are both unchanged by moving it -- which is
@@ -2452,6 +2659,12 @@ def keepouts_for_ref(keepouts, ref: str, sides) -> Tuple[Dict, ...]:
         if any(allow_pattern_matches(pat, ref) for pat in (k.get('allow') or ())):
             continue
         if not (set(sides) & set(k.get('sides') or ('F', 'B'))):
+            continue
+        cap = k.get('max_height_mm')
+        # a part on both faces (through-hole) also stands on the other face,
+        # where its height -- its leads' -- is not known
+        if (cap is not None and height is not None and len(set(sides)) == 1
+                and height <= cap + 1e-9):
             continue
         out.append(k)
     return tuple(out)
@@ -3424,6 +3637,12 @@ class _Ctx:
         #: One row per declared template: each member's drift from its
         #: template pose, passing ones too.
         self.template_measured: List[Dict[str, object]] = []
+        #: #1443. One row per declared cover: each standoff's distance along
+        #: the axis and off its centre line, passing ones too.
+        self.cover_measured: List[Dict[str, object]] = []
+        #: #1443. The board's heights with the intent's declarations, read
+        #: once when a rule asks (`_ctx_heights`).
+        self._heights = None
         #: #1051. One row per declared array, formed or not: the verdict,
         #: the order it could place and the members it could not.
         self.array_measured: List[Dict[str, object]] = []
@@ -4936,6 +5155,9 @@ def rule_keepout(ctx) -> Iterator[Violation]:
     # same shape `QuenchState` uses to build `keepouts_for`. Keep-out-outer
     # with a 1-tuple worked, but rebuilt two sets per (keep-out, part) pair.
     # Violation order is not affected: `grade` sorts on `Violation.sort_key`.
+    # #1443: a height-limited keep-out admits a part whose height is known
+    hts = (_ctx_heights(ctx) if any(k.get('max_height_mm') is not None
+                                    for k in ctx.intent.keepouts) else None)
     for ref, part in sorted(ctx.parts.items()):
         # `allow` and the side filter, from the SHARED resolver: the grader
         # and the seat predicate must agree on WHICH keep-outs bind a ref, not
@@ -4943,7 +5165,8 @@ def rule_keepout(ctx) -> Iterator[Violation]:
         # BOTH faces -- its leads pass through the keep-out even when its body
         # sits on the other side -- which is why `sides` is `part.sides` and
         # the hit test is given both rects.
-        for k in keepouts_for_ref(ctx.intent.keepouts, ref, part.sides):
+        for k in keepouts_for_ref(ctx.intent.keepouts, ref, part.sides,
+                                  hts.height(ref) if hts is not None else None):
             if keepout_hit(k, (part.rect, part.tht_rect)):
                 name = k['name']
                 shape = (_fmt_rect(k['rect']) if k.get('rect') is not None
@@ -6912,6 +7135,81 @@ def rule_template(ctx) -> Iterator[Violation]:
             expected={'tolerance_mm': tol})
 
 
+def _ctx_heights(ctx):
+    """#1443: the board's heights with the intent's declarations, read once."""
+    if ctx._heights is None:
+        from . import heights as _h
+        ctx._heights = _h.for_board(ctx.pcb, ctx.pcb_file,
+                                    ctx.intent.height_declarations())
+    return ctx._heights
+
+
+def rule_cover(ctx) -> Iterator[Violation]:
+    """Each declared cover (#1443) checked against the board, never
+    completed from it: its connector on the row's face, and each standoff
+    where the row puts it -- `length_mm` along the axis from the connector's
+    origin, on the centre line -- within `COVER_STANDOFF_TOLERANCE_MM`. One
+    `cover` finding per cover with a standoff off its place; a row naming a
+    ref the board does not have, or a connector on the other face, is
+    `cover_unresolved`. WARN by default (both names); the `severity` map may
+    promote either. What stands UNDER the body is graded where every part
+    pair is: check_assembly's height pairs. Every cover is recorded on
+    `ctx.cover_measured`."""
+    from .heights import along_axis, to_local
+    sev = ctx.intent.severity_of('cover', default=WARN)
+    sev_unres = ctx.intent.severity_of('cover_unresolved', default=WARN)
+    fps = ctx.pcb.footprints or {}
+    for i, c in enumerate(ctx.intent.covers):
+        con = c['connector']
+        key = f"covers[{i}] ({con})"
+        missing = [r for r in [con] + [s['ref'] for s in c['standoffs']] if r not in fps]
+        reason = None
+        if missing:
+            reason = f"the board has no {', '.join(missing)}"
+        elif legality.footprint_side(fps[con]) != c['side']:
+            reason = (f"{con} is on {legality.footprint_side(fps[con])}.Cu, the row "
+                      f"says {c['side']}")
+        if reason:
+            ctx.cover_measured.append({'index': i, 'connector': con,
+                                       'state': 'unresolved', 'reason': reason})
+            yield Violation(rule='cover_unresolved', severity=sev_unres, ref=con,
+                            message=f"{key}: not checked -- {reason}",
+                            measured={'index': i}, expected={'connector': con})
+            continue
+        f = fps[con]
+        pose = (f.x, f.y, f.rotation or 0.0)
+        rows, off = [], []
+        for s in c['standoffs']:
+            p = fps[s['ref']]
+            lx, ly = to_local((p.x, p.y, p.x, p.y), pose)[:2]
+            t, w = along_axis(c, (lx, ly))
+            miss = math.hypot(t - s['length_mm'], w)
+            row = {'ref': s['ref'], 'declared_mm': s['length_mm'],
+                   'along_mm': round(t, 3), 'off_line_mm': round(w, 3),
+                   'miss_mm': round(miss, 3)}
+            rows.append(row)
+            if miss > COVER_STANDOFF_TOLERANCE_MM + legality.EPS:
+                off.append(row)
+        length = (c['length_mm'] if c.get('length_mm') is not None
+                  else max(s['length_mm'] for s in c['standoffs']))
+        ctx.cover_measured.append({
+            'index': i, 'connector': con, 'state': 'measured', 'passes': not off,
+            'width_mm': c['width_mm'], 'underside_mm': c['underside_mm'],
+            'length_mm': length, 'source': c['source'], 'standoffs': rows})
+        if not off:
+            continue
+        w = max(off, key=lambda x: x['miss_mm'])
+        yield Violation(
+            rule='cover', severity=sev, ref=w['ref'], block=ctx.owner.get(w['ref']),
+            message=(f"{key}: {len(off)} of {len(rows)} standoff(s) off the place the "
+                     f"cover gives them -- worst {w['ref']}, {w['along_mm']:.2f}mm "
+                     f"along the axis (declared {w['declared_mm']:g}mm) and "
+                     f"{w['off_line_mm']:+.2f}mm off its centre line"),
+            measured={'index': i, 'off': len(off), 'max_mm': w['miss_mm'],
+                      'worst': [x['ref'] for x in off[:NAMED_WORST]]},
+            expected={'tolerance_mm': COVER_STANDOFF_TOLERANCE_MM})
+
+
 def template_keepout_findings(intent, parts, anchor_pose=None) -> List[Dict]:
     """The intent's keep-outs against its datasheet templates (#1387): a
     keep-out that binds a template MEMBER but not the template's anchor makes
@@ -7158,6 +7456,7 @@ RULES = (
     ('array_formation', rule_array_formation),
     ('replicate', rule_replicate),
     ('template', rule_template),
+    ('cover', rule_cover),
 )
 
 #: Rules whose violations are raised OUTSIDE the `RULES` loop, and so have no
@@ -7196,6 +7495,10 @@ _NON_RULE_SEVERITIES = frozenset({
     # far from the chip's is a claim about the template itself, which a
     # member exactly at its pose can still break. WARN by default.
     'template_ground_return',
+    # #1443, beside `cover`: a row naming a ref the board does not have, or
+    # a connector on the other face, is a different claim from a standoff
+    # off its place. WARN by default, like the rule.
+    'cover_unresolved',
     # Raised by `plan_check`, beside `template`: a keep-out that binds a
     # template member but not its anchor (`template_keepout_findings`). WARN
     # by default, like the template it concerns.
@@ -7270,6 +7573,7 @@ _SKIP_REASON = {
     'array_formation': 'the intent declares no arrays',
     'replicate': 'the intent declares no replicate copies',
     'template': 'the intent declares no templates',
+    'cover': 'the intent declares no covers',
 }
 
 
@@ -7446,6 +7750,8 @@ def _wants(intent: Intent, rule: str) -> bool:
         return bool(intent.replicate)
     if rule == 'template':
         return bool(intent.templates)
+    if rule == 'cover':
+        return bool(intent.covers)
     return True
 
 
@@ -7476,6 +7782,7 @@ _ARMING_KEY = {
     'array_formation': 'arrays[]',
     'replicate': 'replicate[]',
     'template': 'templates[]',
+    'cover': 'covers[]',
 }
 
 #: What each rule reports at when the intent's `severity` map says nothing.
@@ -7487,7 +7794,7 @@ _ARMING_KEY = {
 _RULE_DEFAULT_SEVERITY = dict({name: ERROR for name, _ in RULES},
                               assembly_side=WARN, decap_ungraded=WARN,
                               pins_to_edge=WARN, keep_away=WARN,
-                              replicate=WARN, template=WARN)
+                              replicate=WARN, template=WARN, cover=WARN)
 
 #: A rule whose severity the intent's map cannot change, because the rule
 #: ignores the map (`rule_pins_to_edge` always yields WARN).
@@ -7523,6 +7830,10 @@ _POLICY_RULES = {
     'template': ("an arrangement read from a part's datasheet; the board says "
                  'which parts are wired to the chip, not where its datasheet '
                  'puts them'),
+    # #1443. A card's underside depends on the socket and on the card fitted.
+    'cover': ('a body a connector carries, read from its datasheets; the board '
+              'says where the connector is, not which card it takes or how '
+              'low that card reaches'),
 }
 
 
@@ -7890,6 +8201,9 @@ class GradeResult:
     #: Every declared template's members' drift from their template poses,
     #: passing ones included. Empty when the intent declares none.
     template_measured: List[Dict[str, object]] = field(default_factory=list)
+    #: #1443: every declared cover's standoffs against the lengths it gives
+    #: them, passing ones included. Empty when the intent declares none.
+    cover_measured: List[Dict[str, object]] = field(default_factory=list)
     #: #1051: every declared array's formation measurement, formed or not,
     #: with the members its pin order could not place. Empty when no array
     #: is declared.
@@ -8055,7 +8369,9 @@ def _run_rules(ctx, abstained=None, leave_out=()):
 def _ctx_census(ctx):
     """The ctx's `CourtyardCensus`, built once."""
     if ctx._census is None:
-        ctx._census = legality.CourtyardCensus(ctx.pcb, ctx.pcb_file)
+        ctx._census = legality.CourtyardCensus(
+            ctx.pcb, ctx.pcb_file,
+            declared_heights=ctx.intent.height_declarations())
     return ctx._census
 
 
@@ -9127,7 +9443,8 @@ def _grade_ctx(intent: Intent, pcb_data, pcb_file: str, *,
     # never a fixed 0.55 edge clearance
     clr, edge = resolved_floors(pcb_file, clearance, board_edge_clearance)
     state = QuenchState(pcb_data, pcb_file, clearance=clr,
-                        board_edge_clearance=edge)
+                        board_edge_clearance=edge,
+                        declared_heights=intent.height_declarations())
 
     try:
         from .parser import extract_locked_refs
@@ -9313,6 +9630,7 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
         keep_away_measured=list(ctx.keep_away_measured),
         replicate_measured=list(ctx.replicate_measured),
         template_measured=list(ctx.template_measured),
+        cover_measured=list(ctx.cover_measured),
         array_measured=list(ctx.array_measured),
         edge_connector_evidence=list(ctx.edge_connector_evidence),
         decap_pin_evidence=pin_evidence,
@@ -10758,6 +11076,18 @@ def format_text(r: GradeResult) -> str:
               f"({m['fit_offset'][0]:+.2f}, {m['fit_offset'][1]:+.2f})"
             + (f", {len(m['left_in_place'])} left out by the declaration"
                if m.get('left_in_place') else ''))
+    for m in r.cover_measured:
+        if m.get('state') == 'unresolved':
+            lines.append(f"  covers[{m['index']}] {m['connector']}: not measured -- "
+                         f"{m['reason']}")
+            continue
+        lines.append(f"  covers[{m['index']}] {m['connector']}: body "
+                     f"{m['width_mm']:g} x {m['length_mm']:g}mm, underside "
+                     f"{m['underside_mm']:g}mm ({m['source']})"
+                     + ''.join(f"; {s['ref']} {s['along_mm']:.2f}mm along "
+                               f"(declared {s['declared_mm']:g}), "
+                               f"{s['off_line_mm']:+.2f}mm off the line"
+                               for s in m['standoffs']))
     for m in r.template_measured:
         if m.get('state') == 'unresolved':
             lines.append(f"  templates[{m['index']}] {m['anchor']}: not measured")
@@ -11308,6 +11638,7 @@ def to_json(r: GradeResult) -> Dict:
            else {}),
         **({'templates': r.template_measured} if r.template_measured
            else {}),
+        **({'covers': r.cover_measured} if r.cover_measured else {}),
         **({'pad_stacks': r.pad_stacks} if r.pad_stacks is not None
            else {}),
     }

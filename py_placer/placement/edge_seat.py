@@ -642,7 +642,7 @@ def seat_state(pcb, pcb_file, intent, blocks, clearance, edge, fixed=(),
                estimate_courtyards=True, estimate_skip=()):
     """The placement state `place_simple` seats and anneals on: the board's
     floors, the intent's `fixed_poses[]` refs held (`fixed`), its keep-outs,
-    and every declared zone binding its members (containment) and, when
+    its declared covers and heights (#1443), and every declared zone binding its members (containment) and, when
     exclusive, keeping strangers out -- the board's bounds open a zone side
     on the outline to an edge-claim member (#1174). A part that draws no
     courtyard is seated on an estimated one (#1300), here as in place_simple,
@@ -659,7 +659,9 @@ def seat_state(pcb, pcb_file, intent, blocks, clearance, edge, fixed=(),
                                  intent_zones=list(zones),
                                  exclusive_zones=[z for z in zones if z['exclusive']],
                                  estimate_courtyards=estimate_courtyards,
-                                 estimate_skip=estimate_skip)
+                                 estimate_skip=estimate_skip,
+                                 declared_heights=(intent.height_declarations()
+                                                   if intent is not None else None))
 
 
 def oversubscribed(pcb, pcb_file, intent, clearance, edge, group_sources=()

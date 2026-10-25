@@ -191,7 +191,9 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
     # datasheet templates (`placement.templates`): each member joins its
     # chip's group, as a claimed part joins its partner's
     from placement.templates import validate as validate_templates
-    tmpls = (list(intent.templates) if intent is not None
+    # ... and each declared cover's standoffs, held at their lengths from
+    # its connector the same way (#1443, `Intent.cover_templates`)
+    tmpls = (list(intent.templates) + intent.cover_templates() if intent is not None
              else validate_templates(base.get('templates')))
     tmembers = {m['ref'] for t in tmpls for m in t['members']}
     for t in tmpls:

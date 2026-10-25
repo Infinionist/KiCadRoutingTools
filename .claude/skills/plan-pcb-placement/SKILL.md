@@ -399,6 +399,54 @@ no `edge_connector` error, and no `edge_oversubscribed` warning (an edge
 declared more connectors than fit on it together: move one to another edge,
 drop a declaration, or widen a band now, before placing).
 
+### 3.4b Covers (your judgement)
+
+A card in a socket (M.2, mini-PCIe), a module on a mezzanine or stacking
+connector (a compute module) or a shield on headers stands over the board.
+Parts may go under it only where they fit, and the board does not say how
+low it reaches, so declare it. Without a declaration nothing judges the area
+under a card, and a tall part can be placed there.
+
+1. **Find each socket or stacking connector that takes a card or module**,
+   from its footprint, value and datasheet, and run:
+   ```bash
+   python3 -X utf8 py_tools/cover_facts.py wk/<run>/fixed.kicad_pcb --refs J3
+   ```
+   Without `--refs` it lists every connector of ten pads or more and every
+   part whose models raise a body. Per connector it prints its height, each 3D model it names that does not
+   resolve, what its resolved models raise over the board (a card or module
+   model) with that model's underside, the standoffs and mounting holes on
+   its axes (distance along the axis and off it), and the parts under the
+   raised extent now. Facts, not decisions.
+2. **The underside, from the datasheets.** The card's lowest point above the
+   board is the socket's card height (or the stacking height) less what
+   hangs below the card: nothing for a single-sided card, its bottom-side
+   height for a double-sided one. A measured card model draws ONE card
+   type: weigh its underside against the datasheets, never take it as the
+   answer. When it cannot be established, declare the conservative value
+   (the lowest card the socket takes) and say so in the hand-back.
+3. **Choose the standoff for each card length** the board takes (the facts
+   list each with its distance), and the card's width and reach.
+4. **Write the row** into the intent's `covers[]`: `connector`, `side`,
+   `axis_deg` (the facts' axis), `width_mm`, `underside_mm`, `length_mm`
+   (how far the body reaches from the connector's origin), `offset_mm` (the
+   standoff's "off" when the card's centre line misses the connector's
+   origin), `standoffs` (each `ref` with `length_mm`, the facts' distance
+   along) and `source` (the datasheets and figures). Set `min_reader` 15.
+5. **Run check_floorplan again** (§3.4): no `cover` or `cover_unresolved`
+   warning. A `cover` warning names a standoff not where the row puts it:
+   fix the row, or move the standoff.
+
+`place_simple` then holds each standoff at its length from the connector and
+admits a part under the body only when its height is known and its top is
+0.5 mm or more under the underside; check_assembly gates one that is not. A
+part whose height nothing gives (no 3D model, no IPC-7351 name) is never put
+under it: declare its height in `heights[]` (`ref`, `height_mm`, `source`)
+only from its datasheet, never a guess. A module whose 3D model is drawn
+solid down to the board takes its datasheet's underside the same way
+(`underside_mm`). An enclosure's height limit over an area is a keep-out
+with `max_height_mm`.
+
 ### 3.5 Datasheet layouts (your judgement)
 
 A switching stage's datasheet draws where each of its support parts goes:
@@ -1079,6 +1127,8 @@ Routing Completes): run them once, here, not again inside the routing.
    - **the result first:** a table of the mode's DONE conditions with measured
      values, the `blocking_by` breakdown, and vias / copper_mm / segments;
    - **the groups and every judgement call** in them, with its reason;
+   - **covers and declared heights** (§3.4b): each row and its source, and
+     any value declared conservatively because it could not be established;
    - **which stop rule fired**, and every remaining blocker BY NAME with its
      measurement;
    - **floors:** where the run went below the board's authored or fab floors

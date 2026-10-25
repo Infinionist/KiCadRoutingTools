@@ -2674,9 +2674,13 @@ class CourtyardCensus:
     def __init__(self, pcb_data, pcb_file: Optional[str] = None, *,
                  intent_waivers: Sequence = (),
                  courtyard_severity: Optional[str] = 'auto',
-                 locked_refs=None, courtyard_waivers: Sequence = ()):
+                 locked_refs=None, courtyard_waivers: Sequence = (),
+                 declared_heights=None):
         self.pcb_data = pcb_data
         self.pcb_file = pcb_file
+        #: #1443: the intent's declared covers and heights
+        #: (`Intent.height_declarations`), over the measured ones
+        self.declared_heights = declared_heights
         self.fps = pcb_data.footprints or {}
         self.intent_waivers = tuple(tuple(p) for p in intent_waivers)
         # #1298: courtyard-only waivers (`PairWaivers.courtyard_sets`).
@@ -2798,7 +2802,8 @@ class CourtyardCensus:
         if h is None:
             from placement import heights as _h
             try:
-                h = _h.for_board(self.pcb_data, self.pcb_file)
+                h = _h.for_board(self.pcb_data, self.pcb_file,
+                                 self.declared_heights)
             except Exception:                                # noqa: BLE001
                 h = _h.EMPTY
             self._heights = h
@@ -3134,7 +3139,8 @@ def grade_body_overlap(pcb_data, clearance: float,
                        intent_waivers: Sequence[Sequence[str]] = (),
                        pcb_file: Optional[str] = None,
                        courtyard_severity: Optional[str] = 'auto',
-                       courtyard_waivers: Sequence[Sequence[str]] = ()
+                       courtyard_waivers: Sequence[Sequence[str]] = (),
+                       declared_heights=None
                        ) -> Dict[str, object]:
     """Board-level ASSEMBLY audit at the file's own poses.
 
@@ -3177,7 +3183,8 @@ def grade_body_overlap(pcb_data, clearance: float,
     _census = CourtyardCensus(pcb_data, pcb_file,
                               intent_waivers=intent_waivers,
                               courtyard_severity=courtyard_severity,
-                              courtyard_waivers=courtyard_waivers)
+                              courtyard_waivers=courtyard_waivers,
+                              declared_heights=declared_heights)
     _cg = _census.grade()
     _cy_sev = _cg.severity
     _cy_basis = _cg.severity_basis

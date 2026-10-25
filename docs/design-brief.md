@@ -318,9 +318,10 @@ merely unknown — an author who wrote one believes it is being honoured:
   toolchain writes `Edge.Cuts`.
 - **`board_size`** — the same fact one step earlier: board size is a mechanical
   decision this toolchain does not make.
-- **`height`** — nothing in the placement stack grades a height limit. Part
-  heights are read off the 3D models only to judge which part fits under which
-  (#1443, see the placer's notes in `utilities.md`), so a declared limit would
+- **`height`** — nothing in the placement stack grades a board-wide height
+  limit. Heights are judged per part and per area (#1443): which part fits
+  under which, a declared `covers[]` body, a keep-out's `max_height_mm` (see
+  `floorplan-intent.md`), so a declared board-wide limit would
   grade **nothing**, which is worse than not declaring it: it is exactly the
   "constraint the author believes they set and the grader never checks" failure
   the strict key sets exist to prevent.

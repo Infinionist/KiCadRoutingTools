@@ -54,10 +54,10 @@ than ignored, because an author who wrote one believes it is being honoured:
 
 * an envelope or outline -- `floorplan`'s module docstring is the rule, the
   board outline is not ours to change;
-* a height limit -- nothing in the placement stack grades one: part heights
-  are measured only to judge which part fits under which (#1443,
-  `placement.heights`), never against a board-level limit, so a declared
-  limit would grade nothing at all. A constraint the author believes they set and the grader
+* a height limit -- nothing in the placement stack grades a board-wide one:
+  heights are judged per part and per area (#1443, `placement.heights`):
+  which part fits under which, a declared cover, a keep-out's
+  `max_height_mm`; so a declared board-wide limit would grade nothing at all. A constraint the author believes they set and the grader
   never checks is the exact failure `_reject_unknown` exists to prevent.
 """
 from __future__ import annotations
@@ -126,10 +126,11 @@ _REFUSED_TOP_LEVEL = {
     'outline': 'the board outline is READ from the board, never authored',
     'board_size': 'board size is a mechanical decision this toolchain does '
                   'not make; nothing here writes Edge.Cuts',
-    'height': 'nothing in the placement stack grades a height limit -- part '
-              'heights are measured only to judge which part fits under '
-              'which (#1443) -- so a declared limit would grade nothing, '
-              'which is worse than not declaring it',
+    'height': 'nothing in the placement stack grades a board-wide height '
+              'limit -- heights are judged per part and per area (#1443): '
+              "which part fits under which, an intent's covers[], a "
+              "keep-out's max_height_mm -- so a declared limit would grade "
+              'nothing, which is worse than not declaring it',
 }
 
 _PRODUCT_KEYS = {'form_factor', 'primary_axis', 'held_by', 'user_top_side'}
