@@ -5591,6 +5591,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         from fix_kicad_drc_settings import apply_routed_floors
                         apply_routed_floors(_staged,
                                             clearance=config.clearance,
+                                            edge_clearance=config.board_edge_clearance,
                                             clamp_nondefault_netclasses=False)
                     except Exception as _e650:
                         print(f"  (in-run DRC floor sync skipped: {_e650})")
@@ -6657,7 +6658,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # orangecrab, 57 reported opens vs the 46 that ship (GND 19 vs
             # 11), all of it rules.min_hole_clearance 0.25 -> 0.0889.
             # Only-loosen and idempotent, so main()'s writeback stays
-            # authoritative.
+            # authoritative -- except the copper-to-edge rule, raised to the
+            # fab-edge pin the run routed at, as the writeback raises it
+            # (#1449: a pour neck beside the edge filled under the input's
+            # sub-fab rule read the pour whole and the shipped pour split).
             #
             # SIZE OF THE GAP IS CHAIN-POSITION DEPENDENT, so do not read that
             # 57/46 as a per-step cost: the declared floors survive only until
@@ -6685,6 +6689,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     from fix_kicad_drc_settings import apply_routed_floors
                     apply_routed_floors(output_file,
                                         clearance=config.clearance,
+                                        edge_clearance=config.board_edge_clearance,
                                         clamp_nondefault_netclasses=False,
                                         verbose=True)
                 except Exception as _e650b:

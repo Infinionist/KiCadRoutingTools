@@ -1911,8 +1911,9 @@ def warn_if_missing_project_floor(input_pcb) -> bool:
 
 
 def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
-                        clamp_nondefault_netclasses=False, verbose=False):
-    """Lower ``board_pcb``'s sibling ``.kicad_pro`` to the COPPER floors this run
+                        edge_clearance=None, clamp_nondefault_netclasses=False,
+                        verbose=False):
+    """Set ``board_pcb``'s sibling ``.kicad_pro`` to the COPPER floors this run
     routed to, MID-RUN, so anything that grades the board before ``main()``'s
     authoritative writeback sees the floors the board will actually SHIP with.
 
@@ -1928,8 +1929,14 @@ def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
     phantom, and kicad-cli is the DEMAND gate of the #648 source union, so they
     become junk welds in the longest leg of the chain.
 
-    COPPER floors only -- clearance / hole-to-copper, and the net classes that
-    follow them, which is what changes zone fill. Track / via / annular floors
+    COPPER floors only -- clearance / hole-to-copper, the net classes that
+    follow them, and copper-to-edge, which is what changes zone fill. The edge
+    is the one floor this RAISES (#1449): the run routes at the fab-edge pin
+    (#441) and the writeback ships ``max(board rule, routed edge, fab edge)``,
+    so ``edge_clearance`` (the run's resolved edge clearance) is written the
+    same way here. Left at the input's sub-fab rule, the audit filled a pour
+    neck beside the edge that the shipped fill drops, read the pour whole and
+    strapped nothing, and the shipped pour was split. Track / via / annular floors
     are left to the final writeback: measured inert for the fill (the same board
     graded 57 either way with only those clamped) and they want the board's
     scanned minima, which mid-run copper has not settled.
@@ -1950,11 +1957,13 @@ def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
     written regardless -- that is :func:`apply_targets_to_project`'s documented
     behaviour and matches what the writeback will do either way.
 
-    Only-loosen, via the same :func:`apply_targets_to_project` the writeback
-    uses, so :func:`fix_project_for_output` stays authoritative and can never
-    conflict with what this wrote. No-op when the board has no sibling project
-    or no floor was given. Returns the change strings (empty = nothing done)."""
-    if not board_pcb or (clearance is None and hole_clearance is None):
+    Only-loosen (the edge aside, raised as above), via the same
+    :func:`apply_targets_to_project` the writeback uses, so
+    :func:`fix_project_for_output` stays authoritative and can never conflict
+    with what this wrote. No-op when the board has no sibling project or no
+    floor was given. Returns the change strings (empty = nothing done)."""
+    if not board_pcb or (clearance is None and hole_clearance is None
+                         and edge_clearance is None):
         return []
     pro = find_project(board_pcb)
     if not os.path.isfile(pro):
@@ -1970,7 +1979,11 @@ def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
     # FAB_FLOOR_KEYS rule -- see seed_fab_floor_origin for what went silent
     # while this was the writeback's private business.
     _rules_before = _effective_rules(proj)
-    targets = compute_targets(clearance=clearance, hole_clearance=hole_clearance)
+    targets = compute_targets(
+        clearance=clearance, hole_clearance=hole_clearance,
+        edge_clearance=edge_clearance,
+        fab_edge=(fab_edge_floor(board_pcb) if edge_clearance is not None
+                  else None))
     changes = apply_targets_to_project(
         proj, targets, {},
         clamp_nondefault_netclasses=clamp_nondefault_netclasses)
@@ -1991,7 +2004,7 @@ def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
     except OSError:
         return []
     if verbose:
-        print(f"  In-run DRC floors (#650): lowered {len(changes)} value(s) in "
+        print(f"  In-run DRC floors (#650): set {len(changes)} value(s) in "
               f"{os.path.basename(pro)} to the routed floors so the in-run "
               f"audit grades what ships")
         for c in changes:
