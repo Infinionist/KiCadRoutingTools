@@ -192,7 +192,8 @@ view across the board's long side wins a near tie.
     and its azimuth.
 - `models.py` exports the parts' models with
   `kicad-cli pcb export glb --no-board-body --subst-models`. It first stages
-  the board: each model path is made absolute, a `.wrl` the library no longer
+  the board (`py_router/model_export.py`, which the placer's part heights
+  share): each model path is made absolute, a `.wrl` the library no longer
   ships is pointed at its `.step` twin, a still-missing model is found by
   its file name in the library, and failing that it takes the one the
   make-3d-movie skill found on the web (`find_models.py`, one per

@@ -355,6 +355,9 @@ def main():
           f"  courtyard_blocking {g['courtyard_blocking']}"
           + (f"  new-vs-baseline {len(new_advisory)}"
              if new_advisory is not None else ""))
+    if g.get('heights') and g['heights'] != 'no heights':
+        print(f"  heights (#1443): {g['heights']}; {g.get('height_clear', 0)} pair(s) "
+              f"clear, one part under the other's body")
     if base_pile:
         print(f"  baseline {args.baseline} is a pile: its overlaps are staging, "
               f"not a baseline (#1103), so every advisory pair counts as new")
@@ -362,8 +365,8 @@ def main():
     _body_src = g.get('body_sources') or {}
     for q in g['pairs']:
         label = ('BLOCKING' if q.kind == 'pad_intersection'
-                 else ('COURTYARD-BLOCKING'
-                       if q.kind == 'courtyard' and (q.a, q.b) in _cb_keys
+                 else (('HEIGHT-BLOCKING' if q.kind == 'height' else 'COURTYARD-BLOCKING')
+                       if q.kind in ('courtyard', 'height') and (q.a, q.b) in _cb_keys
                        else (f'waived:{q.waiver}' if q.waived
                              else 'advisory')))
         star = ''
@@ -742,8 +745,10 @@ def main():
                 _who = [r for r in (q.a, q.b) if r in moved_refs]
                 _mv = ('  GATES (moved: ' + ' '.join(_who) + ')' if _who
                        else '  baseline\'s own (no member moved)')
-            print(f"    {q.a} <-> {q.b}  {q.area_mm2}mm2  depth "
-                  f"{q.depth_mm}mm  side {q.side}{_mv}")
+            _what = (f"under a raised body too low for it" if q.kind == 'height'
+                     else f"depth {q.depth_mm}mm")
+            print(f"    {q.a} <-> {q.b}  {q.area_mm2}mm2  {_what}  "
+                  f"side {q.side}{_mv}")
         print("    A deliberate overlap is accepted by naming the pair in the "
               "intent's `overlap_waivers`, where the acceptance is visible.")
 
@@ -1122,6 +1127,11 @@ def main():
                                        else 'no-baseline: report-only'),
             'courtyard_pairs': [q._asdict() for q in g['pairs']
                                 if q.kind == 'courtyard'],
+            # #1443: the heights the grade read, and the parts under a raised
+            # body too low for them (kind 'height', in courtyard_blocking)
+            'heights': g.get('heights'),
+            'height_clear': g.get('height_clear', 0),
+            'height_pairs': [q._asdict() for q in g['pairs'] if q.kind == 'height'],
             'courtyard_advisory': sum(
                 1 for q in g['advisory_pairs'] if q.kind == 'courtyard'
                 and q not in g['courtyard_blocking_pairs']),

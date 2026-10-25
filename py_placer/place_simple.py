@@ -486,6 +486,17 @@ def _many_seeds(ap, a):
         cmd = ([sys.executable, '-X', 'utf8', os.path.abspath(__file__), a.board, out]
                + passed + ['--seed', str(s)] + (['--json', js] if js else []))
         runs.append((s, out, cmd))
+    # #1443: measure the parts' heights once, here, so the seeds read the
+    # cached measurement instead of each exporting the board at once
+    try:
+        import contextlib
+        import io
+        from kicad_parser import parse_kicad_pcb
+        from placement import heights
+        with contextlib.redirect_stdout(io.StringIO()):
+            heights.for_board(parse_kicad_pcb(a.board), a.board)
+    except Exception:                                        # noqa: BLE001
+        pass
     print(f"place_simple: seeds {', '.join(map(str, seeds))} ({jobs} at a time)")
     live, done, summaries = [], {}, {}
     pending = list(runs)

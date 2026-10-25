@@ -1779,10 +1779,15 @@ def courtyard_overlap_pairs(census, refs, poses=None, rect_of=None):
     keys = sorted(gp)
     pairs = []
     ex_tot = rc_tot = 0.0
+    # #1443: a pair the heights clear (one part under the other's body) is
+    # no overlap of either reading
+    judge = census._height_judge(gp, poses or {})
     for i, a in enumerate(keys):
         ga = gp[a]
         for b in keys[i + 1:]:
             gb = gp[b]
+            if judge is not None and judge(a, b) == 0.0:
+                continue
             if rect_of is not None:
                 ra, rb = rect_of(a), rect_of(b)
                 rc = pair_overlap_area(*ra, *rb)
@@ -2080,6 +2085,11 @@ FIXED_POSE_WAIVER = 'fixed_pose_accepted'
 #: from blocking whatever the parts' class or lock, and outrank the board's
 #: own courtyard severity.
 AUTHORED_WAIVERS = ('intent_declared', FIXED_POSE_WAIVER)
+#: #1443: the label of a pair the parts' heights clear -- one part stands
+#: under the other's body with room to spare, outside any courtyard it draws
+#: (`placement.heights`). Measured, not inferred, so it outranks every class
+#: label and a lock: the two parts fit wherever they were put.
+HEIGHT_WAIVER = 'height_clear'
 
 
 #: The categories the pre-#856 `fix_kicad_drc_settings.severity_plan` set to
@@ -2409,8 +2419,11 @@ class PairWaivers:
 
     def __init__(self, pcb_data, *, intent_waivers: Sequence = (),
                  containers=(), locked_refs=(), rect_of=None,
-                 courtyard_waivers: Sequence = ()):
+                 courtyard_waivers: Sequence = (), fits=None):
         self.pcb_data = pcb_data
+        # #1443: `fits(a, b)`, True when the heights clear the pair at the
+        # poses being graded (`HEIGHT_WAIVER`); None grades no heights.
+        self.fits = fits
         self.fps = pcb_data.footprints or {}
         self.waiver_sets = {frozenset(p) for p in intent_waivers
                             if len(p) == 2}
@@ -2467,6 +2480,8 @@ class PairWaivers:
                 return 'intent_declared'
         if a in self.containers or b in self.containers:
             return 'container_class'
+        if self.fits is not None and self.fits(a, b):
+            return HEIGHT_WAIVER
         ca, cb = self.class_of(a), self.class_of(b)
         if ca in _MARKER_CLASSES or cb in _MARKER_CLASSES:
             return 'marker_class'
@@ -2526,7 +2541,7 @@ class PairWaivers:
         # it IS, a mechanical outline other parts sit under, so its lock is
         # not the question (#1184: the seeder exempted it, locked or not,
         # while this refused it for a lock, so the two disagreed).
-        if p.waiver == 'container_class':
+        if p.waiver in ('container_class', HEIGHT_WAIVER):
             return True
         # No CLASS waiver blesses contact with a KiCad-LOCKED part (the
         # run-8 E6 principle, extended to the courtyard channel): a locked
@@ -2769,12 +2784,81 @@ class CourtyardCensus:
         self._parts[key] = gp
         return gp
 
-    def waivers(self, rect_of=None, containers=None) -> PairWaivers:
+    def waivers(self, rect_of=None, containers=None, fits=None) -> PairWaivers:
         return PairWaivers(self.pcb_data, intent_waivers=self.intent_waivers,
                            containers=(self.containers if containers is None
                                        else containers),
                            locked_refs=self.locked_refs, rect_of=rect_of,
-                           courtyard_waivers=self.courtyard_waivers)
+                           courtyard_waivers=self.courtyard_waivers, fits=fits)
+
+    @property
+    def heights(self):
+        """#1443: the board's `placement.heights.Heights`, read once."""
+        h = getattr(self, '_heights', None)
+        if h is None:
+            from placement import heights as _h
+            try:
+                h = _h.for_board(self.pcb_data, self.pcb_file)
+            except Exception:                                # noqa: BLE001
+                h = _h.EMPTY
+            self._heights = h
+        return h
+
+    def _height_judge(self, parts, poses):
+        """`judge(a, b)`: the area two graded parts' bodies share at the graded
+        poses (0.0 = one fits under the other), or None when the heights
+        cannot judge them. None when the board has no cover."""
+        h = self.heights
+        if not h.covers:
+            return None
+        poses = poses or {}
+        memo = {}
+
+        def pose(r):
+            if r in poses:
+                return tuple(poses[r])[:3]
+            fp = self.fps[r]
+            return (fp.x, fp.y, fp.rotation or 0.0)
+
+        def judge(a, b, inside=True):
+            k = ((a, b) if a < b else (b, a)) + (inside,)
+            if k not in memo:
+                ga, gb = parts.get(a), parts.get(b)
+                if (ga is None or gb is None or ga.local is None or gb.local is None
+                        or (a not in h.covers and b not in h.covers)):
+                    memo[k] = None
+                else:
+                    memo[k] = h.pair(a, pose(a), ga.local, ga.side,
+                                     b, pose(b), gb.local, gb.side, inside=inside)
+            return memo[k]
+        return judge
+
+    def _height_pairs(self, parts, judge, have):
+        """kind='height' pairs: a part's body meeting a cover's raised body,
+        for the pairs the courtyard channel does not already hold (`have`).
+        The raised bodies alone: whether two occupancies overlap is that
+        channel's question, asked on the drawn outlines."""
+        h = self.heights
+        out, seen = [], set(have)
+        for c in sorted(h.covers):
+            gc = parts.get(c)
+            if gc is None or c in self.containers:
+                continue
+            reach = h.reach(c, (0.0, 0.0, 0.0), gc.local)
+            if reach is None:
+                continue
+            for r, g in sorted(parts.items()):
+                if r == c or g.side != gc.side or r in self.containers \
+                        or frozenset((r, c)) in seen:
+                    continue
+                seen.add(frozenset((r, c)))
+                v = judge(c, r, inside=False)
+                if v:
+                    out.append(BodyOverlapPair(
+                        a=min(r, c), b=max(r, c), kind='height',
+                        area_mm2=round(v, 4), side=g.side, waived=False,
+                        waiver='', depth_mm=0.0))
+        return out
 
     def grade(self, poses: Optional[Dict[str, tuple]] = None, *,
               moved=None) -> CourtyardGrade:
@@ -2784,7 +2868,7 @@ class CourtyardCensus:
         poses = poses or {}
         parts = {r: self.graded_part(r, poses.get(r)) for r in self.lbs}
         return self._select(parts, body_overlap_pairs(list(parts.values())),
-                            moved, self._pin_pairs(parts, poses))
+                            moved, self._pin_pairs(parts, poses), poses=poses)
 
     def _frame_holes(self, frame: str, pose=None) -> list:
         """[(pin, hole shape, its bounds, 'pth' | 'npth')] of a pin
@@ -2961,12 +3045,14 @@ class CourtyardCensus:
                          self._pin_pairs(parts, poses, members={ref}))
         return list(g.pin_blocking)
 
-    def _select(self, parts, raw, moved, pin_raw=()) -> CourtyardGrade:
+    def _select(self, parts, raw, moved, pin_raw=(), poses=None) -> CourtyardGrade:
         from placement.body import SOURCE_COURTYARD, SOURCE_SILK
         containers = self.containers
+        judge = self._height_judge(parts, poses) if poses is not None else None
         waivers = self.waivers(
             rect_of=lambda r: parts[r].rect if r in parts else None,
-            containers=containers)
+            containers=containers,
+            fits=None if judge is None else (lambda a, b: judge(a, b) == 0.0))
         # #1212: a pin frame's RECT is not a body -- its pairs leave the
         # courtyard channel and its pins are graded below instead.
         raw = [p for p in raw
@@ -2988,6 +3074,18 @@ class CourtyardCensus:
         blocking = courtyard_blocking(pairs, waivers,
                                       synthetic_refs=synthetic,
                                       silk_occupancy_refs=silk)
+        if judge is not None:
+            # #1443: a part under a cover's raised body too low for it
+            # blocks like a courtyard pair, unless an author waived it
+            hp = self._height_pairs(parts, judge, {frozenset((p.a, p.b)) for p in pairs})
+            for p in hp:
+                w = waivers.courtyard_label(p.a, p.b)
+                w = w if w in AUTHORED_WAIVERS else ''
+                p = p._replace(waived=bool(w), waiver=w)
+                pairs.append(p)
+                if not p.waived:
+                    blocking.append(p)
+            pairs.sort(key=lambda p: (p.waived, -p.area_mm2, p.a, p.b))
         gating = (None if moved is None
                   else courtyard_gating(blocking, set(moved)))
         # Pin pairs: only an AUTHORED waiver or the board's own severity of
@@ -3281,7 +3379,8 @@ def grade_body_overlap(pcb_data, clearance: float,
     # but never by inheriting a class waiver nobody authored.
     #
     # Corpus effect, measured: ZERO boards gate on this.
-    _GATE_EXEMPT = ('marker_class', 'container_class', 'intent_declared')
+    _GATE_EXEMPT = ('marker_class', 'container_class', 'intent_declared',
+                    HEIGHT_WAIVER)
     # #896. A SILK-sourced body never gates, structurally -- not because a
     # census happened to come out clean. Silk is the last rung and the least
     # trustworthy: it is whatever the library drew on the silkscreen, and on a
@@ -3413,6 +3512,10 @@ def grade_body_overlap(pcb_data, clearance: float,
             # #1401: pairs inside a CLOSED silk-drawn body; the caller gates
             # the ones a member MOVED into (check_assembly --baseline).
             'silk_enclosed_pairs': silk_enclosed,
+            # #1443: where the parts' heights came from (`placement.heights`),
+            # and the pairs they cleared or found too low
+            'heights': _census.heights.note,
+            'height_clear': sum(1 for p in pairs if p.waiver == HEIGHT_WAIVER),
             # Parts whose footprint draws no .Fab outline at all, so the fab
             # channel CANNOT judge them (parser.extract_fab_sides skips them
             # and the loop above continues past them). An unjudged part is not

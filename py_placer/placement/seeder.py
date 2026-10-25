@@ -672,7 +672,25 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
         if other == ref or other not in state.parts:
             continue
         opose = obstacles[other]
-        if ref not in containers and other not in containers:
+        # #1443: a pair the heights judge -- one part under the other's body
+        # -- is judged on them, at zero clearance as the courtyards are here;
+        # its holes still bind
+        hv = None
+        covers = getattr(state, 'covers', None)
+        if covers and (ref in covers or other in covers) \
+                and ref not in containers and other not in containers:
+            o = state.parts[other]
+            hv = state.heights.pair(ref, tuple(pose), part.bounds_by_rot[0.0], part.side,
+                                    other, tuple(opose), o.bounds_by_rot[0.0], o.side)
+        if hv is not None:
+            if hv > 0.0 and frozenset((ref, other)) not in waived:
+                conflicts[other] = (f"under {other}'s body, or {other} under its, "
+                                    f"too low ({hv:.3f}mm2)")
+            else:
+                _dh = _drill_conflict(state, ref, pose, other, opose)
+                if _dh:
+                    conflicts[other] = _dh
+        elif ref not in containers and other not in containers:
             area, w, h = _courtyard_overlap(state, ref, pose, other, opose)
             if area > FIXED_OVERLAP_EPS_MM2:
                 if frozenset((ref, other)) in waived:

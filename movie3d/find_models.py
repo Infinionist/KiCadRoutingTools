@@ -74,9 +74,10 @@ def model_key(path):
     return os.path.splitext(os.path.basename(path.replace('\\', '/')))[0].lower()
 
 
-#: how models.stage_models names a part whose footprint names no model at
+#: how model_export.stage_models names a part whose footprint names no model at
 #: all: this prefix and the footprint's library name
-NO_MODEL = 'no model: '
+sys.path.insert(0, os.path.join(REPO, 'py_router'))
+from model_export import NO_MODEL  # noqa: E402
 
 
 def footprint_key(name):

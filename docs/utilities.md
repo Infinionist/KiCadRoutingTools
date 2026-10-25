@@ -311,6 +311,29 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
   legal seed keeps the graded bodies apart; a NOTE names the parts. Two
   declared or locked poses are still judged against each other on what the
   board draws.
+- **A part under another part's body (#1443).** Each part's height, and the
+  room under each part, are read off its 3D model (one `kicad-cli pcb export
+  glb` of the board, cached by the footprints' models in
+  `~/.cache/krt_heights`), else off an IPC-7351 name (`CAPC1005X55N` is
+  0.55 mm tall). A part may stand inside a COVER's occupancy -- a module on
+  headers, a shield can, a part whose body stands off the board -- where the
+  cover's model is over it at least its height plus 0.5 mm higher (and at
+  least 1.5 mm: every lower underside the corpus showed was a model's offset
+  or a standoff, not room), never in a
+  courtyard the cover draws and never on the cover's pads; and it may not
+  stand under a cover's raised body past that occupancy (a module's overhang)
+  where the two models meet, cell by cell -- the human boards tuck a part's
+  edge under a raised body with as little as 0.06 mm to spare, never through
+  one. A part something reaches from above (a connector, a switch, a test
+  point: `part_class` classes it, or its designator says so) never goes
+  under, and nothing goes inside its outline. Only a model's surfaces that
+  face the board say how much room is under it, so a model drawn without a
+  bottom reads as solid, not hollow. A part whose height is unknown is judged on its occupancy alone, as
+  before, and with no kicad-cli every height is unknown. The seat gate, the
+  anneal, check_assembly and place_pose read the one measurement
+  (`placement.heights`); the run prints which parts have room under them.
+  On the human boards, 157 put 2898 parts inside another part's outline and
+  KiCad flags 87 of them: the covers draw no courtyard where parts go under.
   A run that leaves a part with no legal pose is annealed again from a fresh
   start, up to two more times (the last one shoves its remaining overlaps
   apart where they stand); the run with the fewest illegal parts is kept.
@@ -670,7 +693,11 @@ drawn-body containment, pads and holes keep their gates. `check_floorplan
 --emit-intent` writes those pairs, with a WARNING, for declared poses that
 overlap each other. Courtyards are graded
 at the project's own `courtyards_overlap` severity unless
-`--ignore-project-severity`.
+`--ignore-project-severity`. A part standing under another's body with room
+to spare (#1443, the placer's notes above) is labelled `height_clear` on
+every channel and never gates; one under a raised body too low for it is a
+`height` pair, which gates like a courtyard pair (JSON `heights`,
+`height_clear`, `height_pairs`).
 
 Exit 0 buildable; 2 usage or load error; 4 not buildable.
 

@@ -222,8 +222,9 @@ Validate routed boards against the *real* spec, with the right checker — most
   class value: `"unknown"` (the author looked) is reported apart from an absent
   key (nobody looked), and neither is ever guessed. `envelope`, `outline` and
   `height` are refused BY NAME -- the outline is not ours to change, and nothing
-  in the placement stack measures z, so a declared height limit would grade
-  nothing at all. See `docs/design-brief.md`.
+  in the placement stack grades a height LIMIT (part heights are measured
+  only to judge which part fits under which, #1443), so a declared one would
+  grade nothing at all. See `docs/design-brief.md`.
   **Since #959 the connector declarations COMPILE** (`design_brief.
   compile_with_consequences`, which `check_floorplan` and `board_brief` call,
   so emit, grade and drift see the same clauses).
