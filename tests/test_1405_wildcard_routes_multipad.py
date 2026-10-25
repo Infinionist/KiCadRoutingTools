@@ -53,8 +53,11 @@ def main():
     check('declared jumpers "yes": left out', NC not in wildcard(yes))
     check('both pads in a jumper group: left out', NC not in wildcard(grp))
     check('a jumper group that does not hold them: included', NC in wildcard(other))
-    check('pads of two footprints: included (no declaration joins them)',
-          NC in wildcard(two))
+    check('pads of two footprints: left out (separate no-connect pins under '
+          'one auto-name)', NC not in wildcard(two))
+    cp = write(tmp, 'copy.kicad_pcb', board(copy=True))
+    check('pads of two copies of one part (a panel): left out',
+          NC not in wildcard(cp))
     check('helper names the net with its pad count',
           multipad_unconnected_to_route(parse_kicad_pcb(bare)) == {NC: 2})
 

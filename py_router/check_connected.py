@@ -1985,6 +1985,20 @@ def read_jumper_declarations(pcb_file: str) -> Dict[str, object]:
     return out
 
 
+def pads_on_one_footprint(pads) -> bool:
+    """True when every pad belongs to ONE footprint (#1405).
+
+    KiCad auto-names a no-connect pin's net after its part and pin
+    ('unconnected-(J1-SHIELD-PadS1)'), so an 'unconnected-*' net with several
+    pads on one footprint is that part's same-number pads (shield tabs, a
+    reversible footprint's doubled pins, a module's castellation and hole) --
+    a connection KiCad asks for. Pads on SEVERAL footprints share such a net
+    only by a name collision (copies of one board panelised with one set of
+    references): the pins are separate no-connects, and joining them would
+    lay copper between the copies."""
+    return len({p.component_ref for p in pads}) <= 1
+
+
 def pads_joined_inside_parts(pads, declarations: Dict[str, object]) -> bool:
     """True when every pad of a net belongs to ONE conductor through the
     footprints' own jumper declarations (#1405) -- the only way a net with
@@ -2138,6 +2152,7 @@ def run_connectivity_check(pcb_file: str, net_patterns: Optional[List[str]] = No
     unrouted_nets = []
     skipped_noconnect = 0
     skipped_noconnect_multi = []  # (name, pad_count): >=2 pads, now counted OPEN (#1405)
+    skipped_noconnect_shared = []  # (name, footprints): one auto-name on several parts
     _jumpers = None
     if not routed_only:
         copper_layers = pcb_data.board_info.copper_layers or ['F.Cu', 'B.Cu']
@@ -2192,6 +2207,15 @@ def run_connectivity_check(pcb_file: str, net_patterns: Optional[List[str]] = No
                 # jumper_pad_groups), in which case nothing is left to
                 # route. An explicit --nets pattern always checked them.
                 if not net_patterns and net_info.name.lower().startswith('unconnected-'):
+                    if not pads_on_one_footprint(pads_by_net[net_id]):
+                        # one auto-name shared by several parts' no-connect
+                        # pins (copies with one set of references): nothing
+                        # to connect, as before #1405
+                        skipped_noconnect += 1
+                        skipped_noconnect_shared.append(
+                            (net_info.name, len({p.component_ref for p in
+                                                 pads_by_net[net_id]})))
+                        continue
                     skipped_noconnect_multi.append(
                         (net_info.name, len(pads_by_net[net_id])))
                 # Multi-board: only an outline holding >=2 of the net's pads
@@ -2248,6 +2272,13 @@ def run_connectivity_check(pcb_file: str, net_patterns: Optional[List[str]] = No
             print(f"  Skipped {skipped_noconnect} no-connect net(s) "
                   f"('unconnected-*') whose pads the footprint declares "
                   f"joined (jumper pads); pass --nets to check them")
+        if skipped_noconnect_shared:
+            _lst = ', '.join(f"'{n}' ({c} parts)"
+                             for n, c in sorted(skipped_noconnect_shared)[:6])
+            print(f"  {len(skipped_noconnect_shared)} of them share one "
+                  f"auto-named net across several parts' no-connect pins "
+                  f"(copies with one set of references), so nothing joins "
+                  f"them: {_lst}")
         if skipped_noconnect_multi:
             _lst = ', '.join(f"'{n}' ({c} pads)"
                              for n, c in sorted(skipped_noconnect_multi)[:8])

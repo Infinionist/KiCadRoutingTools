@@ -45,13 +45,17 @@ def check(label, ok, detail=''):
         failures.append(label)
 
 
-def board(jumper_clause='', second_ref='J1'):
-    """Two MP pads on one auto-named net (in J1, or one each in J1 and J2)."""
+def board(jumper_clause='', second_ref='J1', copy=False):
+    """Two MP pads on one auto-named net (in J1, or one each in J1 and J2 --
+    or, with `copy`, in J1 and a second footprint ALSO referenced J1, as copies
+    of a board panelised with one set of references are)."""
     second = ''
+    if copy:
+        second_ref = 'J1'
     pads2 = f'''
     (pad "MP" smd rect (at 8 0) (size 1.2 1.8) (layers "F.Cu" "F.Paste" "F.Mask")
       (net 9 "{NC}"))'''
-    if second_ref != 'J1':
+    if second_ref != 'J1' or copy:
         second = f'''
   (footprint "test:J2" (layer "F.Cu") (at 150 100)
     (property "Reference" "{second_ref}" (at 0 0) (layer "F.SilkS"))
@@ -117,8 +121,13 @@ def main():
 
         two = write(tmp, 'two.kicad_pcb',
                     board('(duplicate_pad_numbers_are_jumpers yes)', 'J2'))
-        check('pads of two different footprints are never jumpered',
-              unrouted(two) == [NC], str(unrouted(two)))
+        check('one auto-name on two parts\' no-connect pins joins nothing: '
+              'not open', unrouted(two) == [], str(unrouted(two)))
+        cp = write(tmp, 'copy.kicad_pcb', board(copy=True))
+        check('...nor on two copies of one part (a panel\'s one set of '
+              'references)', unrouted(cp) == [], str(unrouted(cp)))
+        check('...unless the net is named, which still checks it',
+              unrouted(cp, net_patterns=[NC]) == [NC], str(unrouted(cp, net_patterns=[NC])))
 
         # The graders built on check_connected see it too.
         js = os.path.join(tmp, 'score.json')

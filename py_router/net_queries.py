@@ -1151,18 +1151,23 @@ def multipad_unconnected_to_route(pcb_data) -> dict:
     unconnected unless copper joins the pads or the footprint DECLARES them
     jumpered (``duplicate_pad_numbers_are_jumpers`` / ``jumper_pad_groups``),
     in which case the part itself is the conductor and nothing is routed.
-    Single-pad nets have nothing to join and are never returned.
+    Single-pad nets have nothing to join and are never returned, and neither
+    is a net whose pads lie on SEVERAL footprints: one auto-name shared by
+    separate parts' no-connect pins (copies of a board panelised with one set
+    of references), which routing would join across the copies
+    (``check_connected.pads_on_one_footprint``).
     """
+    from check_connected import (read_jumper_declarations,
+                                 pads_joined_inside_parts, pads_on_one_footprint)
     cands = {}
     for nid, net in pcb_data.nets.items():
         nm = net.name or ''
         if nid > 0 and nm.lower().startswith('unconnected-'):
             pads = pcb_data.pads_by_net.get(nid, [])
-            if len(pads) >= 2:
+            if len(pads) >= 2 and pads_on_one_footprint(pads):
                 cands[nm] = pads
     if not cands:
         return {}
-    from check_connected import read_jumper_declarations, pads_joined_inside_parts
     path = getattr(pcb_data, 'source_path', '') or ''
     decls = {}
     if path and os.path.isfile(path):
