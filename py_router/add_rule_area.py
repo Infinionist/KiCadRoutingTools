@@ -34,8 +34,9 @@ says what it wrote.
 screw-head ring of `mounting_holes.py`, 0.4 x the drill past the hole's edge,
 or `--ring MM` -- named `<name>_<ref>` and forbidding tracks and vias (the pour
 stays allowed). A hole whose pad carries a net (a ground ring under a plated
-hole) gets none: its own copper has to reach it. `check_mounting_holes.py`
-grades the result.
+hole) gets none: its own copper has to reach it. KiCad's `unconnected-*` net of
+a pin left unconnected is not such a net, so that hole gets its area (pads stay
+allowed in it). `check_mounting_holes.py` grades the result.
 
 Exit 0 written; 2 for an argparse usage error, a `--layers` entry that is not
 a copper layer of the board, or a `--ref` the board does not have; 1 for a

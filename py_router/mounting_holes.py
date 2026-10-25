@@ -28,20 +28,28 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 #: A drill at least this wide is a mounting hole, not a via or a pin.
 MOUNT_HOLE_MIN_DRILL = 2.0
 #: Footprints with more pads than this are a connector or a module, whatever
-#: their drills.
+#: their drills (KiCad's own ``MountingHole_*_Pad_Via`` is the hole plus 8
+#: stitching vias).
 MOUNT_HOLE_MAX_PADS = 9
 #: How far a screw head reaches past the hole's edge, as a fraction of the drill.
 RING_PER_DRILL = 0.4
+#: A stitching via-pad beside the hole drills at most this fraction of it.
+STITCH_MAX_DRILL_FRACTION = 0.5
+#: Two drills (or a drill and drill-less copper) this close are one position.
+SAME_CENTRE_MM = 0.01
 
 _NO_SIGNAL_NET = re.compile(r'(^$|^unconnected-|.*GND)', re.I)
+#: KiCad's name for a net of one unconnected pin: no net, for a hole.
+_UNCONNECTED_NET = re.compile(r'^unconnected-', re.I)
 
 
 class MountingHole(NamedTuple):
     ref: str            # footprint key
     x: float            # hole centre, board mm
     y: float
-    drill: float        # the widest drill of its pads
-    nets: frozenset     # net ids its pads carry (a GND ring), usually empty
+    drill: float        # the screw hole's drill (the widest of its pads)
+    nets: frozenset     # net ids its pads carry (a GND ring), usually empty;
+                        # an ``unconnected-*`` pin net is not one
 
     def ring(self, override: Optional[float] = None) -> float:
         """How far past the hole's edge the screw head reaches, mm."""
@@ -62,32 +70,77 @@ def _round_drill(p) -> bool:
     return w <= 0 or h <= 0 or abs(w - h) < 1e-6
 
 
+def _copper_radius(p) -> float:
+    """How far a round pad's copper reaches from its drill: the pad's extent,
+    never less than the drill itself (an NPTH's size is its mask opening)."""
+    return max(p.size_x or 0.0, p.size_y or 0.0, p.drill or 0.0) / 2.0
+
+
+def _main_hole(pads):
+    """The footprint's screw hole, or None: its widest drilled pad, a ROUND
+    drill of MOUNT_HOLE_MIN_DRILL or more, and every other pad one of
+
+      * copper at the same position -- the same hole drawn again (front and
+        back pads, KiCad's ``_Pad_TopBottom``: drill-less ``connect``/SMD
+        pads on F.Cu and B.Cu over a drilled one), drilled or drill-less;
+      * a small PLATED via-pad lying inside the hole's pad copper (KiCad's
+        ``_Pad_Via`` stitching ring), at most STITCH_MAX_DRILL_FRACTION of
+        the hole's drill and under MOUNT_HOLE_MIN_DRILL.
+
+    A slot, a second large drill anywhere else (a stabilizer, a bracket of
+    mixed holes) or loose copper off the hole is not a screw hole."""
+    drilled = [p for p in pads if (p.drill or 0.0) > 0]
+    if not drilled:
+        return None
+    p0 = max(drilled, key=lambda p: p.drill)
+    if p0.drill < MOUNT_HOLE_MIN_DRILL or not _round_drill(p0):
+        return None
+    hx, hy = _hole_centre(p0)
+    reach = _copper_radius(p0)
+    for q in pads:
+        if q is p0:
+            continue
+        drill = q.drill or 0.0
+        if drill > 0 and not _round_drill(q):
+            return None
+        qx, qy = _hole_centre(q) if drill > 0 else (q.global_x, q.global_y)
+        d = math.hypot(qx - hx, qy - hy)
+        if d <= SAME_CENTRE_MM:
+            continue                        # the same hole, drawn again
+        if (drill > 0 and q.pad_type == 'thru_hole'
+                and drill < MOUNT_HOLE_MIN_DRILL
+                and drill <= STITCH_MAX_DRILL_FRACTION * p0.drill
+                and d + drill / 2.0 <= reach + 1e-6):
+            continue                        # a stitching via in the hole's pad
+        return None
+    return p0
+
+
 def mounting_holes(pcb) -> List[MountingHole]:
     """Every footprint that is ONE round screw hole: at most
-    MOUNT_HOLE_MAX_PADS pads, every one a ROUND drill of MOUNT_HOLE_MIN_DRILL
-    or more, all at one position (a hole drawn as front and back pads is one
-    hole), none on a signal net (none, ``unconnected-*`` or a ground-named
-    net). A milled slot or cut-out is not a screw hole, and neither is a part
-    whose several holes take no screw (a keyboard stabilizer's four, a bracket
-    of mixed holes)."""
+    MOUNT_HOLE_MAX_PADS pads, the widest drill ROUND and MOUNT_HOLE_MIN_DRILL
+    or more, every other pad the same hole drawn again (a hole drawn as front
+    and back pads is one hole) or a small plated stitching via inside its pad
+    (``_main_hole``), none on a signal net (none, ``unconnected-*`` or a
+    ground-named net). A milled slot or cut-out is not a screw hole, and
+    neither is a part whose several holes take no screw (a keyboard
+    stabilizer's four, a bracket of mixed holes). The hole's centre and drill
+    are the screw hole's own, so the head ring is centred on it."""
     out = []
     for ref, fp in sorted(pcb.footprints.items()):
         pads = fp.pads
         if not pads or len(pads) > MOUNT_HOLE_MAX_PADS:
             continue
-        if not all((p.drill or 0.0) >= MOUNT_HOLE_MIN_DRILL and _round_drill(p)
-                   for p in pads):
-            continue
-        centres = [_hole_centre(p) for p in pads]
-        if any(math.hypot(x - centres[0][0], y - centres[0][1]) > 0.01
-               for x, y in centres[1:]):
+        p0 = _main_hole(pads)
+        if p0 is None:
             continue
         if any(not _NO_SIGNAL_NET.match(p.net_name or '') for p in pads):
             continue
-        p0 = max(pads, key=lambda p: p.drill)
         hx, hy = _hole_centre(p0)
-        out.append(MountingHole(ref, hx, hy, max(p.drill for p in pads),
-                                frozenset(p.net_id for p in pads if p.net_id)))
+        out.append(MountingHole(
+            ref, hx, hy, p0.drill,
+            frozenset(p.net_id for p in pads
+                      if p.net_id and not _UNCONNECTED_NET.match(p.net_name or ''))))
     return out
 
 

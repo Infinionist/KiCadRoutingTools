@@ -5,9 +5,10 @@ KiCad checks a mounting hole against the ordinary hole and pad clearance only.
 The screw head, washer, nut or standoff that sits on the hole is not in the
 board file, so a track laid right up to the hole passes every DRC while the
 head lands on it. A mounting hole is a footprint that is ONE round hole: at
-most 9 pads, every one a round drill of 2.0 mm or wider, all at one position,
-none on a signal net (see ``mounting_holes``; a milled slot or a part of
-several holes, like a keyboard stabilizer, is not one); the
+most 9 pads, the widest a round drill of 2.0 mm or wider, every other pad that
+hole drawn again (front and back pads) or a small plated stitching via inside
+its pad, none on a signal net (see ``mounting_holes``; a milled slot or a part
+of several holes, like a keyboard stabilizer, is not one); the
 ring reaches 0.4 x the drill past the hole's edge -- about an ISO 7380 head,
 for every metric size -- or ``--ring MM``. Copper of the hole's own net (a
 ground ring under a plated hole) is the designer's choice and is not reported.
