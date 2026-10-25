@@ -1034,6 +1034,11 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
                 _clr_floor = _dru_min
         except Exception:
             pass
+        # #1369: the floor WITHOUT the pad-override cap below, and the rule
+        # the board declared before this writer, for the provenance record.
+        _mc_uncapped = float(_clr_floor) if _clr_floor is not None else None
+        _mc_before = (bds.m_MinClearance / 1e6
+                      if 'min_clearance' in _declared else None)
         # #530: never above the smallest pad override the run honoured (KiCad
         # floors an override at min_clearance) -- parity with compute_targets.
         try:
@@ -1043,6 +1048,11 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         except Exception:
             pass
         lower('m_MinClearance', _clr_floor)
+        # #1369: a rule lowered for a pad override is recorded as such, so
+        # --escalation board reads the board's own minimum (the file
+        # writeback records the same in the project).
+        from fix_kicad_drc_settings import record_live_pad_override_floor
+        record_live_pad_override_floor(board, _mc_before, _mc_uncapped)
         lower('m_TrackMinWidth', track_width, min_w)
         lower('m_ViasMinSize', via_size, min_via)
         lower('m_MinThroughDrill', via_drill, min_hole)

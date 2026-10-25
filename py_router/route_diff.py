@@ -3258,10 +3258,17 @@ Examples:
             if eff_clearance < args.clearance:
                 print(f"  Min clearance used: {eff_clearance:.4g} mm "
                       f"(below nominal {args.clearance:.4g}) - grading at this floor")
-            from fix_kicad_drc_settings import fix_project_for_output, drc_fix_kwargs
+            from fix_kicad_drc_settings import (fix_project_for_output, drc_fix_kwargs,
+                                                step_hole_clearance)
+            # #1369: the copper-to-hole floor this step HELD (the board's own
+            # min_hole_clearance), lowered only to what its own copper needs --
+            # not the copper clearance, which the delivered fill then followed.
+            _hole_clr = step_hole_clearance(args.input_file, args.output_file,
+                                            eff_clearance)
             fix_project_for_output(
                 args.output_file, input_pcb=args.input_file,
-                clearance=eff_clearance, hole_to_hole=args.hole_to_hole_clearance,
+                clearance=eff_clearance, hole_clearance=_hole_clr,
+                hole_to_hole=args.hole_to_hole_clearance,
                 edge_clearance=args.board_edge_clearance, track_width=args.track_width,
                 via_diameter=args.via_size, via_drill=args.via_drill,
                 diff_pair_gap=args.diff_pair_gap, diff_pair_width=args.track_width,

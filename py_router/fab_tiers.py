@@ -235,6 +235,42 @@ def may_narrow():
     return _ESCALATION != 'off'
 
 
+#: The ``kicad_routing_tools`` record that says ``rules.min_clearance`` holds a
+#: PAD clearance override, not a board minimum (#1369):
+#: ``{"rule": <the min_clearance the #530 cap wrote, mm>,
+#:    "board": <what the board's own min_clearance reads without it, mm>}``.
+#: Written by the DRC-floor writebacks (fix_kicad_drc_settings
+#: ``record_pad_override_floor`` / ``record_live_pad_override_floor``, through
+#: tool_records); read by :func:`board_declared_min_clearance`.
+PAD_OVERRIDE_FLOOR_KEY = "pad_override_min_clearance"
+
+
+def board_declared_min_clearance(min_clearance, records):
+    """``rules.min_clearance`` as the BOARD declares it, for
+    ``--escalation board`` (#1369).
+
+    The writeback caps ``rules.min_clearance`` at the smallest pad clearance
+    override the router honoured (#530), because KiCad floors an override
+    there. That number is a property of one part, not a minimum the board
+    declares, yet the escalation resolver read it as "the board's own
+    minimum" and rescued nets that carry no override down to it. When the
+    project's ``records`` (the ``kicad_routing_tools`` namespace, read through
+    tool_records) carry :data:`PAD_OVERRIDE_FLOOR_KEY` and the rule still
+    holds the value that record says the cap wrote, the board's own minimum is
+    the record's ``board`` value. Any other rule value -- one a later step or
+    the user changed -- is the board's, and is returned as it is."""
+    rec = (records or {}).get(PAD_OVERRIDE_FLOOR_KEY)
+    if not isinstance(rec, dict) or not isinstance(min_clearance, (int, float)):
+        return min_clearance
+    try:
+        rule, board = float(rec.get("rule")), float(rec.get("board"))
+    except (TypeError, ValueError):
+        return min_clearance
+    if board > 0 and abs(float(min_clearance) - rule) <= 5e-6:
+        return board
+    return min_clearance
+
+
 def board_floors_from_rules(rules, default_class_clearance=None):
     """Translate a ``rules.min_*`` dict (.kicad_pro) into FLOOR_KEYS vocabulary.
     Zero / absent keys are UNSET (KiCad writes 0 for 'not configured').
@@ -1319,7 +1355,24 @@ def set_policy_from_args(args, pcb_path=None):
                 proj = json.load(f)
             rules = ((proj.get('board') or {}).get('design_settings') or {}).get('rules') or {}
             dflt = project_default_class_clearance(proj)
-            floors = board_floors_from_rules(rules, dflt)
+            # #1369: a min_clearance the #530 cap lowered to a pad override
+            # is not the board's minimum; the records say what is.
+            _declared = dict(rules)
+            try:
+                import tool_records
+                _mc = board_declared_min_clearance(
+                    rules.get('min_clearance'),
+                    tool_records.effective_namespace(pcb_path))
+            except Exception:                                   # noqa: BLE001
+                _mc = rules.get('min_clearance')
+            if _mc != rules.get('min_clearance'):
+                _declared['min_clearance'] = _mc
+                if getattr(args, 'escalation', None) == 'board':
+                    print(f"  --escalation board: rules.min_clearance "
+                          f"{rules.get('min_clearance'):g} mm is a pad clearance "
+                          f"override the writeback capped the rule at, not a "
+                          f"board minimum; the board's own is {_mc:g} mm (#1369)")
+            floors = board_floors_from_rules(_declared, dflt)
             graded = graded_default_clearance(rules.get('min_clearance'), dflt)
         except (OSError, ValueError, AttributeError):
             # No readable project: KiCad grades such a board at its factory

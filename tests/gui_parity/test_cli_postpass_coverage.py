@@ -127,6 +127,11 @@ REGISTRY = {
     # function from the copper it applied.
     'plane_fix_kwargs': ['_apply_results_to_board_body'],
     'drawn_copper': ['plane_fix_kwargs'],
+    # #1369: route_diff writes the copper-to-hole floor it HELD, lowered only
+    # to what the copper it drew needs (off the files on the CLI). The
+    # Differential tab decides with the same two cores (step_copper_to_hole,
+    # held_hole_clearance) from the copper it applied.
+    'step_hole_clearance': ['_held_hole_clearance'],
     # #857: the end-of-run `Design rules [...]` line (and, CLI-only, the
     # --strict-sizes exit 3). route.py's line comes from inside batch_route on
     # both fronts; route_diff / route_planes / the fanouts print it from their
