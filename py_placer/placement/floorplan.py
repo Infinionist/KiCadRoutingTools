@@ -2770,6 +2770,57 @@ def with_derived_keepouts(keepouts, pcb_data, pcb_file: Optional[str] = None
                             if k['name'] not in names)
 
 
+#: #1451: the keep-outs a board's rule areas forbidding footprints imply.
+RULE_AREA_PREFIX = 'rule_area:'
+
+
+def rule_area_keepouts(pcb_data, fixed=()) -> Tuple[Dict, ...]:
+    """The rule areas forbidding footprints as seat keep-outs (#1451): what a
+    placement SEARCH keeps a part's courtyard out of, so it does not walk a
+    part into an RF module's antenna keep-out that the grade then refuses
+    (`legality.rule_area_item_findings`, KiCad's items_not_allowed).
+
+    Only an area that stays where it is through the placement -- board
+    level, or owned by a part in `fixed` (KiCad-locked) -- since a
+    footprint-owned area moves with its owner; and only one drawn as an
+    axis-aligned rectangle, the shape this channel holds. On the faces it
+    covers, allowing its owner. Not handed to check_floorplan's grade: a
+    pristine board ships such items, and check_assembly gates only an item
+    its baseline did not have.
+    """
+    import glob as _glob
+    from shapely.geometry import Polygon
+    bi = getattr(pcb_data, 'board_info', None)
+    out = []
+    for i, ko in enumerate(getattr(bi, 'keepouts', None) or ()):
+        if ko.get('footprints_allowed', True) or ko.get('holes'):
+            continue
+        owner = ko.get('owner') or ''
+        if owner and owner not in fixed:
+            continue
+        pts = [tuple(q) for q in (ko.get('polygon') or ())]
+        if len(pts) < 3:
+            continue
+        poly = Polygon(pts)
+        x0, y0, x1, y1 = poly.bounds
+        if poly.area < (x1 - x0) * (y1 - y0) * (1 - 1e-6):
+            continue
+        layers = {str(t) for t in (ko.get('layers') or ())}
+        sides = tuple(s for s in ('F', 'B')
+                      if not layers or f'{s}.Cu' in layers or '*.Cu' in layers
+                      or 'F&B.Cu' in layers)
+        if not sides:
+            continue
+        out.append({'name': f"{RULE_AREA_PREFIX}{owner or 'board'}:{ko.get('name') or i}",
+                    'rect': (round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)),
+                    'sides': sides,
+                    'allow': (_glob.escape(owner),) if owner else (),
+                    'context': {'source': 'derived',
+                                'derived_from': 'a rule area forbidding footprints'
+                                                + (f' of {owner}' if owner else ' (board level)')}})
+    return tuple(out)
+
+
 def mating_keepouts(pcb_data, pcb_file: Optional[str] = None,
                     declared=()) -> Tuple[Dict, ...]:
     """The board's mating regions as the seat predicate and the grade

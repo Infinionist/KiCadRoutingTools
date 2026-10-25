@@ -1326,6 +1326,11 @@ class QuenchState:
             self.courtyards_ignored = False
         self.keepouts = _fpk.with_derived_keepouts(keepouts, pcb_data,
                                                    pcb_file)
+        # #1451: and the rule areas forbidding footprints that stay where
+        # they are (board level, or a KiCad-locked owner's) -- the search's
+        # half of check_assembly's items_not_allowed gate
+        self.keepouts = tuple(self.keepouts) + _fpk.rule_area_keepouts(
+            pcb_data, {r for r, p in self.parts.items() if p.locked})
         # A plug SEATED at its edge is the mechanical fact its keep-out is
         # derived from: moved inland, the region would go with it and the
         # parts it kept off the tongue would be free to return. So the

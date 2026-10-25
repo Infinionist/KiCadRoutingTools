@@ -6593,8 +6593,12 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
         RuleAreaKeepouts.for_board(pcb_data, clearance, pcb_file), parts,
         lambda r: ((fps[r].x, fps[r].y, fps[r].rotation or 0.0)
                    if r in fps else None))
+    # #1451: a pad or a footprint inside a rule area that forbids it, board
+    # level or footprint-owned (an RF module's antenna keep-out)
+    rule_items = rule_area_item_findings(pcb_data, pcb_file)
     worst.sort(key=lambda t: -t[2])
-    return {'pad_conflicts': pad_conflicts,
+    return {**rule_items,
+            'pad_conflicts': pad_conflicts,
             'pad_edge_conflicts': len(edge_grade['findings']),
             'pad_edge_shortfall': sum(f['shortfall_mm'] for f in edge_grade['findings']),
             'pad_edge_unmeasured': len(edge_grade['unmeasured']),
@@ -7292,6 +7296,79 @@ def board_keepout_findings(pcb_data, clearance: float,
         build_part_pads(fps, clearance, tolerant=True),
         lambda r: ((fps[r].x, fps[r].y, fps[r].rotation or 0.0)
                    if r in fps else None))
+
+
+def rule_area_item_findings(pcb_data, pcb_file: str = None) -> Dict[str, object]:
+    """The pads and footprints inside a rule area that forbids them, at the
+    file's poses: what KiCad's DRC reports as `items_not_allowed` (#1451).
+
+    `(pads not_allowed)`: a copper pad on a copper layer the area covers whose
+    copper (`check_pads._copper_geometry`, a custom or chamfered pad's own
+    polygons) reaches into it -- the area's owner's own pads included, as
+    KiCad flags them. `(footprints not_allowed)`: a footprint on a face the
+    area covers whose courtyard on that face reaches into it; the owner is
+    exempt, and a footprint with no courtyard there is not judged, as in
+    KiCad. Board-level and footprint-owned areas alike: a footprint-owned
+    area is stored in board coordinates and moves with its part when the
+    placement writer moves it (#1214), so the file's polygon is the area at
+    the file's pose.
+
+    `rule_area_items` rows: `[area name, owner ('' at board level), ref,
+    'pad <number>' | 'footprint']`.
+    """
+    from shapely.geometry import Polygon
+    from check_drc import pad_copper_layers
+    from check_pads import _copper_geometry
+    from net_queries import expand_pad_layers
+    bi = getattr(pcb_data, 'board_info', None)
+    copper = list(getattr(bi, 'copper_layers', None) or ['F.Cu', 'B.Cu'])
+    areas = []
+    for ko in getattr(bi, 'keepouts', None) or ():
+        if ko.get('pads_allowed', True) and ko.get('footprints_allowed', True):
+            continue
+        outer = [tuple(q) for q in (ko.get('polygon') or ())]
+        if len(outer) < 3:
+            continue
+        toks = sorted(str(t) for t in (ko.get('layers') or ()))
+        cov = (set(expand_pad_layers(toks, copper)) if toks else set(copper)) & set(copper)
+        holes = [[tuple(q) for q in h] for h in (ko.get('holes') or ()) if len(h) >= 3]
+        areas.append((ko, cov, Polygon(outer, holes).buffer(0)))
+    if not areas:
+        return {'rule_area_item_count': 0, 'rule_area_items': [],
+                'rule_area_item_pairs': []}
+    fps = getattr(pcb_data, 'footprints', None) or {}
+    crt = {}
+    path = pcb_file or getattr(pcb_data, 'source_path', None)
+    if path and any(not ko.get('footprints_allowed', True) for ko, _c, _s in areas):
+        from .parser import extract_courtyard_shapes
+        crt = extract_courtyard_shapes(path)
+    rows = set()
+    for ref in sorted(fps):
+        fp = fps[ref]
+        side = footprint_side(fp)
+        for ko, cov, shape in areas:
+            name, owner = ko.get('name') or '', ko.get('owner') or ''
+            if not ko.get('pads_allowed', True):
+                for pad in fp.pads:
+                    if not _pad_carries_copper(pad) or not (pad_copper_layers(pad, copper) & cov):
+                        continue
+                    if _copper_geometry(pad).intersection(shape).area > EPS:
+                        rows.add((name, owner, ref, f'pad {pad.pad_number}'))
+            if (not ko.get('footprints_allowed', True) and ref != owner
+                    and f'{side}.Cu' in cov):
+                local = (crt.get(ref) or {}).get(side)
+                if local is None:
+                    continue
+                world = place_local_shape(local[0], fp.x, fp.y, fp.rotation)
+                if world.intersection(shape).area > EPS:
+                    rows.add((name, owner, ref, 'footprint'))
+    out = [list(r) for r in sorted(rows)]
+    # `[ref, area]`, one per part and area: the pair a move is refused on
+    # when it is new (pose_ops.PAIR_KEYS)
+    pairs = sorted({(r[2], (r[0] or 'rule area') + (f" of {r[1]}" if r[1] else ''))
+                    for r in out})
+    return {'rule_area_item_count': len(out), 'rule_area_items': out,
+            'rule_area_item_pairs': [list(q) for q in pairs]}
 
 
 def keepout_pad_findings(keepouts: 'RuleAreaKeepouts',
