@@ -764,6 +764,20 @@ class RoutingDialog(wx.Dialog):
             v = mins.get(src)
             if isinstance(v, (int, float)) and v > 1e-9:
                 out[key] = float(v)
+        if 'clearance' in out:
+            # #1369: a min_clearance the writeback capped at a pad clearance
+            # override is not a board minimum; the board's records say what
+            # is (fab_tiers.board_declared_min_clearance, as the CLI reads it).
+            try:
+                import pcbnew
+                import tool_records
+                from fab_tiers import board_declared_min_clearance
+                _b = pcbnew.GetBoard()
+                if _b is not None:
+                    out['clearance'] = float(board_declared_min_clearance(
+                        out['clearance'], tool_records.live_namespace(_b)))
+            except Exception:
+                pass
         if 'clearance' not in out:
             # #1160: an unset Board Setup minimum leaves the Default class as
             # the clearance every Default net is graded at -- the CLI's

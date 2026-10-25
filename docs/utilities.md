@@ -2754,8 +2754,22 @@ floors only when it placed a via and nothing when it drew nothing (#1195,
 via floors and hole-to-hole only when it placed a via, its track floor only
 when it laid a track, and its copper-to-hole floor only when it drew either
 (#1319, `plane_fix_kwargs`). A bare pour writes the copper clearance alone,
-because a KiCad refill regrows the pour at max(zone clearance, net class). The
-`FAB FLOOR RELAXED` disclosure compares against the floors the board declared
+because a KiCad refill regrows the pour at max(zone clearance, net class).
+`route_diff.py` (and the Differential tab) writes the copper-to-hole floor it
+HELD -- the board's own `min_hole_clearance`, which its router keeps NPTH
+walls at -- lowered only to the smallest distance from the copper it drew to a
+hole of another net (a P via's drill beside the N track can sit under it), and
+never below its copper clearance (#1369, `step_hole_clearance`). It used to
+write the copper clearance, which the delivered fill then followed.
+
+The `#530` cap lowers `rules.min_clearance` to the smallest pad clearance
+override the run honoured (KiCad floors an override there). That number
+belongs to one part, so the writeback records it
+(`kicad_routing_tools.pad_override_min_clearance`: `{rule, board}`), and
+`--escalation board` reads the board's own minimum (`board`) while the rule
+still holds the capped value (#1369).
+
+The `FAB FLOOR RELAXED` disclosure compares against the floors the board declared
 before the chain began (`kicad_routing_tools.fab_floor_origin`). A floor that
 origin does not carry was never declared, so nothing is reported as its
 "ORIGINAL".
