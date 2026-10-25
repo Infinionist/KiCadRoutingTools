@@ -51,6 +51,15 @@ class TestClosedSilkBody(unittest.TestCase):
             self.assertIn('NOT BUILDABLE', out, out[-800:])
             self.assertIn('CONTAINED 100%', out)
             self.assertIn('GATES (moved: R1)', out)
+            # moved again but already inside on its baseline: the baseline's own
+            moved2 = os.path.join(td, 'moved2.kicad_pcb')
+            code, out = run(tool('place_pose.py'), moved, moved2,
+                            'set', 'R1', '125.6', '100.5', '--rot', '0')
+            self.assertEqual(code, 0, out[-600:])
+            code, out = run(tool('check_assembly.py'), evidence(moved2, 'moved again'),
+                            '--baseline', moved)
+            self.assertIn("baseline's own (the baseline had it)", out, out[-800:])
+            self.assertIn('buildable (blocking 0)', out, out[-800:])
             # without a baseline nothing says who moved: reported, not gated
             code, out = run(tool('check_assembly.py'), moved)
             self.assertIn('INSIDE A CLOSED SILK BODY (1): REPORT-ONLY', out, out[-800:])

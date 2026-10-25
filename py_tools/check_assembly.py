@@ -278,6 +278,7 @@ def main():
 
     new_advisory = None
     base_courtyard_keys = None
+    base_silk_keys = set()
     moved_refs = None
     base_pile = False
     own_pad_inherited = None
@@ -310,6 +311,9 @@ def main():
                                     pcb_file=args.baseline,
                                     courtyard_severity=_cy_sev_arg)
             base_keys = {(q.a, q.b, q.kind) for q in gb['pairs']}
+            # #1401: the closed-silk enclosures the baseline already had
+            base_silk_keys = {frozenset((q.a, q.b))
+                              for q in gb.get('silk_enclosed_pairs') or ()}
         new_advisory = [q for q in g['advisory_pairs']
                         if (q.a, q.b, q.kind) not in base_keys]
         base_courtyard_keys = {(a, b) for a, b, k in base_keys
@@ -745,16 +749,20 @@ def main():
     if _silk_pairs:
         if moved_refs is not None:
             silk_gating = [q for q in _silk_pairs
-                           if q.a in moved_refs or q.b in moved_refs]
+                           if (q.a in moved_refs or q.b in moved_refs)
+                           and frozenset((q.a, q.b)) not in base_silk_keys]
         print(f"  INSIDE A CLOSED SILK BODY ({len(_silk_pairs)}): "
               + (f"{len(silk_gating)} GATE (a member moved vs the baseline)"
                  if moved_refs is not None else
                  "REPORT-ONLY: pass --baseline <the board the run started "
                  "from> to gate the ones your moves created"))
+        _gate_ids = {id(q) for q in silk_gating}
         for q in _silk_pairs:
             _who = [r for r in (q.a, q.b) if moved_refs and r in moved_refs]
             print(f"    {q.a} <-> {q.b}  {q.contained_frac:.0%} of the smaller "
-                  f"body" + (f"  GATES (moved: {' '.join(_who)})" if _who
+                  f"body" + (f"  GATES (moved: {' '.join(_who)})" if id(q) in _gate_ids
+                             else "  baseline's own (the baseline had it)"
+                             if frozenset((q.a, q.b)) in base_silk_keys
                              else "  baseline's own (no member moved)"
                              if moved_refs is not None else ''))
 
