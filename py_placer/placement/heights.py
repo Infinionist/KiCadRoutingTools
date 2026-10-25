@@ -492,6 +492,9 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
         return got
     import numpy as np
     fps = pcb_data.footprints or {}
+    # what a probe or a plug reaches from above, whether or not a model was
+    # measured: without kicad-cli no measurement named them
+    reached = h.reached or frozenset(_reached(pcb_data))
     top, covers = dict(h.top), dict(h.covers)
     n_h = n_u = n_c = 0
     unders = []
@@ -526,13 +529,13 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
             lo[inb] = float(row['underside_mm'])
             court = _mask(_no_go(fps[r], getattr(g, 'court_shape_local', None)),
                           x0, y0, nx, ny)
-            covers[r] = Cover(r, x0, y0, lo, court, r in h.reached,
+            covers[r] = Cover(r, x0, y0, lo, court, r in reached,
                               base.decl if base is not None else None)
             n_u += 1
     # a footprint with no pads is no part (a logo, a mechanical drawing)
     padless = frozenset(k for k, f in fps.items() if not f.pads)
     # a probe reaches a test point only with a removable body off it
-    probed = frozenset(k for k in h.reached if k in fps and _is_test_point(fps[k], k))
+    probed = frozenset(k for k in reached if k in fps and _is_test_point(fps[k], k))
     for row in declared.get('covers') or ():
         r = row.get('connector')
         if r not in fps:
@@ -552,7 +555,7 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
                                      (n_u, 'underside(s)')) if n]
     if said:
         note = f"{note}; declared: {', '.join(said)}"
-    out = Heights(top, covers, note=note, reached=h.reached, bodies=h.bodies)
+    out = Heights(top, covers, note=note, reached=reached, bodies=h.bodies)
     if len(_DECL_MEMO) > 64:
         _DECL_MEMO.clear()
     _DECL_MEMO[key] = out
