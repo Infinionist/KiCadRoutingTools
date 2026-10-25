@@ -93,7 +93,7 @@ def _two(name, ref, x, y):
                                     ('2', 0.5, 0, 0.6, 0.6, 'smd')], (1.0, 0.6))
 
 
-def board(path, h1=(52.0, 25.0), j1_rot=0, c2=(30, 30), u9=(40, 25)):
+def board(path, h1=(52.0, 25.0), j1_rot=0, c2=(30, 30), u9=(40, 25), tp=None):
     """The board: socket J1 at (10, 25), standoff H1, C1 (0.55 mm), C2
     (2.7 mm), U9 (unknown) under the card, R5 past it."""
     socket = [(str(i + 1), 0.75 if i % 2 else -0.75, -4.5 + (i // 2) * 1.0, 0.3, 1.0, 'smd')
@@ -108,6 +108,9 @@ def board(path, h1=(52.0, 25.0), j1_rot=0, c2=(30, 30), u9=(40, 25)):
             [(str(i + 1), -1.5 + i, 1.5, 0.4, 0.8, 'smd') for i in range(4)], (2.0, 2.0)),
         _two('Test:CAPC1005X55N', 'R5', 65, 25),
     ]
+    if tp:
+        parts.append(_fp('TestPoint:TestPoint_Pad_1.0x1.0mm', 'TP1', tp[0], tp[1], 0,
+                         [('1', 0, 0, 1.0, 1.0, 'smd')], (1.5, 1.5)))
     text = ('(kicad_pcb\n\t(version 20260206)\n\t(generator "pcbnew")\n'
             '\t(generator_version "10.0")\n\t(general\n\t\t(thickness 1.6)\n\t)\n'
             '\t(paper "A4")\n\t(layers\n\t\t(0 "F.Cu" signal)\n\t\t(2 "B.Cu" signal)\n'
@@ -127,7 +130,7 @@ def board(path, h1=(52.0, 25.0), j1_rot=0, c2=(30, 30), u9=(40, 25)):
 
 COVER = {'connector': 'J1', 'side': 'F', 'axis_deg': 0, 'width_mm': 22,
          'underside_mm': 2.5, 'length_mm': 44,
-         'standoffs': [{'ref': 'H1', 'length_mm': 42}],
+         'standoffs': [{'ref': 'H1', 'length_mm': 42}], 'removable': True,
          'source': 'socket datasheet: 2.5 mm card height; single-sided card'}
 
 
@@ -145,6 +148,9 @@ def refusals():
             ('no underside', {k: v for k, v in COVER.items() if k != 'underside_mm'},
              'underside_mm'),
             ('no side', {k: v for k, v in COVER.items() if k != 'side'}, 'side'),
+            ('nothing saying whether it comes off',
+             {k: v for k, v in COVER.items() if k != 'removable'}, 'removable'),
+            ('removable not a yes/no', dict(COVER, removable='yes'), 'removable'),
             ('an axis off a quarter turn', dict(COVER, axis_deg=45), 'axis_deg'),
             ('a standoff with no length', dict(COVER, standoffs=[{'ref': 'H1'}]), 'length_mm'),
             ('the connector as its own standoff',
@@ -215,6 +221,23 @@ def judgement(tmp):
     check('a declared 0.8 mm height admits the part', v == 0.0, f'{v} {h2.note}')
     check('...and the run names what was declared', 'declared: 1 cover(s), 1 height(s)'
           in h2.note, h2.note)
+    # a test point under the card: a probe reaches it only with the card out
+    tpath = board(os.path.join(tmp, 'tp.kicad_pcb'), tp=(35, 28))
+    tpcb = quiet(parse_kicad_pcb, tpath)
+    tgeo = quiet(board_bodies, tpcb, tpath)
+    pad = [{'ref': 'TP1', 'height_mm': 0.05, 'source': 'a bare test pad'}]
+
+    def tp_pair(row):
+        th = quiet(heights.for_board, tpcb, tpath,
+                   intent_from_dict(intent(covers=[row], heights=pad)).height_declarations())
+        fa, fb = tpcb.footprints['J1'], tpcb.footprints['TP1']
+        return th.pair('J1', (fa.x, fa.y, 0), tgeo['J1'].occupancy_local, 'F',
+                       'TP1', (fb.x, fb.y, 0), tgeo['TP1'].occupancy_local, 'F')
+    check('a test point fits under a REMOVABLE card', tp_pair(COVER) == 0.0,
+          str(tp_pair(COVER)))
+    check('...and is refused under one that stays',
+          (tp_pair(dict(COVER, removable=False)) or 0) > 0,
+          str(tp_pair(dict(COVER, removable=False))))
     return path, it
 
 

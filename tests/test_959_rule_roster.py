@@ -85,7 +85,7 @@ ARM_WITH = {
     # #1443: a declared cover arms its standoff check.
     'cover': {'covers': [{'connector': 'J1', 'side': 'F', 'axis_deg': 0, 'width_mm': 22,
                           'underside_mm': 1.5, 'standoffs': [{'ref': 'H1', 'length_mm': 42}],
-                          'source': 'socket datasheet'}]},
+                          'removable': True, 'source': 'socket datasheet'}]},
 }
 
 

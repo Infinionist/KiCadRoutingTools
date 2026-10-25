@@ -154,7 +154,7 @@ suspect, suspect_reason, why
 | `keep_away[]` | `rule` (ONE rule in route.py's `--keep-away` syntax, `AGGRESSOR:VICTIM:GAP`), `why` (or `note` / `reason`), `context`, and the compiler-written `source` (see "`keep_away[]`" below; needs `min_reader` 10) |
 | `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why` (or `note` / `reason`), `context`, `source` (see "`replicate[]`" below; needs `min_reader` 11) |
 | `templates[]` | `anchor` (the chip), `members` (each `ref`, `at` [dx, dy] mm and `rot`, a quarter turn, in the chip's own frame; `pads` and `note` as the fit wrote them), `tolerance_mm`, `kind` (`switching stage` or `rf front end`), `ground_return_mm`, `source`, `why` (or `note` / `reason`), `context`, and the fit-written `fitted` (see "`templates[]`" below; needs `min_reader` 13, and 14 with `kind` or `ground_return_mm`) |
-| `covers[]` | `connector`, `side` (`F`/`B`), `axis_deg` (a quarter turn in the connector's frame), `width_mm`, `underside_mm`, `length_mm`, `offset_mm`, `standoffs`, `source`, `why` (or `note` / `reason`), `context` (see "`covers[]` and `heights[]`" below; needs `min_reader` 15) |
+| `covers[]` | `connector`, `side` (`F`/`B`), `axis_deg` (a quarter turn in the connector's frame), `width_mm`, `underside_mm`, `length_mm`, `offset_mm`, `standoffs`, `removable`, `source`, `why` (or `note` / `reason`), `context` (see "`covers[]` and `heights[]`" below; needs `min_reader` 15) |
 | `covers[].standoffs[]` | `ref`, `length_mm`, `rot` |
 | `heights[]` | `ref`, `height_mm`, `underside_mm`, `source`, `why` (or `note` / `reason`), `context` (needs `min_reader` 15) |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why` (or `note` / `reason`), `context`, and the compiler-written `source` (see "Arrays" below; needs `min_reader` 7) |
@@ -1180,7 +1180,7 @@ Two things read it:
 ```jsonc
 "covers": [{ "connector": "J3", "side": "F", "axis_deg": 90,
              "width_mm": 22, "underside_mm": 2.5, "length_mm": 44,
-             "standoffs": [{ "ref": "H2", "length_mm": 42 }],
+             "standoffs": [{ "ref": "H2", "length_mm": 42 }], "removable": true,
              "source": "socket datasheet: 2.5 mm card height; single-sided 2242 card" }],
 "heights": [{ "ref": "U7", "height_mm": 1.1, "source": "U7 datasheet, package drawing" }]
 ```
@@ -1191,8 +1191,10 @@ where it fits. How low the body reaches depends on the socket's height and on
 the card fitted -- single-sided, or double-sided with its bottom-side parts --
 which the board does not say, so a cover is DECLARED, never derived. Every
 number is the author's and the loader fills none in: `side`, `axis_deg`,
-`width_mm`, `underside_mm` and `source` are required, and `length_mm` or a
-standoff. `py_tools/cover_facts.py BOARD` prints what the board does know
+`width_mm`, `underside_mm`, `removable` and `source` are required, and
+`length_mm` or a standoff. `removable` says whether the body comes off in
+service (a card out of its socket for test and rework) or stays (a module
+soldered to its stacking connector, a shield fixed on). `py_tools/cover_facts.py BOARD` prints what the board does know
 (the connector's height, a card model attached to it and its measured
 underside, the standoffs on its axes with their distances, the parts under
 it now); the skill's "Covers" step says how an agent gets from those facts
@@ -1214,7 +1216,10 @@ Under it (`placement.heights`, the rule #1443 judges a part's model by):
   occupancy);
 - a part whose height is unknown, or that something reaches from above (a
   connector, a switch, a test point), is refused: nothing is risked on a
-  guess;
+  guess. The one exception is a test point under a `removable` body: the
+  probe reaches it with the card out, so it is judged by its height like any
+  other part (a bare test pad still needs a known height, from a model or a
+  `heights[]` row);
 - the standoffs are not judged.
 
 A declared body wins over a model's on the area it declares (a card model's

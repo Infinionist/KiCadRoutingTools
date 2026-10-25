@@ -154,7 +154,7 @@ KEY_SETS = {
                       'context'} | FREE,
     # #1443: one declared cover, every number the author's, and its standoffs.
     '_COVER_KEYS': {'connector', 'side', 'axis_deg', 'width_mm', 'underside_mm',
-                    'length_mm', 'offset_mm', 'standoffs', 'source',
+                    'length_mm', 'offset_mm', 'standoffs', 'removable', 'source',
                     'context'} | FREE,
     '_COVER_STANDOFF_KEYS': {'ref', 'length_mm', 'rot'},
     '_HEIGHT_KEYS': {'ref', 'height_mm', 'underside_mm', 'source', 'context'} | FREE,
@@ -397,7 +397,7 @@ def test_an_intent_using_every_known_key_loads():
         'covers': [{'connector': 'J3', 'side': 'F', 'axis_deg': 90, 'width_mm': 22,
                     'underside_mm': 2.5, 'length_mm': 44, 'offset_mm': 0.0,
                     'standoffs': [{'ref': 'MH2', 'length_mm': 42, 'rot': 0}],
-                    'source': 's', 'why': 'w', 'note': 'n', 'context': {'why': 'w'}}],
+                    'removable': True, 'source': 's', 'why': 'w', 'note': 'n', 'context': {'why': 'w'}}],
         'heights': [{'ref': 'U9', 'height_mm': 0.8, 'underside_mm': 2.0, 'source': 's',
                      'why': 'w', 'note': 'n', 'context': {'why': 'w'}}],
     }

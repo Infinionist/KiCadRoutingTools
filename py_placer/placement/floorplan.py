@@ -347,9 +347,11 @@ _KEEPOUT_KEYS = {'name', 'rect', 'circle', 'sides', 'allow', 'max_height_mm',
 #: `axis_deg` (the connector's frame, a quarter turn) to `length_mm` (else
 #: its farthest standoff), its centre line `offset_mm` to the axis's left;
 #: each standoff `{ref, length_mm, rot?}` held that far along the axis.
-#: `source` says where the numbers came from (a datasheet, a model).
+#: `removable`: the body comes off in service (a card in its socket), so a
+#: test point may stand under it where it fits. `source` says where the
+#: numbers came from (a datasheet, a model).
 _COVER_KEYS = {'connector', 'side', 'axis_deg', 'width_mm', 'underside_mm',
-               'length_mm', 'offset_mm', 'standoffs', 'source',
+               'length_mm', 'offset_mm', 'standoffs', 'removable', 'source',
                'context'} | _FREE_TEXT_KEYS
 _COVER_STANDOFF_KEYS = {'ref', 'length_mm', 'rot'}
 #: #1443. One `heights[]` row: a part's `height_mm` (its top above its face)
@@ -1160,12 +1162,15 @@ def _cover_claims(raw: Dict) -> List[Dict]:
         if con in owner:
             raise IntentError(f"{where}.connector: {con} is already {owner[con]}")
         owner[con] = where
-        for k in ('side', 'axis_deg', 'width_mm', 'underside_mm'):
+        for k in ('side', 'axis_deg', 'width_mm', 'underside_mm', 'removable'):
             if k not in c:
                 raise IntentError(f"{where}: needs `{k}` -- a cover's numbers are "
                                   f"declared, never assumed")
         if c['side'] not in ('F', 'B'):
             raise IntentError(f"{where}.side: 'F' or 'B', got {c['side']!r}")
+        if not isinstance(c['removable'], bool):
+            raise IntentError(f"{where}.removable: true or false (does the body come "
+                              f"off in service?), got {c['removable']!r}")
         a = _number(c['axis_deg'], f"{where}.axis_deg")
         if abs(a / 90.0 - round(a / 90.0)) > 1e-6:
             raise IntentError(f"{where}.axis_deg: a quarter turn (0, 90, 180, 270) in "

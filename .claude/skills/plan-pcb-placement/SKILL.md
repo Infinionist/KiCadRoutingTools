@@ -432,7 +432,12 @@ under a card, and a tall part can be placed there.
    (how far the body reaches from the connector's origin), `offset_mm` (the
    standoff's "off" when the card's centre line misses the connector's
    origin), `standoffs` (each `ref` with `length_mm`, the facts' distance
-   along) and `source` (the datasheets and figures). Set `min_reader` 15.
+   along), `removable` and `source` (the datasheets and figures). Set
+   `min_reader` 15. **`removable`, case by case:** true when the body comes
+   off in service -- a card in its socket, a module on a connector it can be
+   pulled from -- so a test point under it can still be probed with it out;
+   false when it stays (soldered, glued, a fixed shield or one the enclosure
+   holds down). Say which and why in the row's `source`.
 5. **Run check_floorplan again** (§3.4): no `cover` or `cover_unresolved`
    warning. A `cover` warning names a standoff not where the row puts it:
    fix the row, or move the standoff.

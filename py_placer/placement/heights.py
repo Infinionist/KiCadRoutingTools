@@ -44,7 +44,10 @@ a module on a stacking connector -- whose underside depends on the socket
 and on the card fitted, so it is never read off a model; and `heights[]`, a
 part's height or the room under its body, from its datasheet. A declared
 body moves with its connector, and under it a part must be KNOWN to fit
-(`MARGIN_MM`): a part of unknown height is refused there.
+(`MARGIN_MM`): a part of unknown height is refused there. So is a part
+reached from above, except a test point under a body declared `removable`
+(a card comes out of its socket for test and rework): it is judged by its
+height like any other part.
 
 The heights come from one `kicad-cli pcb export glb` of the board, cached by
 the footprints' models (not their poses) in `~/.cache/krt_heights`, so the
@@ -147,7 +150,8 @@ class Cover:
         self.court = court if court is not None else np.zeros(lo.shape, bool)
         #: a DECLARED body (`covers[]`): (its rect, local frame; its
         #: underside, mm; the refs it does not judge -- its standoffs and pad-less
-        #: footprints, a logo or a drawing), or None
+        #: footprints, a logo or a drawing; the test points judged by their
+        #: height under it, when the body is removable), or None
         self.decl = decl
         raised = np.isfinite(lo) & (lo >= LIFT_MIN_MM)
         if raised.any():
@@ -349,8 +353,9 @@ class Heights:
             if decl:
                 r = cov.decl[0]
                 if box[0] < r[2] and r[0] < box[2] and box[1] < r[3] and r[1] < box[3]:
+                    td = self.height(y) if y in cov.decl[3] else ty
                     meet += cov.declared_area(
-                        box, math.inf if ty is None else ty,
+                        box, math.inf if td is None else td,
                         self._body_in(y, py, px) if bb is not None else None)
             over = max(over, meet)
         if not judged:
@@ -526,12 +531,15 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
             n_u += 1
     # a footprint with no pads is no part (a logo, a mechanical drawing)
     padless = frozenset(k for k, f in fps.items() if not f.pads)
+    # a probe reaches a test point only with a removable body off it
+    probed = frozenset(k for k in h.reached if k in fps and _is_test_point(fps[k], k))
     for row in declared.get('covers') or ():
         r = row.get('connector')
         if r not in fps:
             continue
         decl = (cover_rect(row), float(row['underside_mm']),
-                frozenset(s['ref'] for s in row.get('standoffs') or ()) | padless)
+                frozenset(s['ref'] for s in row.get('standoffs') or ()) | padless,
+                probed if row.get('removable') else frozenset())
         base = covers.get(r)
         if base is not None:
             covers[r] = Cover(r, base.x0, base.y0, base.lo, base.court, base.solid, decl)
@@ -1002,6 +1010,14 @@ def _bodies(raw, top):
                   (float(pts[:, 0].min()) - CELL_MM, float(pts[:, 1].min()) - CELL_MM,
                    float(pts[:, 0].max()) + CELL_MM, float(pts[:, 1].max()) + CELL_MM))
     return out
+
+
+def _is_test_point(fp, ref):
+    from placement.part_class import classify_part
+    try:
+        return classify_part(fp, ref).name == 'testpoint'
+    except Exception:                                        # noqa: BLE001
+        return False
 
 
 def _reached(pcb_data):
