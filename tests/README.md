@@ -103,9 +103,9 @@ Three things to know before you trust its output:
 
   The suite image's self-skips have three different reasons, so read each
   `SKIP:` line rather than assuming:
-  - **No KiCad.** Six would be recovered by giving the suite image KiCad:
-    `test_910_fill_for_delivery` and the two `test_1279_*_pcbnew` tests (each
-    wants KiCad's bundled python), and three that run a pcbnew/wx half under
+  - **No KiCad.** Seven would be recovered by giving the suite image KiCad:
+    `test_910_fill_for_delivery`, the two `test_1279_*_pcbnew` tests and
+    `test_1450_chamfered_pad_pcbnew` (each wants KiCad's bundled python), and three that run a pcbnew/wx half under
     KiCad's python and self-skip without one (found reviewing #1272: such a
     half used to print a skip and pass, so it ran nowhere):
     `test_505_min_connection_clamp`, `test_505_gui_half_runs` and

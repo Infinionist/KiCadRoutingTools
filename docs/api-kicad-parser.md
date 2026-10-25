@@ -175,12 +175,12 @@ pads that `net_id`'s copper may ignore because a footprint's
 | `drill` | float | Drill diameter (0 for SMD, > 0 for through-hole). Oval/slot drills (`(drill oval w h)`) report `max(w, h)` so they keep `> 0` / through-hole semantics. Read in exponent form too: `(drill 1e-06)` is 1 nm, not 1 mm. |
 | `drill_w`, `drill_h` | float | A slot drill's size in the PAD frame (`0` = round). Use `pad_drill_capsule` / `pad_drill_circles` ([helpers](#pad-and-copper-helpers)) for the real slot geometry, not `drill` |
 | `hole_x`, `hole_y` | Optional[float] | The drill position when the pad's copper is OFFSET from it (`(drill (offset x y))`, castellated-module paddles); `None` = the hole is at `global_x`/`global_y`. `global_x`/`global_y` is always the COPPER centre |
-| `polygons` | Optional[List[List[Tuple]]] | A custom pad's real copper outline(s), GLOBAL mm (see below); `None` for ordinary pads, which `size_x`/`size_y` model exactly |
+| `polygons` | Optional[List[List[Tuple]]] | A custom pad's real copper outline(s), or a chamfered-rect pad's outline, GLOBAL mm (see below); `None` for ordinary pads, which `size_x`/`size_y` model exactly |
 | `pinfunction` | str | Pin function from the schematic (`'TX'`, `'~RESET'`) |
 | `pintype` | str | Pin electrical type (`'passive'`, `'input'`, `'power_in'`) |
 | `pad_type` | str | Pad kind: `'smd'`, `'thru_hole'`, `'np_thru_hole'`, `'connect'`. NPTH pads carry **no copper** (their size is just the mask opening, even when `layers` lists `*.Cu`), so copper-clearance checks skip them; only their drill hole matters. |
-| `roundrect_rratio` | float | Corner radius ratio for roundrect pads (0–0.5) |
-| `geometry_approximations` | Tuple[str, ...] | Shape variants simplified by the parser, currently chamfered pads and per-layer padstacks. Both text and live-board paths disclose them. An empty tuple does not certify arbitrary custom geometry; exactness still depends on the consumer's supported shapes. Placement edge grading retains approximate findings but marks these variants unmeasured. |
+| `roundrect_rratio` | float | Corner radius ratio for roundrect pads (0–0.5); on a chamfered-rect pad, the rounding of its corners that are not chamfered |
+| `geometry_approximations` | Tuple[str, ...] | Shape variants simplified by the parser, currently chamfered pads (whose outline is in `polygons`, but whose box is still what placement's edge grade and a grown paste opening read) and per-layer padstacks. Both text and live-board paths disclose them. An empty tuple does not certify arbitrary custom geometry; exactness still depends on the consumer's supported shapes. Placement edge grading retains approximate findings but marks these variants unmeasured. |
 | `rect_rotation` | float | Residual rectangle tilt in the global frame, in (-90, 90]. `0` for axis-aligned pads (the common case); non-zero only for pads on non-orthogonal angles. |
 | `local_clearance` | float | The pad's **resolved** clearance override in mm (issue #326): its own `(clearance …)` token, else the footprint-level override, else `0` (= use the global/netclass clearance). KiCad enforces `max(the two items' clearances)` per pair; the router's obstacle stamps and `check_drc` honor this the same way. Negative (shrinking) overrides clamp to `0`. |
 | `castellated` | bool | KiCad's `(property pad_prop_castellated)`: a deliberate half-hole pad **on** the board outline. Set by both parse paths. The routing mains run a castellated-landing retract post-pass that pulls track ends landing inside such a pad's edge-clearance zone back to the pad's inner reach (`pcb_modification.retract_castellated_landings`). |
@@ -215,6 +215,22 @@ copper's own box `(x0, y0, x1, y1)` about `global_x`/`global_y`, board frame
 5.0 x 4.6 to one side); None otherwise. Both parse paths set it, from the same
 points as the box (text) and from pcbnew's effective shape. Placement reads it
 through `legality.pad_copper_box`; routing reads `polygons`.
+
+A **chamfered-rect** pad -- KiCad's `roundrect` (or `rect`) with
+`(chamfer <corners>)` and `(chamfer_ratio r)`, which KiCad's Eagle importer
+writes for octagon pads -- carries its outline in `polygons` too (#1450), so
+the cut corners are not copper to the obstacle map, `check_drc`,
+`check_connected` and `check_pads`. Each named corner (`top_left`,
+`top_right`, `bottom_left`, `bottom_right`, in the pad's own frame, which KiCad
+mirrors when it flips a footprint) is cut by `r * min(w, h)` along each side;
+every other corner is rounded by `roundrect_rratio * min(w, h)` (0.25 when the
+file names none, as pcbnew loads it), and the outline is turned by the pad's
+absolute angle about the copper centre. The text parser builds it with
+`chamfered_rect_polygon`; `build_pcb_data_from_board` takes pcbnew's effective
+polygon, and the two agree to within pcbnew's arc error. `shape` reads
+`'roundrect'` and `size_x`/`size_y` stay the pad's box. A pad with a per-layer
+padstack keeps its box. A paste opening with a positive margin is the grown
+box (a superset); at zero or a negative margin it is the copper outline.
 
 ### `Segment`
 
@@ -686,7 +702,7 @@ actually consumes: board info (layers, bounds, and the stackup layer by layer:
 name, type, thickness, epsilon_r, loss tangent), nets, duplicate references,
 footprint locks, sheet fields and net-tie groups, footprint and per-pad
 geometry (position, size, `rect_rotation`, `roundrect_rratio`,
-`local_clearance`, `zone_connection` (pad and footprint), drill, layers, and a custom pad's `polygons`, compared as
+`local_clearance`, `zone_connection` (pad and footprint), drill, layers, and a custom or chamfered pad's `polygons`, compared as
 the UNION each path describes -- pcbnew merges the primitives into one ring,
 the text parser keeps one per primitive -- by `_polygon_union_excess`, both
 ways), track and via geometry (matched as a multiset, not just counts; net 0
