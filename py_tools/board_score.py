@@ -93,6 +93,10 @@ RULE_PAIR_TYPES = frozenset({'segment-segment-track-rule'})
 # `inherited-via-in-paste`; what is left is then a site the run created, and
 # counts in `blocking` (#1171).
 VIA_PASTE_TYPES = frozenset({'via-in-paste'})
+# check_drc's `keepout` (a track or via in a keep-out rule area that forbids
+# it) is deliberately in none of these sets: it is routed copper where the
+# board says none may go, so it stays in `drc` and counts in `blocking`
+# (copper the --baseline input already had there is accepted, not listed).
 
 # #1303: a .kicad_dru skew or diff_pair_uncoupled rule a pair's copper breaks
 # (check_drc's pair-rule pass, KiCad's skew_out_of_range and

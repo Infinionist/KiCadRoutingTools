@@ -112,10 +112,10 @@ Options:
   --check-pad-edge          Also check pad-to-board-edge clearance. Off by default:
                             pad-edge violations are almost always pre-existing
                             edge-connector pads, not router-introduced.
-  --baseline BOARD          The board this one was derived from (checks 15 and 16)
+  --baseline BOARD          The board this one was derived from (checks 6, 15, 16 and 19)
   --json FILE               Also write the result as JSON: the graded floors with their
                             source (graded_at), the violation and accepted counts,
-                            by_type, contacts_by_type, via_in_paste and every item.
+                            by_type, contacts_by_type, via_in_paste, keepout and every item.
                             Complete regardless of --max-print
   --render DIR              Write one cropped PNG per spatial cluster of violations
                             (drawn by route_render)
@@ -176,11 +176,12 @@ The DRC checker validates:
 
 17. **`.kicad_dru` length windows** (`length-out-of-range`, #1313) - Every `(constraint length (min ..) (max ..))` rule in the sibling `.kicad_dru`, read by `kicad_dru.read_board_length_rules`. The rule binding a net is KiCad's (the last matching rule in file order), and the net is measured the way KiCad's length DRC measures it (`net_queries.net_match_length`, mode `total`: track and via-barrel copper plus every pad's pad-to-die length); outside the window it is a violation, KiCad's `length_out_of_range`. Honoured conditions: none (every net), or `||`-joined `A.NetClass == 'X'`, `A.NetName == 'X'` and `A.hasNetclass('X')` terms (KiCad's case-insensitive `*`/`?` wildcards; class by membership). A console line counts the nets graded and out of range, names the nets **not measured** (pads not joined by track copper -- not routed yet, which connectivity already counts), and names every rule whose condition is not modelled with the nets it may bind, as **NOT GRADED** (KiCad still grades them). Each via is charged over the layers it joins, as KiCad charges it (`net_queries.kicad_via_length`); on routed_output with a test `.kicad_dru` this matched kicad-cli 10.0.0's `length_out_of_range` actuals to 0.1 µm on every routed net. The one deliberate difference: KiCad also grades a net that is not routed yet, by whatever copper it has, where this check reports it not measured.
 18. **`.kicad_dru` diff-pair rules** (`skew-out-of-range`, `diff-pair-uncoupled`, #1303) - Every `(constraint skew ..)` and `(constraint diff_pair_uncoupled (max ..))` rule, read through the same channel as check 17 (`read_board_length_rules(kinds=...)`; `A.inDiffPair('X')` is honoured too, with KiCad's case-sensitive match on the pair's base name). **Skew**: the nets a rule binds form one group, and each net is graded by how much shorter it is than the group's longest (`net_match_length`, mode `total`); with `(within_diff_pairs)` each pair (KiCad's `+`/`-`, `P`/`N` suffix pairing) is its own group. **Uncoupled**: for each pair, `max(P, N track length) - coupled length`, where the coupled length is KiCad's (`net_queries.diff_pair_coupling`: parallel facing spans on one layer with nothing between them, under the pair's binding `diff_pair_gap` window). These are KiCad's `skew_out_of_range` and `diff_pair_uncoupled_length_too_long`; on a 4-layer imx6ulz route and a fixture of ten cases (straight, diagonal, offset, split layers, wide gap, a track or a via between P and N) the actuals matched kicad-cli 10.0.0 to 0.1 µm. Unjoined members, unmodelled conditions and time-domain (`ps`) bounds are reported as in check 16. `board_score` counts these rows in its `diff_pairs` component, not in `drc`.
+19. **Copper in a keep-out rule area** (`keepout`) - Every rule area (`(zone ... (keepout ...))`, board-level and footprint-owned alike, as `PCBData.board_info.keepouts` reads them) is graded against the copper it forbids: with `(tracks not_allowed)`, a track on one of the area's copper layers (`*.Cu` and `F&B.Cu` expanded; no layer list = every copper layer) whose copper -- the centreline grown by half its width -- reaches into the area, outline minus holes; with `(vias not_allowed)`, a via whose copper disk reaches into it and that has copper on one of the area's layers (a blind or buried via off them is not a hit). A reach of no more than the clearance margin (see below) is not graded. Each row names the area, the net, the layer and a point inside, with how far the copper reaches past the area's edge and how much centreline lies inside. With `--baseline BOARD`, the same item the baseline already had in the same-named area is accepted `inherited-keepout`. Not graded: pads and footprints (an area's `(pads ...)` / `(footprints ...)` flags are not read), zone fill (a pour fills around a keep-out by construction), and footprint graphic copper. kicad-cli 10.0.0 reported no `items_not_allowed` for a track through a tracks-not-allowed rule area when we measured it, so this is check_drc's own class; `kicad_drc_compare` keeps it on a `keepout` channel of its own, and `board_score` counts it in `drc` (blocking). A console line and the `--json` `keepout` block count the violations and the inherited rows.
 Same-net copper overlaps -- a track crossing its own net on one layer, two same-net vias touching -- are printed as warnings, not violations, as KiCad permits them. So is a part's net-less footprint copper touching its own pad's net (`footprint-own-copper`, #995), which KiCad's DRC reports as `shorting_items` but is not a short.
 
 Checks 11–12 are on by default; pass `--no-size-checks` to skip them, or override the floors with `--min-track-width` / `--min-via-diameter` / `--min-via-drill`. The floor is derived from the board's copper-layer count unless overridden.
 
-`--baseline BOARD` is the board this one was derived from (the unrouted input, or the placement run's starting board). It is a checker option, not a routing parameter; pass it whenever you have that board, or pre-existing vias in paste openings and a footprint's own touching pads read as violations against the run.
+`--baseline BOARD` is the board this one was derived from (the unrouted input, or the placement run's starting board). It is a checker option, not a routing parameter; pass it whenever you have that board, or pre-existing vias in paste openings, a footprint's own touching pads and copper the input already had in a keep-out read as violations against the run.
 
 ### Clearance Margin
 
@@ -751,7 +752,9 @@ Exit 0 written; 2 an unreadable design brief.
 Writes a copper keep-out rule area -- `(zone ... (keepout ...))` -- onto a board.
 A module's PCB antenna needs one on every layer; the router stamps
 a rule area (`obstacle_map.add_rule_area_keepout_obstacles`), placement grades
-it, and KiCad reports copper inside it as `items_not_allowed`.
+it, and `check_drc.py` reports copper inside it as a `keepout` violation
+(check 19; kicad-cli 10.0.0 reported no `items_not_allowed` for one when we
+measured it).
 
 ```bash
 python3 py_router/add_rule_area.py in.kicad_pcb out.kicad_pcb \

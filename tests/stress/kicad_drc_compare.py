@@ -125,6 +125,13 @@ CD_SIZE_TYPES = {"track-width", "via-size", "via-drill-size"}
 # where every one would read checkdrc_only. They get a labelled channel of
 # their own, `via_in_paste`, and never count as edge accepts.
 CD_VIA_PASTE_TYPES = {"via-in-paste"}
+# Copper in a keep-out rule area (check_drc `keepout`): check_drc-only by
+# construction -- kicad-cli 10.0.0 reported no `items_not_allowed` for a track
+# through a tracks-not-allowed rule area in our measurement, even on a board
+# pcbnew built itself. Its own labelled channel, `keepout`, off the copper
+# match; any `items_not_allowed` KiCad does report is counted beside it.
+CD_KEEPOUT_TYPES = {"keepout"}
+KICAD_KEEPOUT_TYPE = "items_not_allowed"
 # #1313: a .kicad_dru length window. KiCad's twin (`length_out_of_range`) is
 # not a copper type above, so check_drc's is out of the copper match too --
 # in it, every one would read checkdrc_only. #1303's diff-pair rules
@@ -1076,6 +1083,14 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
         "kicad": None,      # KiCad has no via-in-paste check
     }
     cd = [c for c in cd if c["type"] not in CD_VIA_PASTE_TYPES]
+    keepout = {
+        "check_drc": sum(1 for c in cd if c["type"] in CD_KEEPOUT_TYPES
+                         and not c.get("accepted")),
+        "inherited": sum(1 for c in cd if c.get("accepted") == "inherited-keepout"),
+        # what kicad-cli itself reported (also in kicad_unclassified)
+        "kicad": unclassified.get(KICAD_KEEPOUT_TYPE, 0),
+    }
+    cd = [c for c in cd if c["type"] not in CD_KEEPOUT_TYPES]
     # #995: a part's own copper against its own pad's net -- its own channel,
     # never the edge family's `intentional` count.
     cd_own = [c for c in cd if c.get("accepted") == "footprint-own-copper"]
@@ -1098,6 +1113,7 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
         except Exception:  # noqa: BLE001 -- best-effort, tolerate a bad input
             cd_base = None
         cd_base = [c for c in (cd_base or []) if c["type"] not in CD_VIA_PASTE_TYPES
+                   and c["type"] not in CD_KEEPOUT_TYPES
                    and c.get("accepted") != "footprint-own-copper"]
         cd, _cd_sub = _subtract_baseline(cd, cd_base or [])
         cd_pre += _cd_sub
@@ -1202,6 +1218,8 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
             "courtyard": courtyard,
             # #962 D6: check_drc-only by construction (KiCad has no check)
             "via_in_paste": via_in_paste,
+            # check_drc-only by construction (kicad-cli 10.0.0 reported none)
+            "keepout": keepout,
             # #1390: KiCad error types no channel grades, never dropped
             "kicad_unclassified": unclassified,
             "kicad_only_items": kicad_only, "checkdrc_only_items": cd_only}
@@ -1215,7 +1233,7 @@ _SUMMARY_KEYS = ("board", "kicad", "kicad_preexisting", "check_drc",
                  "pairs_kicad_only", "pairs_checkdrc_only",
                  "kicad_connection_width", "connection_width_min",
                  "kicad_starved_thermal", "kicad_track_dangling",
-                 "courtyard", "via_in_paste")
+                 "courtyard", "via_in_paste", "keepout")
 
 
 def compare_board(board: str, label: str = None, clearance: float = None,
@@ -1283,6 +1301,11 @@ def compare_board(board: str, label: str = None, clearance: float = None,
               f"protected={vip['protected']} inherited={vip['inherited']} "
               f"undeclarable={vip.get('undeclarable', 0)} "
               f"(KiCad has no such check)")
+    ko = data.get("keepout")
+    if ko and any(ko.get(k) for k in ("check_drc", "inherited", "kicad")):
+        print(f"    KEEPOUT     check_drc={ko['check_drc']} "
+              f"inherited={ko['inherited']} kicad_items_not_allowed={ko['kicad']} "
+              f"(check_drc's own class: kicad-cli 10.0.0 reported none)")
     court = data.get("courtyard")
     if court is not None:
         if "error" in court:
