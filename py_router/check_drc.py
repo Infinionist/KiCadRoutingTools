@@ -2831,7 +2831,8 @@ def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
     net is KiCad's (last matching rule in file order). A net is measured as
     KiCad's length DRC measures it, `net_queries.net_match_length(mode
     'total')`: its track and via-barrel copper plus every pad's pad-to-die
-    length. A net out of its window is a `length-out-of-range` violation. Two
+    length, as the installed kicad-cli's release measures them
+    (`net_queries.length_measure_release`, #1432). A net out of its window is a `length-out-of-range` violation. Two
     populations are reported and NOT graded: a net whose pads are not joined
     by track copper (not routed yet; the connectivity check already counts
     it), and a net whose binding rule's scope is not modelled -- named with
@@ -2889,9 +2890,10 @@ def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
             })
     from kicad_dru import unbound_length_rules
     unbound = [r.name for r in unbound_length_rules(rules, names, member)]
-    from net_queries import LENGTH_MEASURE_CALIBRATED_TO
+    from net_queries import installed_kicad_release, length_measure_release
     summary = {'rules': len(rules), 'graded': graded,
-               'calibrated_to_kicad': LENGTH_MEASURE_CALIBRATED_TO,
+               'calibrated_to_kicad': length_measure_release(),
+               'installed_kicad': installed_kicad_release(),
                'out_of_range': sum(1 for v in violations
                                    if v['type'] == 'length-out-of-range'),
                'unmeasured': unmeasured, 'unbound_rules': unbound,

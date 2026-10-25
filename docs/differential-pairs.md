@@ -698,7 +698,8 @@ the GUI diff tab gets the same answer:
 - **The measure** (`net_queries.diff_pair_coupling` / `diff_pair_skew`, see
   [the API](api-net-analysis.md)) is KiCad's: coupled length as KiCad 10's
   diff-pair coupling DRC computes it, in its integer geometry, and P/N skew as
-  its skew DRC does. Both matched kicad-cli 10.0.0 to 0.1 µm.
+  its skew DRC does, from lengths measured as the installed kicad-cli's release
+  measures them (#1432). Both matched kicad-cli 10.0.0 to 0.1 µm.
 - **Coupled** means the pair's coupled run -- at a gap no wider than 1.5x the
   gap the pair was routed at -- is at least one pitch (track width + gap) long
   AND covers at least 10% of the pair's length

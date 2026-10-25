@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""#1432: the length-window grade is calibrated to KiCad 10.0.0 and said so
-nowhere.
+"""#1432: the length-window grade measures as the installed kicad-cli, and says so.
 
-check_drc measures net length as kicad-cli 10.0.0 does; 10.0.7's
-LENGTH_DELAY_CALCULATION joins a via to track ends anywhere inside its pad and
-clips track inside via pads, so a net within about one via barrel of a
-window limit grades differently there (DATA_13 15.149 vs 15.378 mm against a
-15.25 mm max). The measure is not re-derived for other releases -- nothing
-here can be checked against one without its kicad-cli -- so it now STATES the
-release it reproduces, and the installed one when that differs.
+KiCad's length DRC measures differently from release to release within 10.0
+(DATA_13 on routed_output: 15.149 mm in 10.0.0, 15.378 in 10.0.7, against a
+15.25 mm max), so check_drc measures as the release of the kicad-cli that
+grades the board (tests/test_1432_kicad_release_length.py checks each release)
+and STATES which release that is.
 
-  1. net_queries.LENGTH_MEASURE_CALIBRATED_TO names the release.
-  2. length_measure_note() names it and, for another installed kicad-cli,
-     says which one and what differs; it is silent about the installed
-     version when it matches (or is unknown).
-  3. check_drc's length-rule summary carries `calibrated_to_kicad` and prints
-     the note when it graded a net.
+  1. The release follows `kicad_oracle.kicad_cli_version`: an installed
+     release in the modelled range is measured as itself; a newer one as the
+     newest modelled, an older one as the oldest, and the note names it; with
+     no kicad-cli, the newest modelled, and the note says so.
+  2. The installed release is read once, not once per net measured.
+  3. check_drc prints the release beside the length summary, and its summary
+     carries `calibrated_to_kicad` and `installed_kicad`.
 
     python3 tests/test_1432_length_measure_calibration.py
 """
@@ -36,7 +34,9 @@ for _p in ('py_router', 'py_tools'):
 import net_queries                                             # noqa: E402
 import kicad_oracle                                            # noqa: E402
 from copy_board import copy_board                              # noqa: E402
+from kicad_parser import parse_kicad_pcb                       # noqa: E402
 
+BOARD = os.path.join(ROOT, 'kicad_files', 'routed_output.kicad_pcb')
 failures = []
 
 
@@ -46,33 +46,54 @@ def check(label, ok, detail=''):
         failures.append(label)
 
 
+def installed(version):
+    """Make `version` the installed kicad-cli's release, as kicad_oracle
+    reports it."""
+    kicad_oracle.kicad_cli_version = lambda cli=None: version
+    net_queries.installed_kicad_release.cache_clear()
+
+
 def main():
-    check('the calibrated release is named',
-          net_queries.LENGTH_MEASURE_CALIBRATED_TO == '10.0.0')
+    newest = net_queries.LENGTH_MEASURE_NEWEST
+    oldest = net_queries.LENGTH_MEASURE_OLDEST
     real = kicad_oracle.kicad_cli_version
     try:
-        kicad_oracle.kicad_cli_version = lambda cli=None: '10.0.7'
-        n = net_queries.length_measure_note()
-        check('another installed release is named, with what differs',
-              'KiCad 10.0.0' in n and 'installed kicad-cli is 10.0.7' in n
-              and 'inside the via pad' in n, n)
-        kicad_oracle.kicad_cli_version = lambda cli=None: '10.0.0'
-        n = net_queries.length_measure_note()
-        check('the calibrated release installed: no warning',
-              'installed' not in n and 'KiCad 10.0.0' in n, n)
-        kicad_oracle.kicad_cli_version = lambda cli=None: None
-        n = net_queries.length_measure_note()
-        check('no kicad-cli: the calibration is still stated',
-              'installed' not in n and 'KiCad 10.0.0' in n, n)
+        for have, want, said in (('10.0.0', '10.0.0', None),
+                                 ('10.0.5', '10.0.5', None),
+                                 ('10.2.1', newest, 'newer than the newest'),
+                                 ('9.0.7', oldest, 'older than the oldest'),
+                                 (None, newest, 'no kicad-cli found')):
+            installed(have)
+            n = net_queries.length_measure_note()
+            check(f'installed {have}: measured as {want}',
+                  net_queries.length_measure_release() == want
+                  and f'measured as KiCad {want} measures' in n
+                  and (said in n if said else 'installed' not in n), n)
+
+        calls = [0]
+
+        def counting(cli=None):
+            calls[0] += 1
+            return '10.0.0'
+        kicad_oracle.kicad_cli_version = counting
+        net_queries.installed_kicad_release.cache_clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            pcb = parse_kicad_pcb(BOARD)
+        lengths = net_queries.net_copper_lengths(pcb)
+        check('the installed release is read once, not once per net',
+              calls[0] == 1 and len(lengths) > 100,
+              f'{calls[0]} kicad-cli version reads for {len(lengths)} nets')
     finally:
         kicad_oracle.kicad_cli_version = real
+        net_queries.installed_kicad_release.cache_clear()
 
+    want = net_queries.length_measure_release()
+    have = net_queries.installed_kicad_release()
     tmp = tempfile.mkdtemp(prefix='t1432_')
     try:
         dst = os.path.join(tmp, 'ro.kicad_pcb')
         with contextlib.redirect_stdout(io.StringIO()):
-            copy_board(os.path.join(ROOT, 'kicad_files', 'routed_output.kicad_pcb'),
-                       dst)
+            copy_board(BOARD, dst)
         with open(os.path.join(tmp, 'ro.kicad_dru'), 'w', encoding='utf-8') as fh:
             fh.write('(version 1)\n(rule "d13"\n'
                      '  (condition "A.NetName == \'Net-(U2A-DATA_13)\'")\n'
@@ -83,10 +104,18 @@ def main():
                            capture_output=True, text=True, encoding='utf-8',
                            errors='replace')
         out = r.stdout + r.stderr
-        check('check_drc prints the calibration beside the length summary',
-              'Length rules (.kicad_dru' in out
-              and '(length) lengths are measured as KiCad 10.0.0' in out,
-              out[-400:])
+        ok = ('Length rules (.kicad_dru' in out
+              and f'(length) lengths are measured as KiCad {want}' in out)
+        check(f'check_drc prints the release beside the length summary ({want})',
+              ok, '' if ok else out[-400:])
+
+        import check_drc
+        with contextlib.redirect_stdout(io.StringIO()):
+            pcb = parse_kicad_pcb(dst)
+            summary = check_drc._length_rule_pass(dst, pcb, None, [], True)
+        check('the summary carries the release measured as and the one installed',
+              summary and summary['calibrated_to_kicad'] == want
+              and summary['installed_kicad'] == have, str(summary))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print('FAILED: ' + ', '.join(failures) if failures else 'PASS')
