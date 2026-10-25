@@ -813,9 +813,11 @@ a castellated module's co-located through-hole + SMD pad pair) count as
 connected even with no track between them, and so do same-number pads of a
 footprint that declares them jumpered (`duplicate_pad_numbers_are_jumpers yes`,
 or a `jumper_pad_groups` group). An auto-named `unconnected-*` net with two or
-more pads (a connector's shield or mounting tabs) is an open net like any other,
-as KiCad's DRC counts it (#1405): the wildcard leaves it out of routing, so name
-it in `--nets` to route it.
+more pads on ONE footprint (a connector's shield or mounting tabs, a reversible
+footprint's doubled pins) is an open net like any other, as KiCad's DRC counts
+it (#1405), and route.py's wildcard routes it after the named nets. One whose
+pads lie on several footprints (separate no-connect pins under one auto-name)
+is skipped and listed, as a single-pad one is; `--nets` naming it still checks it.
 
 ### Usage
 

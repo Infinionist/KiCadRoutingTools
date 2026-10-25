@@ -62,10 +62,14 @@ a list of exclusions only implies `*`. A pattern without a sheet path (`GND`,
 `VCC*`) also matches the last path component of a hierarchical net (`/GND`),
 so the plain spelling works on a sheet-qualified board. A `!`-name that is
 itself a net on the board is that net (an active-low signal), and `\!` escapes
-the `!`. `unconnected-*` nets are left out of a wildcard; name one to route
-it. A multi-pad one (a connector's shield or mounting tabs) is an open net to
-`check_connected` and `board_score` until it is routed or its footprint
-declares the pads jumpered, so name those.
+the `!`. A single-pad `unconnected-*` net is left out of a wildcard. A
+multi-pad one on ONE footprint (a connector's shield or mounting tabs, a
+reversible footprint's doubled pins) is an open net to `check_connected` and
+`board_score` until it is routed, as KiCad counts it, so the wildcard routes it,
+after every named net (#1405) -- unless the footprint declares those pads
+jumpered. One whose pads lie on SEVERAL footprints (separate no-connect pins
+sharing an auto-name, as on a panel of copies) is neither routed nor counted
+open; name it to route it.
 
 **Placement blocks** (`route.py` only) route the nets of one block -- a
 schematic sheet, a KiCad group, an IC and its decaps:
