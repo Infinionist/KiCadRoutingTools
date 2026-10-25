@@ -36,8 +36,9 @@ Exit codes:
 On exit 1 the destination holds the board and its siblings COPIED but not
 filled -- that copy is useful (grade it with `kicad-cli pcb drc
 --refill-zones`, or press B in KiCad) and the run says so -- except on the
-net-class refusal, where the destination is removed entirely, because a board
-graded against rules it no longer carries is worse than no board.
+net-class refusal and the via-in-paste refusal, where the destination is
+removed entirely: a board graded against rules it no longer carries, or one
+with more unprotected vias in paste than its input, is worse than no board.
 """
 from __future__ import annotations
 
@@ -125,7 +126,10 @@ def _via_in_paste_violations(path, baseline_pd):
         _via_in_paste_pass(parse_kicad_pcb(path), None, baseline_pd,
                            violations, accepted, True)
         return len(violations)
-    except Exception:  # noqa: BLE001 -- a measurement that cannot run says so
+    except Exception as exc:  # noqa: BLE001 -- a measurement that cannot run says so
+        print(f"WARNING: vias in solder paste not measured on {path} "
+              f"({type(exc).__name__}: {exc}); the filled copy is not "
+              f"compared against its input for them")
         return None
 
 

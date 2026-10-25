@@ -154,9 +154,10 @@ def kicad_hole_clearance(board, value, timeout=3600):
     not.
 
     -> ``{'count': N, 'min_actual': mm or None, 'items': [...]}`` where each
-    item is ``{'key': (...), 'actual': mm}`` naming the violating pair (the
-    kinds and positions of its two items, so the same pair on another board
-    has the same key); or ``{'error': why}`` when kicad-cli is missing or
+    item is ``{'kinds': (...), 'actual': mm}`` naming the KIND of the
+    violating pair (its two items' kinds, sorted -- KiCad does not report the
+    same pairs on two runs of one board, so positions cannot be matched across
+    boards); or ``{'error': why}`` when kicad-cli is missing or
     produced no report. Never raises."""
     import re
     import tempfile

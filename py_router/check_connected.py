@@ -2270,8 +2270,9 @@ def run_connectivity_check(pcb_file: str, net_patterns: Optional[List[str]] = No
             print(f"Checking {len(nets_to_check)} routed nets")
         if skipped_noconnect:
             print(f"  Skipped {skipped_noconnect} no-connect net(s) "
-                  f"('unconnected-*') whose pads the footprint declares "
-                  f"joined (jumper pads); pass --nets to check them")
+                  f"('unconnected-*') nothing needs to join: pads the "
+                  f"footprint declares joined (jumper pads), or separate "
+                  f"parts' pins under one auto-name; pass --nets to check them")
         if skipped_noconnect_shared:
             _lst = ', '.join(f"'{n}' ({c} parts)"
                              for n, c in sorted(skipped_noconnect_shared)[:6])
