@@ -422,8 +422,9 @@ class Pad:
     # outline(s) in GLOBAL board mm for custom comb/finger pads (issue #188).
     # When set, the obstacle map and DRC rasterize these polygons instead of the
     # size_x x size_y bounding box, so the finger channels (and the empty side of
-    # an off-anchor pad) stay routable. None for ordinary rect/circle/roundrect
-    # pads, which the bounding box models exactly.
+    # an off-anchor pad) stay routable. A chamfered-rect pad (#1450) carries
+    # its outline here too, so a cut corner is not copper. None for ordinary
+    # rect/circle/roundrect pads, which the bounding box models exactly.
     castellated: bool = False  # KiCad (property pad_prop_castellated): a
     # deliberate half-hole pad ON the board edge (run-6 fix 1.7). Consumers:
     # the castellated-landing retract post-pass pulls track endpoints that
@@ -1483,6 +1484,113 @@ def _adaptive_circle_n(r: float, eps: float = 0.001, lo: int = 16,
     return max(lo, min(hi, n))
 
 
+#: KiCad's chamfer corner names (`(chamfer top_left ...)`) in the pad's own
+#: frame (y down), walked clockwise on screen.
+CHAMFER_CORNERS = (('top_left', -1, -1), ('top_right', 1, -1),
+                   ('bottom_right', 1, 1), ('bottom_left', -1, 1))
+
+
+def chamfered_rect_polygon(cx: float, cy: float, w: float, h: float,
+                           abs_rotation_deg: float, corners, chamfer_ratio: float,
+                           corner_radius: float) -> List[Tuple[float, float]]:
+    """The copper outline of KiCad's chamfered rect pad, in board mm (#1450).
+
+    KiCad writes a chamfered-rect pad (Eagle's octagon pads come through its
+    importer this way) as `roundrect` plus `(chamfer <corners>)` and
+    `(chamfer_ratio r)`. Its outline (TransformRoundChamferedRectToPolygon) is
+    the `w` x `h` rect centred on the copper (`cx`, `cy`) with each named
+    corner cut by a 45-degree flat `chamfer_ratio * min(w, h)` along each side,
+    and every OTHER corner rounded by `corner_radius` (the pad's roundrect
+    radius, `roundrect_rratio * min(w, h)`) -- a chamfered corner is never
+    rounded. As in pcbnew, the radius is at most half the short side and the
+    chamfer is not clamped (a ratio past 0.5 overlaps, there too).
+
+    `corners` are names from CHAMFER_CORNERS in the pad's own frame, which
+    KiCad already mirrors when it flips a footprint, so the file's names and
+    the pad's ABSOLUTE angle (`abs_rotation_deg`, applied with KiCad's negate
+    convention as for custom pads) place the outline. Arcs are inscribed with
+    1 um of sagitta, below pcbnew's own 5 um max error."""
+    hx, hy = w / 2.0, h / 2.0
+    short = min(w, h)
+    cut = max(0.0, chamfer_ratio) * short
+    r = max(0.0, min(corner_radius, short / 2.0))
+    named = set(corners)
+    # Chords of a quarter arc with 1 um of sagitta each.
+    n_arc = (min(64, max(2, math.ceil(
+        (math.pi / 2.0) / (2.0 * math.acos(max(-1.0, 1.0 - 0.001 / r))))))
+        if r > 0 else 0)
+    local: List[Tuple[float, float]] = []
+    k = len(CHAMFER_CORNERS)
+    for i, (name, sx, sy) in enumerate(CHAMFER_CORNERS):
+        ccx, ccy = sx * hx, sy * hy
+        _pn, psx, psy = CHAMFER_CORNERS[(i - 1) % k]
+        _nn, nsx, nsy = CHAMFER_CORNERS[(i + 1) % k]
+        # Unit vectors from this corner along its incoming / outgoing side.
+        ux_in, uy_in = (psx - sx) / 2.0, (psy - sy) / 2.0
+        ux_out, uy_out = (nsx - sx) / 2.0, (nsy - sy) / 2.0
+        if name in named:
+            if cut > 0:
+                local.append((ccx + ux_in * cut, ccy + uy_in * cut))
+                local.append((ccx + ux_out * cut, ccy + uy_out * cut))
+            else:
+                local.append((ccx, ccy))
+        elif r > 0:
+            # The quarter arc about the inset corner, from the incoming side
+            # to the outgoing one (+90 degrees on screen, every corner).
+            acx, acy = ccx - sx * r, ccy - sy * r
+            a0 = math.atan2(ccy + uy_in * r - acy, ccx + ux_in * r - acx)
+            for j in range(n_arc + 1):
+                a = a0 + (math.pi / 2.0) * j / n_arc
+                local.append((acx + r * math.cos(a), acy + r * math.sin(a)))
+        else:
+            local.append((ccx, ccy))
+    # Two cuts meeting mid-side (ratio 0.5) leave a repeated vertex.
+    pts: List[Tuple[float, float]] = []
+    for p in local:
+        if not pts or math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) > 1e-9:
+            pts.append(p)
+    if len(pts) > 1 and math.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) <= 1e-9:
+        pts.pop()
+    rad = math.radians(-abs_rotation_deg)
+    c, s = math.cos(rad), math.sin(rad)
+    return [(cx + x * c - y * s, cy + x * s + y * c) for x, y in pts]
+
+
+_CHAMFER_RE = re.compile(r'\(chamfer\s+([^()]*)\)')
+
+
+#: KiCad's default `chamfer_ratio`, and the `roundrect_rratio` its loader
+#: gives a chamfered pad whose file names none (PADSTACK's defaults).
+CHAMFER_RATIO_DEFAULT = 0.2
+ROUNDRECT_RRATIO_DEFAULT = 0.25
+
+
+def chamfered_pad_from_text(pad_text: str, pad_shape: str, w: float, h: float,
+                            cx: float, cy: float, abs_rotation_deg: float):
+    """`([outline], roundrect_rratio)` for a chamfered-rect pad block, else
+    None (#1450).
+
+    `w`/`h` are the pad-frame `(size ...)`, (`cx`, `cy`) the copper centre.
+    KiCad loads a `rect` or `roundrect` pad naming a corner as its chamfered
+    rect, whose other corners take the pad's `roundrect_rratio` (0.25 when the
+    file has none, at most 0.5) -- the ratio returned, as pcbnew reports it. A
+    per-layer padstack is left to its box (its layers may differ), and a pad
+    naming no corner is not chamfered."""
+    if pad_shape not in ('rect', 'roundrect') or re.search(r'\(padstack\s', pad_text):
+        return None
+    m = _CHAMFER_RE.search(pad_text)
+    names = {n for n, _x, _y in CHAMFER_CORNERS}
+    corners = [t for t in (m.group(1).split() if m else ()) if t in names]
+    if not corners or w <= 0 or h <= 0:
+        return None
+    cm = re.search(r'\(chamfer_ratio\s+(%s)\)' % AT_NUM, pad_text)
+    ratio = float(cm.group(1)) if cm else CHAMFER_RATIO_DEFAULT
+    rm = re.search(r'\(roundrect_rratio\s+(%s)\)' % AT_NUM, pad_text)
+    rratio = max(0.0, min(0.5, float(rm.group(1)) if rm else ROUNDRECT_RRATIO_DEFAULT))
+    return ([chamfered_rect_polygon(cx, cy, w, h, abs_rotation_deg, corners,
+                                    ratio, rratio * min(w, h))], rratio)
+
+
 def _custom_pad_global_polygons(pad_text: str, global_x: float, global_y: float,
                                 pad_abs_rotation_deg: float):
     """Real copper outline(s) of a custom pad in GLOBAL board mm (issue #188).
@@ -1914,6 +2022,39 @@ def _pcbnew_custom_copper_is_anchor(pad, to_mm, eps: float = 1e-4) -> bool:
         return n > 0
     except Exception:
         return False
+
+
+def _pcbnew_chamfered_pad_polygons(pad, to_mm):
+    """`[outline]` in board mm for a live pcbnew chamfered-rect pad, else None
+    (#1450) -- `chamfered_pad_from_text` for the GUI path.
+
+    The outline is pcbnew's effective polygon, which tests/
+    test_1450_chamfered_pad_pcbnew.py holds the text path's
+    chamfered_rect_polygon to. Should pcbnew give none, the pad keeps its box
+    (as a custom pad does). A per-layer padstack is left to its box, as on the
+    text path."""
+    try:
+        import pcbnew as _pn
+        if pad.GetShape() != getattr(_pn, 'PAD_SHAPE_CHAMFERED_RECT', object()):
+            return None
+        if not pad.GetChamferPositions():
+            return None
+        if hasattr(pad, 'Padstack') and pad.Padstack().Mode() != _pn.PADSTACK.MODE_NORMAL:
+            return None
+    except Exception:
+        return None
+    try:
+        poly_set = pad.GetEffectivePolygon(pad.GetLayer())
+        polys = []
+        for oi in range(poly_set.OutlineCount()):
+            ol = poly_set.Outline(oi)
+            pts = [(to_mm(ol.CPoint(i).x), to_mm(ol.CPoint(i).y))
+                   for i in range(ol.PointCount())]
+            if len(pts) >= 3:
+                polys.append(pts)
+        return polys or None
+    except Exception:
+        return None
 
 
 def pad_is_plated_through(pad) -> bool:
@@ -4921,6 +5062,7 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             # rotation into the dimensions so all downstream axis-aligned
             # geometry stays exact; genuine diagonal pads keep a residual
             # rect_rotation the obstacle/DRC geometry applies.
+            _frame_size = (size_x, size_y)  # pad frame, for a chamfer (#1450)
             if not custom_resolved:
                 size_x, size_y, rect_rotation = _resolve_pad_rect(size_x, size_y, pad_rotation)
 
@@ -5018,6 +5160,17 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             if pad_shape == 'custom':
                 pad_polygons = _custom_pad_global_polygons(
                     pad_text, global_x, global_y, pad_rotation)
+            elif '(chamfer' in pad_text:
+                # A chamfered rect (#1450): its cut corners are not copper,
+                # and every consumer that reads `polygons` measures them so.
+                # Shape and ratio as pcbnew loads it (a chamfered `rect` is
+                # its roundrect).
+                _chamfered = chamfered_pad_from_text(
+                    pad_text, pad_shape, _frame_size[0], _frame_size[1],
+                    global_x, global_y, pad_rotation)
+                if _chamfered is not None:
+                    pad_polygons, roundrect_rratio = _chamfered
+                    pad_shape = 'roundrect'
 
             pad = Pad(
                 component_ref=reference,
@@ -9240,6 +9393,10 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                                 max(x for _r in pad_polygons for x, _ in _r) - global_x,
                                 max(y for _r in pad_polygons for _, y in _r) - global_y)
             else:
+                # A chamfered rect (#1450): its cut corners are not copper.
+                # pcbnew's effective polygon is the outline the text parser
+                # builds (chamfered_rect_polygon), already in board mm.
+                pad_polygons = _pcbnew_chamfered_pad_polygons(pad, to_mm)
                 # Resolve the pad rectangle into board space (keyed on the absolute
                 # total rotation, not pad_rotation alone — see the text-parser path).
                 size_x, size_y, rect_rotation = _resolve_pad_rect(size_x, size_y, pad_rotation)

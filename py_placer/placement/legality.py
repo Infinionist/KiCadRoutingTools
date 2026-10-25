@@ -5727,7 +5727,8 @@ def pads_at_pose(fp, pose) -> List[_PosedPad]:
     through the parser's own `_resolve_pad_rect` after undoing its near-90
     size bake, so the tilt keeps the sign the DRC sampler applies. Custom pad
     polygons are transformed point by point, and their size box is re-derived
-    for the new angle (`_custom_box_at_pose`, #1123): the box IS read -- by
+    for the new angle (`_custom_box_at_pose`, #1123; a chamfered rect's
+    outline is transformed the same way and its box is its rect): the box IS read -- by
     `check_pads.pad_outline_polygon` wherever the parser could not draw the
     copper, by `pad_half_extents`, and by every trial-pose consumer of
     `footprint_at_pose` -- and carried unchanged it missed copper after any
@@ -5771,13 +5772,15 @@ def pads_at_pose(fp, pose) -> List[_PosedPad]:
             cb = (min(us), min(vs), max(us), max(vs))
         pad.copper_box = cb
         polygons = getattr(original, 'polygons', None)
-        if polygons:
-            pad.polygons = [[(x + c*(u-ox) + s*(v-oy), y - s*(u-ox) + c*(v-oy))
-                             for u, v in poly] for poly in polygons]
+        pad.polygons = ([[(x + c*(u-ox) + s*(v-oy), y - s*(u-ox) + c*(v-oy))
+                          for u, v in poly] for poly in polygons]
+                        if polygons else polygons)
+        if polygons and original.shape == 'custom':
             pad.size_x, pad.size_y = _custom_box_at_pose(original, pad, delta)
             pad.rect_rotation = getattr(original, 'rect_rotation', 0.0)
         else:
-            pad.polygons = polygons
+            # A chamfered rect's outline (#1450) turns with the copper; its
+            # box is the pad rect, re-resolved like any other.
             size_x, size_y = original.size_x, original.size_y
             if abs(base % 180 - 90) <= _PAD_ORTHO_TOL:
                 size_x, size_y = size_y, size_x
