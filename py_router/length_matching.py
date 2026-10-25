@@ -1902,6 +1902,13 @@ def _seed_group_members_from_board(
     way but flagged `routed_this_run`, because telling the user to "route the
     whole group in one step" when they just did is advice that costs them a
     re-run to disprove.
+
+    Only a member whose pads the board's copper CONNECTS is seeded (#1391): a
+    net that failed (this run or earlier) and kept residual copper -- an
+    escape stub, a kept spur -- is not a route, so it neither sets the target
+    nor joins the group the caller records as protected. Graded by the
+    authoritative, zone/fill-aware `check_net_connectivity`, as the router's
+    already-routed filter grades it.
     """
     from net_queries import calculate_route_length
 
@@ -1924,11 +1931,15 @@ def _seed_group_members_from_board(
             vias_by.setdefault(v.net_id, []).append(v)
 
     seeded = {}
+    incomplete = []
     for nid, name in wanted.items():
         segs = segs_by.get(nid, [])
         if not segs:
             continue  # no copper on the board either -- genuinely unrouted
         vias = vias_by.get(nid, [])
+        if not _board_net_connected(pcb_data, nid, segs, vias):
+            incomplete.append(name)
+            continue
         seeded[name] = {
             'new_segments': segs,
             'new_vias': vias,
@@ -1936,7 +1947,24 @@ def _seed_group_members_from_board(
             'from_board': True,
             'routed_this_run': name in in_run_names,
         }
+    if incomplete:
+        print(f"  Length matching group: {len(incomplete)} member(s) left out "
+              f"-- board copper does not connect their pads (not routed, so "
+              f"neither measured nor protected): {', '.join(sorted(incomplete))}")
     return seeded
+
+
+def _board_net_connected(pcb_data, net_id, segs, vias) -> bool:
+    """True when the board's copper connects every pad of `net_id` (within
+    each board outline), graded as `filter_already_routed` grades it."""
+    from check_connected import check_net_connectivity, net_break_within_outlines
+    pads = pcb_data.pads_by_net.get(net_id, [])
+    zones = [z for z in (getattr(pcb_data, 'zones', None) or [])
+             if z.net_id == net_id]
+    result = check_net_connectivity(net_id, segs, vias, pads, zones,
+                                    tolerance=0.02, pcb_data=pcb_data)
+    broken, _ = net_break_within_outlines(pcb_data, result)
+    return not broken
 
 
 def dru_length_window(names, pcb_data):
