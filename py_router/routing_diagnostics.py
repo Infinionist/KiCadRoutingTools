@@ -970,6 +970,19 @@ def static_boxin_hint(result, config, pcb_data=None, *, return_verdict=False):
     if result is None:
         return _ret("")
     iters = result.get('iterations_forward', 0) + result.get('iterations_backward', 0)
+    refused = result.get('pad_entry_refused')
+    if refused:
+        # #1452: a narrower track DID reach the pad; --escalation off refused
+        # it because no route kept the net's width outside the pad entry.
+        # Advising a smaller track would ask for exactly what was refused.
+        return _ret(
+            f"Hint: under --escalation off a wide net may narrow only within "
+            f"{refused['allowance_mm']:g} mm of a pad; this edge spans "
+            f"{refused['span_mm']:g} mm and a {refused['neck_width_mm']:g} mm "
+            f"track reaches it, but no route keeps "
+            f"{refused['net_width_mm']:g} mm outside that pad entry. Open a "
+            f"wider channel to the pad, or allow narrowing (--escalation fab).",
+            dict(refused, verdict='pad_entry_allowance', iterations=iters))
     if iters >= 20000:
         return _ret("")
     finer = config.grid_step / 2
