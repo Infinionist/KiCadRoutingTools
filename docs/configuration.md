@@ -253,9 +253,11 @@ request is never pinned up to a board minimum, only to the fab floor. Under
 `off` nothing is narrowed and a net that cannot complete at the requested
 geometry fails and is reported, with one bounded exception: a wide (power or
 impedance) net may neck below its width for at most 2 mm of routed path
-(`routing_defaults.PAD_ENTRY_NECK_MM`) on one edge or one via-to-pad tap --
-the pad-entry stretch a wide rail cannot keep into a narrow pin. A longer neck
-fails the edge. A power net's under-width copper is recorded like any other
+(`routing_defaults.PAD_ENTRY_NECK_MM`) at a pad entry -- the stretch a wide
+rail cannot keep into a narrow pin: a whole edge that short, the last stretch
+into the pin of a longer edge whose rest keeps the net's width (#1452), or one
+via-to-pad tap. A longer neck fails the edge, and the failure names the
+allowance and the edge's span rather than advising a smaller track. A power net's under-width copper is recorded like any other
 narrowing (below), so `--strict-sizes` still sees it.
 
 **Net-filtered keep-outs.** A KiCad rule area has no net dimension, so a
@@ -375,7 +377,7 @@ live board via the pcbnew API.
 |--------|---------|-------------|
 | `--power-nets` | - | Glob patterns for power nets (e.g., `"*GND*" "*VCC*"`) |
 | `--power-nets-widths` | - | Track widths in mm for each power-net pattern (must match `--power-nets` length) |
-| `--neckdown-length` | 2.5 | Length in mm of the pad-entry zone at each pad end of a neck-down route (a failed wide power route retried at the default width): the power width capped at the pad's short side where it fits, the default width only where it does not (#1318) |
+| `--neckdown-length` | 2.5 | Length in mm of the pad-entry zone at each pad end of a neck-down route (a failed wide power route retried at the default width): the power width capped at the pad's short side where it fits, the default width only where it does not (#1318). Under `--escalation off` capped at 2 mm less the taper (#1452) |
 | `--neckdown-taper-length` | 0.5 | Narrow-to-wide width taper length in mm (0 = abrupt) |
 | `--no-power-tap-neckdown` | off | Disable the neck-down retry of failed wide power routes |
 

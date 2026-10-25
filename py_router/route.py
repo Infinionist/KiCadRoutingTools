@@ -2307,6 +2307,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             clear_skipped()
         except Exception:
             pass
+        # #1452: and the --escalation off neck refusals the failure hints
+        # read (a GUI process routes many runs).
+        from single_ended_routing import _PAD_ENTRY_REFUSALS
+        _PAD_ENTRY_REFUSALS.clear()
     if env_knobs.DUMP_BATCH_KWARGS:
         # Parameter-parity probe: dump THIS call's full parameter set so the
         # CLI front (argparse->main) and the GUI front (plan setters->tab

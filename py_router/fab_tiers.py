@@ -30,9 +30,11 @@ orthogonal to the tier and bounds every descent site in the engine:
                with one bounded exception: a wide (power / impedance) net may
                neck below its width for at most
                ``routing_defaults.PAD_ENTRY_NECK_MM`` (2 mm) of routed path
-               on one edge or one via-to-pad tap -- the pad-entry stretch a
-               wide rail cannot keep into a narrow pin. A longer neck fails
-               the edge. A power net's under-width copper is in the ledger
+               at a pad entry -- the stretch a wide rail cannot keep into a
+               narrow pin: a whole edge that short, the last stretch into the
+               pin of a longer edge whose rest keeps the net's width (#1452),
+               or one via-to-pad tap. A longer neck fails the edge, and the
+               failure names the allowance and the edge's span. A power net's under-width copper is in the ledger
                (route.py's ``power copper shipped under width`` row), so
                ``--strict-sizes`` still sees it.
   - ``board``  a failing net may be retried narrower / with a smaller
