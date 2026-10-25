@@ -778,13 +778,22 @@ def close_same_net_via_pairs(vias_by_net, is_new, hole_to_hole, net_name):
     out = []
     if not hole_to_hole or hole_to_hole <= 0:
         return out
+    from bisect import bisect_right
     for nid in sorted(vias_by_net):
         vs = vias_by_net[nid]
+        new = [is_new(v) for v in vs]
+        new_idx = [k for k, f in enumerate(new) if f]
+        if not new_idx:
+            continue
         for i in range(len(vs)):
             a = vs[i]
-            for b in vs[i + 1:]:
-                if not (is_new(a) or is_new(b)):
-                    continue
+            # a new via meets every later one; an old one only the later new
+            # ones -- the same pairs, in the same order, without the all-pairs
+            # scan of a stitched net's input vias
+            later = (range(i + 1, len(vs)) if new[i]
+                     else new_idx[bisect_right(new_idx, i):])
+            for j in later:
+                b = vs[j]
                 cc = math.hypot(a.x - b.x, a.y - b.y)
                 gap = cc - (a.drill or 0.0) / 2.0 - (b.drill or 0.0) / 2.0
                 if gap < hole_to_hole - 1e-6:

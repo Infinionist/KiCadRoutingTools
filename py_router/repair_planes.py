@@ -3240,8 +3240,11 @@ def repair_planes(
                     _listed_nets = set()
                     for _e in failed_repair_pads:
                         _sp = _e.split(' ', 1)
-                        if len(_sp) == 2 and _sp[1].startswith('('):
-                            _listed_nets.add(_sp[1][1:].rstrip(')'))
+                        if (len(_sp) == 2 and _sp[1].startswith('(')
+                                and _sp[1].endswith(')')):
+                            # one wrapping pair: a net named '+3V3(A)' keeps
+                            # its own ')'
+                            _listed_nets.add(_sp[1][1:-1])
                     for _lk in _olinks:
                         if _lk[0] in _listed_nets:
                             _open_links_left[_lk[0]] = \

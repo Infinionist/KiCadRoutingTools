@@ -2732,7 +2732,8 @@ def sweep_dangling_via_branches(board, net_ids, protected_ids=frozenset(),
                 d = math.hypot(ea[0] - eb[0], ea[1] - eb[1])
                 if best is None or d < best[0]:
                     best = (d, ea, eb)
-        if best is None:
+        if best is None or best[0] < tol:
+            # ends that already meet need no weld: the via goes alone
             return None
         _d, ea, eb = best
         for mover, near, other_pt in ((a, ea, eb), (b, eb, ea)):
