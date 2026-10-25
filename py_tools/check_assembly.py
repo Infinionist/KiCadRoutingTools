@@ -186,6 +186,7 @@ def main():
     # and never the containment gate, which `waivers` above also reach.
     courtyard_waivers = ()
     declared_keepouts = ()
+    declared_heights = None
     # #1255: the body-to-edge band the intent declares (None = nothing
     # declared, and the census reports against the derived default without
     # gating), and the refs whose edge it declares.
@@ -203,6 +204,8 @@ def main():
             # replaces the derived plug region here as it does in the seat
             # predicate.
             declared_keepouts = tuple(_intent.keepouts or ())
+            # #1443: declared covers and part heights, over the models'
+            declared_heights = _intent.height_declarations()
         except Exception as exc:
             print(f"cannot load intent {args.intent}: {exc}", file=sys.stderr)
             return 2
@@ -217,7 +220,8 @@ def main():
     g = grade_body_overlap(pcb, clearance, intent_waivers=waivers,
                            pcb_file=args.board,
                            courtyard_severity=_cy_sev_arg,
-                           courtyard_waivers=courtyard_waivers)
+                           courtyard_waivers=courtyard_waivers,
+                           declared_heights=declared_heights)
     leg = grade_pad_legality(pcb, clearance, worst_n=0, pcb_file=args.board,
                              declared_keepouts=declared_keepouts)
     # #697: name any pair graded ABOVE `clearance` and what raised it, or the

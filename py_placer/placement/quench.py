@@ -1162,7 +1162,11 @@ class QuenchState:
                  # ...except these refs, which keep the basis the board
                  # draws (place_simple's fallback for a part the estimates
                  # leave no legal pose)
-                 estimate_skip=()):
+                 estimate_skip=(),
+                 # --- #1443: the intent's declared covers and heights, plain
+                 # data (`Intent.height_declarations`), over the measured
+                 # ones. None: the models' heights alone.
+                 declared_heights=None):
         bounds = pcb_data.board_info.board_bounds
         if bounds is None:
             raise ValueError("No board boundary (Edge.Cuts) found")
@@ -1347,8 +1351,14 @@ class QuenchState:
         self.keepouts_for: Dict[str, Tuple[Dict, ...]] = {}
         if self.keepouts:
             from . import floorplan as _fp
+            # #1443: a height-limited keep-out admits a part of known height
+            _kh = (_heights.for_board(pcb_data, pcb_file, declared_heights)
+                   if any(k.get('max_height_mm') is not None for k in self.keepouts)
+                   else None)
             for _ref, _p in self.parts.items():
-                _binding = _fp.keepouts_for_ref(self.keepouts, _ref, _p.sides)
+                _binding = _fp.keepouts_for_ref(
+                    self.keepouts, _ref, _p.sides,
+                    _kh.height(_ref) if _kh is not None else None)
                 if _binding:
                     self.keepouts_for[_ref] = _binding
 
@@ -1424,7 +1434,7 @@ class QuenchState:
         # face only; every other pair keeps its occupancy test. A cover
         # whose raised body reaches past its own box (`_overhangs`) is
         # swept by that reach.
-        self.heights = _heights.for_board(pcb_data, pcb_file)
+        self.heights = _heights.for_board(pcb_data, pcb_file, declared_heights)
         self.covers = {r for r in self.heights.covers
                        if r in self.parts and r not in self.container_refs}
         self._overhangs = set()

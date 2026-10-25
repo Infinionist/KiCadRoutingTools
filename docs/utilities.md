@@ -334,6 +334,13 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
   (`placement.heights`); the run prints which parts have room under them.
   On the human boards, 157 put 2898 parts inside another part's outline and
   KiCad flags 87 of them: the covers draw no courtyard where parts go under.
+  A card in a socket or a module on stacking connectors is DECLARED in the
+  intent (`covers[]`, from `cover_facts.py` and the datasheets): its body
+  moves with its connector, a part goes under it only when its height is
+  known and fits, and its standoffs are held at their lengths as template
+  members. `heights[]` declares a part's height or underside from its
+  datasheet, and a keep-out's `max_height_mm` admits a part of known height
+  no taller (`docs/floorplan-intent.md`).
   A run that leaves a part with no legal pose is annealed again from a fresh
   start, up to two more times (the last one shoves its remaining overlaps
   apart where they stand); the run with the fewest illegal parts is kept.
@@ -1225,6 +1232,31 @@ WARN). Exit 0 fitted. Exit 2 means one of:
 - an unreadable input;
 - a sketch the board cannot fit: a partner listed after its member, or no
   pose within reach.
+
+## Cover facts (`cover_facts.py`)
+
+What a board says about the bodies its connectors carry: the facts a
+`covers[]` row (#1443, `docs/floorplan-intent.md`) is declared from. A card
+in a socket or a module on stacking connectors stands over the board, and
+how low it reaches depends on the socket and the card fitted, which the
+board does not say. For each connector (ten pads or more), and each part
+whose 3D models raise a body past its own outline, it prints in the
+connector's own frame:
+- its footprint and its height (its model's top, when one resolves);
+- each model it names that does not resolve;
+- what its resolved models raise over the board, with that model's
+  underside -- one card type's, to weigh against the datasheets;
+- the standoffs and mounting holes (a hole 2 mm or wider, at most one
+  numbered pad) within 15 mm of one of its four axes, each with its distance
+  along the axis and its offset to the axis's left;
+- the parts inside the raised extent now, with their heights where known.
+
+```bash
+python3 -X utf8 py_tools/cover_facts.py board.kicad_pcb --refs J3 --json facts.json
+```
+
+Facts only; the skill's §3.4b turns them and the datasheets into a row.
+Exit 0, or 2 for an unreadable board.
 
 ## Run Ledger (`converge.py`)
 
