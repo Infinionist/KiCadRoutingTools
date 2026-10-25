@@ -75,6 +75,16 @@ REGISTRY = {
         'and the before/after line is simply not printed, and the fill one '
         'returns RefillStatus(timeout), which is a REFUSAL -- the board is '
         'not written and the run says so.'),
+    'py_placer/placement/heights.py': (
+        'hang_detector',
+        'EXPORT_TIMEOUT_S on the kicad-cli GLB export child that measures part '
+        'heights (#1443). Expiry is NAMED in the run\'s heights line ("the 3D '
+        'export timed out after N s: heights from IPC names only") and is '
+        'never cached, so the next run measures again.'),
+    'py_router/model_export.py': (
+        'hang_detector',
+        'a 60 s bound on the `kicad-cli version` child; expiry reads "?", '
+        'which only labels the staged export and decides nothing.'),
     'kicad_routing_plugin/deps_check.py': (
         'hang_detector',
         'pip/import probes of an external toolchain, plus a worker join.'),

@@ -397,8 +397,11 @@ def _for_board(pcb_data, pcb_file):
                 raw = json.load(f)
         except (OSError, ValueError):
             raw = None
+    failed = 'the 3D export failed'
     if raw is None:
         raw = _measure(staged, cli, pcb_data)
+        if isinstance(raw, str):
+            failed, raw = raw, None
         if raw is not None:
             try:
                 os.makedirs(os.path.dirname(cache), exist_ok=True)
@@ -410,7 +413,7 @@ def _for_board(pcb_data, pcb_file):
                 pass
     h = _load(raw, pcb_data, path, names) if raw is not None else Heights(
         top=_ipc_tops(pcb_data, {}, names),
-        note='the 3D export failed: heights from IPC names only')
+        note=f'{failed}: heights from IPC names only')
     _MEMO[key] = h
     return h
 
@@ -477,7 +480,9 @@ def _ipc_tops(pcb_data, have, names):
 
 def _measure(staged, cli, pcb_data):
     """Export the staged board's parts and measure them: {'top': {ref: mm},
-    'covers': {ref: [x0, y0, nx, ny, hex of uint16 centi-mm]}} or None."""
+    'covers': {ref: [x0, y0, nx, ny, hex of uint16 centi-mm]}}, None when the
+    export failed, or the reason when it timed out (never cached, so the next
+    run measures again)."""
     import numpy as np
     td = tempfile.mkdtemp(prefix='krt_heights_')
     try:
@@ -489,7 +494,9 @@ def _measure(staged, cli, pcb_data):
             r = subprocess.run([cli, 'pcb', 'export', 'glb', '--no-dnp', '--subst-models',
                                 '--no-board-body', '-f', '-o', glb, brd],
                                capture_output=True, timeout=EXPORT_TIMEOUT_S)
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired:
+            return f'the 3D export timed out after {EXPORT_TIMEOUT_S} s'
+        except OSError:
             return None
         if r.returncode != 0 or not os.path.isfile(glb):
             return None
