@@ -3695,7 +3695,8 @@ def _generate_bga_fanout_core(footprint: Footprint,
             pcb_data, footprint, grid, channels, return_balls=True
         )
         if fanned_out_nets:
-            print(f"  Found {len(fanned_out_nets)} nets with existing fanouts (will skip)")
+            print(f"  Found {len(fanned_out_nets)} nets with existing fanouts "
+                  f"({len(fanned_out_balls)} fanned ball(s) will be skipped)")
         if pre_occupied_exits:
             print(f"  Found {len(pre_occupied_exits)} occupied exit positions")
 

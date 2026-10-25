@@ -672,7 +672,10 @@ def route_single_ended_nets(
                 if nid not in bus_net_ids_set:
                     reordered_nets.append((net_name, nid))
 
-            single_ended_nets = reordered_nets
+            # #1405: a reversible part's doubled pins can read as a bus;
+            # their joins still route after every named net
+            from net_ordering import order_pin_joins_last
+            single_ended_nets = order_pin_joins_last(reordered_nets)
             print()
 
             # Reroute-attraction transport: the reroute loop runs far from

@@ -5984,7 +5984,7 @@ def _bridge_inside_own_through_via(pcb_data, net_id, config, layer, a, b,
     if pcb_data is None or layer not in config.layers:
         return False
     if layer in config.routable_layers():
-        if not getattr(pcb_data.board_info, 'keepouts', None):
+        if not getattr(getattr(pcb_data, 'board_info', None), 'keepouts', None):
             return False
         from check_drc import keepout_refusal
         if not keepout_refusal(pcb_data, segments=[Segment(

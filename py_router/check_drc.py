@@ -3366,10 +3366,11 @@ def keepout_refusal(pcb_data, segments=(), vias=()):
     first one whose copper reaches into a keep-out rule area forbidding it,
     measured by `keepout_census` -- so a generator refuses exactly what this
     checker would report. Free on a board with no forbidding area."""
-    if not getattr(pcb_data.board_info, 'keepouts', None):
+    bi = getattr(pcb_data, 'board_info', None)
+    if not getattr(bi, 'keepouts', None):
         return ''
     rows = keepout_census(pcb_data,
-                          list(getattr(pcb_data.board_info, 'copper_layers', None) or ()),
+                          list(getattr(bi, 'copper_layers', None) or ()),
                           segments=list(segments), vias=list(vias))
     if not rows:
         return ''

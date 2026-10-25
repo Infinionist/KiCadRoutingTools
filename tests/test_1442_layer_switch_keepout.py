@@ -17,7 +17,9 @@ go through now ask check_drc's own keep-out measurement (`keepout_refusal`):
      or one the same path drills) to the path's first grid cell, both inside
      the via's copper, is dropped when it would
      reach into an area forbidding tracks on that (routable) layer -- the via
-     already joins both ends -- and kept where no area forbids it.
+     already joins both ends -- and kept where no area forbids it;
+  5. the diff-pair GND return-via ring search, which checks its candidates on
+     a WINDOW of the board, runs and settles no via inside the area.
 
     python3 tests/test_1442_layer_switch_keepout.py
 """
@@ -40,6 +42,7 @@ from stub_layer_switching import (via_barrel_clear_of_foreign_copper,  # noqa: E
                                   stub_clear_of_foreign_pads)
 from layer_swap_optimization import _bare_pad_pair_vias_fit    # noqa: E402
 from single_ended_routing import _bridge_inside_own_through_via  # noqa: E402
+from diff_pair_routing import _gnd_via_ring_site               # noqa: E402
 import run_utils                                               # noqa: E402
 
 BOARD = os.path.join(ROOT, 'kicad_files', 'esp_prog.kicad_pcb')
@@ -119,6 +122,23 @@ def main():
         check('a bridge leaving the via\'s copper: kept',
               _bridge_inside_own_through_via(here, net, cfg, 'B.Cu', a,
                                              (X + 0.5, Y)) is False)
+
+        # 5. the ring search on a board window (it used to raise
+        # AttributeError: the window carried no board_info)
+        gnd = next(i for i, n in here.nets.items() if i and i != net and n.name)
+        for pcb in (here, away):
+            pcb.vias.remove(own)
+        site = _gnd_via_ring_site([(X, Y)], (X, Y), cfg, gnd, here, (net,),
+                                  [], [], [])
+        check('GND via ring search on a board with the area: runs, and no '
+              'site inside it', site is None or not (
+                  X - 1 < site[0] < X + 1 and Y - 1 < site[1] < Y + 1), str(site))
+        site_away = _gnd_via_ring_site([(X, Y)], (X, Y), cfg, gnd, away, (net,),
+                                       [], [], [])
+        check('...and with the area elsewhere, the site at the anchor '
+              '(non-vacuity)', site_away is not None
+              and abs(site_away[0] - X) < 1 and abs(site_away[1] - Y) < 1,
+              str(site_away))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

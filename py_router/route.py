@@ -3508,8 +3508,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if _gplan is not None:
         config._global_plan = _gplan
         _gp_nets_in = list(single_ended_nets)
-        single_ended_nets = apply_plan_order(single_ended_nets, _gplan,
-                                             front_ids=_direct_front_ids)
+        single_ended_nets = order_pin_joins_last(
+            apply_plan_order(single_ended_nets, _gplan,
+                             front_ids=_direct_front_ids))
         # #589 scorer dump: plan state as JSON for offline order/layer
         # evaluation; _DUMP_EXIT stops here (before swaps mutate copper)
         # so a dump run costs probe-time only.
