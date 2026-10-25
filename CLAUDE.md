@@ -791,8 +791,21 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
   (that geometry is the BOARD's boundary rather than a relief the part
   carries). A footprint is CARRIED -- `owns_board_outline` False, still
   movable -- only when its segments **close on themselves** (a window, slot or
-  milled relief) AND that shape lies inside the outline the board draws without
-  it. An open path cannot be a cut-out, so it is always boundary.
+  milled relief) AND either the footprint has pads and the shape **encloses
+  none of them**, judged in the footprint's own frame (#1409), or that shape
+  lies inside the outline the board draws without it. An open path cannot be a
+  cut-out, so it is always boundary. The pad test is the one that does not
+  flip with a move: containment is judged at the part's CURRENT pose, so on
+  its own a carried window read structural once its part was off the board,
+  and on a pile `place_pose set` could never bring the part back. It reads
+  which side of the ring the part's copper is on -- a hole beside or under a
+  part leaves its pads outside the ring, a ring that IS the board's edge has
+  them inside (a castellated pad ON the ring counts as inside). A bounding box
+  of pads and courtyard does NOT separate the two: a reverse-mount LED window
+  stands further past its part's pads and courtyard than a module's drawn
+  board outline stands past its own pads. A ring around one of the part's own
+  pads (a plated slot) and a pad-less footprint's ring are left to
+  containment, as before.
   **Anything that MOVES a footprint gates on `owns_board_outline`, never on
   `owns_edge_cuts`** -- a relief parented to a part travels WITH it by the
   designer's intent (crkbd draws 184 per-LED windows that way; #628 measured

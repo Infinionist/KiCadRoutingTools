@@ -778,8 +778,10 @@ class Footprint:
     owns_board_outline: bool = False
     # #829. `owns_edge_cuts` is the FACT (this footprint's pose transforms a
     # piece of Edge.Cuts); `owns_board_outline` is the DECISION that follows
-    # from it -- True only when that geometry lies outside every ring the
-    # board-level Edge.Cuts forms, i.e. it IS part of the board boundary.
+    # from it -- True when that geometry IS part of the board boundary: an
+    # open path, or a closed ring that encloses some of the part's own pads
+    # (or has none to judge by) and lies outside the board-level outline
+    # (`classify_outline_owners`).
     # A milled relief or a window parented to a part so it travels with the
     # part (crkbd's 184 per-LED windows; #628's owned rings) is
     # owns_edge_cuts=True, owns_board_outline=False, and stays movable.
@@ -3093,7 +3095,9 @@ def footprint_outline_owners(content: str) -> Dict[str, bool]:
       Moving it resizes the board, which is never a placement decision. A board
       whose outline lives entirely in footprints (Adiuvo's rp2350_fpga_eensy)
       has no board-level rings at all, so every owner is structural.
-    * **Carried** (`False`) -- the shape sits inside the board outline: a
+    * **Carried** (`False`) -- a closed shape beside the part's own copper
+      (#1409: it encloses none of the part's pads, wherever the part sits), or
+      one inside the board outline: a
       milled relief or a window the designer PARENTED to the part precisely so
       it would travel with it. crkbd draws 184 per-LED cutout windows this way
       (see `_collect_edge_cuts_segments`), and #628 exists to keep exactly this
@@ -3118,8 +3122,9 @@ def footprint_outline_owners(content: str) -> Dict[str, bool]:
     segs_by_ref = _collect_footprint_edge_segments_by_ref(content)
     board_only = _mask_footprint_blocks(content)
     outers, _cutouts = extract_board_contours(board_only)
-    return classify_outline_owners(segs_by_ref,
-                                   extract_board_bounds(board_only), outers)
+    return classify_outline_owners(
+        segs_by_ref, extract_board_bounds(board_only), outers,
+        own_pads=_footprint_own_pads_by_ref(content, set(segs_by_ref)))
 
 
 def outline_fingerprint(board_info) -> Tuple:
@@ -3155,11 +3160,12 @@ def structural_outline_fingerprint(content: str, carried=None) -> Tuple:
 
     `carried` (#1409), a set of refs, replaces the classification read off
     `content` itself. A write compares the board BEFORE and AFTER one move, and
-    carried-versus-structural is judged at each footprint's CURRENT pose
-    (`classify_outline_owners`): a part carrying a milled window is carried
-    while it is on the board and structural once it is off, so classifying
-    each text separately read a legal move of the part off the board as the
-    outline changing. The caller decides once, on the input, and passes the
+    a ring the part's own pads cannot settle (one around a pad of its own, or
+    a pad-less footprint's) is judged by containment at the footprint's
+    CURRENT pose (`classify_outline_owners` rule 2b): carried while the part
+    is on the board and structural once it is off, so classifying each text
+    separately read a legal move of the part off the board as the outline
+    changing. The caller decides once, on the input, and passes the
     same set for both texts.
 
     The board-level Edge.Cuts plus the footprints that draw the boundary --
@@ -3207,19 +3213,111 @@ def _segments_close_on_themselves(segments, tol: float = 0.01) -> bool:
     return all(d % 2 == 0 for d in deg.values())
 
 
-def classify_outline_owners(owners, board_only_bounds, board_only_outers):
+# #1409: a pad centre within this distance (mm) of a ring counts as ON it --
+# the chainer's own tolerance. On the ring is not "beside the hole": a
+# castellated pad sits on the edge its part draws.
+_OWN_PAD_EPS = 0.01
+
+
+def _footprint_own_pad_centres(block: str):
+    """The LOCAL-frame centres of every pad in one footprint block (#1409):
+    each pad's `(at x y ...)`, which the file stores in the footprint's own
+    coordinates. Read wherever the part sits, so the answer cannot change with
+    its pose. A pad whose `(at ...)` does not parse is skipped."""
+    out = []
+    for pm in PAD_HEAD_RE.finditer(block):
+        pad_text = block[pm.start():find_matching_paren(block, pm.start())]
+        at = AT_NODE_RE.search(pad_text)
+        if at is not None:
+            out.append((float(at.group(1)), float(at.group(2))))
+    return out
+
+
+def _footprint_own_pads_by_ref(content: str, refs):
+    """`{ref: (fx, fy, rot, [local pad centres])}` for the footprints in
+    `refs`: the pose the classifier needs to carry a ring into the footprint's
+    own frame, and the footprint's pads in that frame."""
+    out = {}
+    for start, end, key in _footprint_blocks_by_key(content):
+        if key not in refs:
+            continue
+        block = content[start:end]
+        pose = footprint_pose(block)
+        if pose is None:
+            continue
+        out[key] = pose + (_footprint_own_pad_centres(block),)
+    return out
+
+
+def _dist_to_segment(px, py, a, b) -> float:
+    (x1, y1), (x2, y2) = a, b
+    dx, dy = x2 - x1, y2 - y1
+    ll = dx * dx + dy * dy
+    t = 0.0 if ll == 0 else max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / ll))
+    return math.hypot(px - x1 - t * dx, py - y1 - t * dy)
+
+
+def _ring_spares_own_pads(segs, own) -> bool:
+    """Is this closed ring a hole BESIDE its footprint's copper (#1409)?
+
+    `own` is `(fx, fy, rot, [local pad centres])`. True when the footprint has
+    at least one pad and no pad centre lies inside the ring or on it, judged
+    in the footprint's LOCAL frame -- the ring is carried there by
+    `_global_to_local`, the pose's exact inverse -- so the answer is the same
+    at every pose.
+
+    Inside is even-odd over the ring's segments, which needs no chaining and
+    reads several loops (a part's row of slots) at once. A segment drawn twice
+    is counted once: a doubled loop would otherwise cancel itself out and
+    enclose nothing.
+    """
+    if own is None:
+        return False
+    fx, fy, rot, pads = own
+    if not pads:
+        return False
+    uniq = {}
+    for a, b in segs:
+        la = _global_to_local(fx, fy, rot, *a)
+        lb = _global_to_local(fx, fy, rot, *b)
+        ka = (round(la[0], 3), round(la[1], 3))
+        kb = (round(lb[0], 3), round(lb[1], 3))
+        uniq.setdefault((min(ka, kb), max(ka, kb)), (la, lb))
+    local = list(uniq.values())
+    for px, py in pads:
+        inside = False
+        for (x1, y1), (x2, y2) in local:
+            if (y1 > py) != (y2 > py):
+                if x1 + (py - y1) * (x2 - x1) / (y2 - y1) > px:
+                    inside = not inside
+        if inside:
+            return False
+        if any(_dist_to_segment(px, py, a, b) <= _OWN_PAD_EPS
+               for a, b in local):
+            return False
+    return True
+
+
+def classify_outline_owners(owners, board_only_bounds, board_only_outers,
+                            own_pads=None):
     """`{ref: owns_board_outline}` from per-ref SEGMENTS and the board's own
     outline. Shared by BOTH parse paths (#829) so they cannot decide
-    differently -- each supplies its own three inputs, the rule lives here once.
+    differently -- each supplies its own inputs, the rule lives here once.
 
-    `owners` is `{ref: [((x1,y1),(x2,y2)), ...]}` in global mm.
+    `owners` is `{ref: [((x1,y1),(x2,y2)), ...]}` in global mm. `own_pads`
+    (#1409) is `{ref: (fx, fy, rot, [local pad centres])}`: each owner's pose
+    and its own pads in its LOCAL frame (`_footprint_own_pad_centres`); a ref
+    missing from it is judged by rule 2b alone.
 
     A footprint is CARRIED (its geometry travels with it, and it stays movable)
-    only when BOTH hold:
+    only when:
 
       1. its Edge.Cuts segments CLOSE ON THEMSELVES -- it is a window, a slot,
          a relief: a shape cut out of the board; and
-      2. that shape lies inside the outline the board draws without it.
+      2a. the footprint has pads and that shape encloses none of them, judged
+          in the footprint's own frame (#1409) -- a hole beside the part's
+          copper, which the part carries wherever it is; or, failing that,
+      2b. that shape lies inside the outline the board draws without it.
 
     Anything else is STRUCTURAL. Closedness carries most of the weight, and it
     is what the first version of this function lacked. Deciding on containment
@@ -3237,13 +3335,46 @@ def classify_outline_owners(owners, board_only_bounds, board_only_outers):
 
     An open path cannot be a cut-out, so all three become structural on rule 1
     without consulting containment at all.
+
+    Rule 2a is why the answer does not flip with a move (#1409). Rule 2b is
+    judged at the part's CURRENT pose: a part carrying a milled window read
+    carried on the board and structural once off it, so a pile made by any
+    means froze it there (`place_pose set` refused to bring it back: "draws
+    the board outline"). 2a reads only the part's own geometry, which is
+    rigid in its frame. It asks which side of the ring the part's copper is
+    on, because that is what tells a hole from a boundary: a hole cut beside
+    or under a part leaves its pads on the board, outside the ring; a ring
+    that IS the board's edge has the part's pads on the board, inside it (a
+    module drawing its own outline encloses most of its pads, and its
+    castellations sit ON the ring, which counts as enclosed). Measured over
+    every closed footprint ring in the stress corpus: each window, slot and
+    relief encloses no pad of its part, each footprint-drawn board outline
+    encloses at least half of its own. A bounding box of the part's pads and
+    courtyard does NOT separate them -- an LED window under a reverse-mount
+    part stands up to 0.74 mm proud of it, further than a footprint-drawn
+    board outline stands past its own pads (0.41 mm). A ring around a
+    drilled pin (a plated slot) encloses that pad, and a pad-less footprint
+    has nothing to judge by, so both are left to 2b, as before.
     """
     if not owners:
         return {}
+    own_pads = own_pads or {}
+    out = {}
+    pending = {}
+    for ref, segs in owners.items():
+        if not _segments_close_on_themselves(segs):
+            out[ref] = True                                    # rule 1
+        elif _ring_spares_own_pads(segs, own_pads.get(ref)):
+            out[ref] = False                                   # rule 2a
+        else:
+            pending[ref] = segs                                # rule 2b
+    if not pending:
+        return out
     if board_only_bounds is None:
         # The board-level Edge.Cuts draws nothing at all, so the footprints ARE
-        # the outline (rp2350_fpga_eensy). Every owner is structural.
-        return {ref: True for ref in owners}
+        # the outline. Every owner rule 2a did not settle is structural.
+        out.update({ref: True for ref in pending})
+        return out
 
     rings = [r for r in (board_only_outers or []) if len(r) >= 3]
 
@@ -3264,11 +3395,7 @@ def classify_outline_owners(owners, board_only_bounds, board_only_outers):
             return (x0 - _OUTLINE_EPS <= px <= x1 + _OUTLINE_EPS
                     and y0 - _OUTLINE_EPS <= py <= y1 + _OUTLINE_EPS)
 
-    out = {}
-    for ref, segs in owners.items():
-        if not _segments_close_on_themselves(segs):
-            out[ref] = True
-            continue
+    for ref, segs in pending.items():
         out[ref] = not all(inside(*p) for seg in segs for p in seg)
     return out
 
@@ -9743,8 +9870,10 @@ def footprint_outline_owners_from_pcbnew(board, to_mm):
         return {}
 
     owners = {}
+    own_pads = {}
     try:
-        _extract_board_contours_from_pcbnew(board, to_mm, owners_out=owners)
+        _extract_board_contours_from_pcbnew(board, to_mm, owners_out=owners,
+                                            own_pads_out=own_pads)
     except Exception:
         return {}
     if not owners:
@@ -9774,11 +9903,32 @@ def footprint_outline_owners_from_pcbnew(board, to_mm):
             board, to_mm, include_footprints=False)
     except Exception:
         outers = []
-    return classify_outline_owners(owners, board_bounds, outers)
+    return classify_outline_owners(owners, board_bounds, outers,
+                                   own_pads=own_pads)
+
+
+def _pcbnew_footprint_own_pads(fp, to_mm):
+    """The pcbnew mirror of `_footprint_own_pads_by_ref` for one footprint
+    (#1409): `(fx, fy, rot, [local pad centres])`. pcbnew hands back pad
+    positions in BOARD coordinates, so each is carried into the footprint's
+    frame by `_global_to_local` -- the pose's exact inverse, the same one the
+    classifier applies to the ring -- which lands on the file's own `(at x y)`
+    to within a nanometre."""
+    pos = fp.GetPosition()
+    fx, fy = to_mm(pos.x), to_mm(pos.y)
+    rot = fp.GetOrientationDegrees()
+    pads = []
+    for pad in fp.Pads():
+        try:
+            pp = pad.GetPosition()
+            pads.append(_global_to_local(fx, fy, rot, to_mm(pp.x), to_mm(pp.y)))
+        except Exception:                                        # noqa: BLE001
+            continue
+    return (fx, fy, rot, pads)
 
 
 def _extract_board_contours_from_pcbnew(board, to_mm, include_footprints=True,
-                                        owners_out=None):
+                                        owners_out=None, own_pads_out=None):
     """Extract board outline and cutout polygons from Edge.Cuts drawings via pcbnew.
 
     Returns (outers, cutouts): the OUTER boundary rings (largest first --
@@ -9914,6 +10064,15 @@ def _extract_board_contours_from_pcbnew(board, to_mm, include_footprints=True,
                         _oref = fp.GetReference() or ("#" + str(
                             fp.m_Uuid.AsString()) if hasattr(fp, 'm_Uuid')
                             else "?")
+                        # #1409: the owner's own pads, keyed with its
+                        # segments so the two can never be matched up wrong.
+                        # Two owners sharing one reference pool their
+                        # segments under it, so no one footprint's pads
+                        # describe the pool: leave it to containment.
+                        if own_pads_out is not None:
+                            own_pads_out[_oref] = (
+                                None if _oref in own_pads_out
+                                else _pcbnew_footprint_own_pads(fp, to_mm))
                     owners_out.setdefault(_oref, []).extend(_segs)
     except Exception:
         pass

@@ -1,19 +1,19 @@
-"""#1409: a part's carried Edge.Cuts window may travel with it off the board.
+"""#1409: a part's carried Edge.Cuts ring may travel with it off the board.
 
-Carried versus structural (#829) is judged at each footprint's CURRENT pose: a
-closed window inside the outline is carried, the same window once its part is
-off the board lies outside it and reads structural. The writer's outline
-tripwire compared the BEFORE and AFTER texts each classified on their own, so a
-part carrying a window could not be moved off the board (make_unplaced raised
+A closed ring that encloses none of its part's pads is carried wherever the
+part sits (`classify_outline_owners` rule 2a; pinned by
+test_1409_local_window_bring_back). A ring the part alone cannot settle -- one
+around one of its own pads, the shape of a plated slot -- is still judged by
+containment in the outline at each footprint's CURRENT pose (rule 2b): carried
+while the part is on the board, structural once it is off. The writer's
+outline tripwire compared the BEFORE and AFTER texts each classified on their
+own, so such a part could not be moved off the board (make_unplaced raised
 `OutlineOwnerMove` and wrote no pile, `place_pose set` refused). The write now
 decides carried-versus-structural once, on the input, and masks both texts
 with that one set.
 
-Fixture: the tracked esp_prog board with a 1.0 x 0.6 mm closed Edge.Cuts
-window carried by U1 at its body centre.
-
-(A part ALREADY off the board is still classified at its pose; that is a
-separate decision, not pinned here.)
+Fixture: the tracked esp_prog board with a 0.6 x 0.8 mm closed Edge.Cuts ring
+around U1's pad 1.
 """
 import os
 import subprocess
@@ -32,7 +32,7 @@ from run_utils import evidence, tool, tool_env                          # noqa: 
 BOARD = evidence(os.path.join(ROOT, 'kicad_files', 'esp_prog.kicad_pcb'), 'tracked board')
 MAKE_UNPLACED = evidence(os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement',
                                       'scripts', 'make_unplaced.py'), 'make_unplaced')
-WINDOW = ('\t\t(fp_rect (start -0.5 -0.3) (end 0.5 0.3) (stroke (width 0.05) (type default)) '
+WINDOW = ('\t\t(fp_rect (start -3.2 3.2) (end -2.6 4.0) (stroke (width 0.05) (type default)) '
           '(fill no) (layer "Edge.Cuts") (uuid "0badc0de-0000-4000-8000-000000000001"))\n')
 
 
