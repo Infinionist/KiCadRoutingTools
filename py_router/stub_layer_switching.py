@@ -6,6 +6,7 @@ source and target stubs are on different layers.
 """
 from __future__ import annotations
 
+import copy
 import math
 from typing import List, Optional, Tuple, Dict
 from dataclasses import dataclass
@@ -896,6 +897,13 @@ def via_barrel_clear_of_foreign_copper(pad_x: float, pad_y: float, net_id: int,
                 nm = net.name if net else f"net {pnid}"
                 return False, (f"pad via at ({pad_x:.2f},{pad_y:.2f}) would clash with "
                                f"{nm} pad {pad.component_ref}.{pad.pad_number} (gap {d:.3f}mm)")
+    # A keep-out rule area forbidding vias, as check_drc grades it.
+    from check_drc import keepout_refusal
+    why = keepout_refusal(pcb_data, vias=[Via(
+        x=pad_x, y=pad_y, size=2 * via_r, drill=config.via_drill,
+        layers=['F.Cu', 'B.Cu'], net_id=net_id)])
+    if why:
+        return False, f"pad via at ({pad_x:.2f},{pad_y:.2f}): {why}"
     return True, ""
 
 
@@ -1091,6 +1099,18 @@ def stub_clear_of_foreign_pads(segments: List[Segment], dest_layer: str, net_id:
                     nm = net.name if net else f"net {pnid}"
                     return False, (f"stub on {dest_layer} would graze {nm} pad "
                                    f"{pad.component_ref}.{pad.pad_number} (gap {best:.3f}mm)")
+    # A keep-out rule area forbidding tracks on dest_layer, as check_drc grades it.
+    from check_drc import keepout_refusal
+    moved = []
+    for seg in segments:
+        m = copy.copy(seg)
+        m.layer = dest_layer
+        if not (getattr(m, 'width', 0) and m.width > 0):
+            m.width = config.track_width
+        moved.append(m)
+    why = keepout_refusal(pcb_data, segments=moved)
+    if why:
+        return False, f"stub: {why}"
     return True, ""
 
 

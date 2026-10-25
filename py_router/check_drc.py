@@ -3208,7 +3208,8 @@ def _keepout_area_layers(ko, routing_layers):
     return [l for l in routing_layers if l in out]
 
 
-def keepout_census(pcb_data, routing_layers, tol=FP_EPS_MM, net_ids=None):
+def keepout_census(pcb_data, routing_layers, tol=FP_EPS_MM, net_ids=None,
+                   segments=None, vias=None):
     """Copper inside a keep-out RULE AREA (`(zone ... (keepout ...))`).
 
     For every area in `pcb_data.board_info.keepouts` (board-level and
@@ -3224,6 +3225,8 @@ def keepout_census(pcb_data, routing_layers, tol=FP_EPS_MM, net_ids=None):
     always does. Pads, footprints and zone fill are NOT graded (fill pulls
     back from a keep-out by construction; pad and footprint rules are not
     modelled). `net_ids` (None = every net) restricts the items graded.
+    `segments` / `vias` grade those items instead of the board's -- copper a
+    generator is about to lay (`keepout_refusal`).
 
     One row per (item, area): `type` 'keepout', `item` 'track'/'via',
     `area` (the area's name, '' when it has none), `area_in_footprint`,
@@ -3253,10 +3256,10 @@ def keepout_census(pcb_data, routing_layers, tol=FP_EPS_MM, net_ids=None):
         n = pcb_data.nets.get(nid)
         return n.name if n is not None else f"net_{nid}"
 
-    segs = [s for s in pcb_data.segments
+    segs = [s for s in (pcb_data.segments if segments is None else segments)
             if not getattr(s, 'graphic', False)
             and (net_ids is None or s.net_id in net_ids)]
-    vias = [v for v in pcb_data.vias
+    vias = [v for v in (pcb_data.vias if vias is None else vias)
             if net_ids is None or v.net_id in net_ids]
     if segs:
         sx1 = np.array([s.start_x for s in segs], dtype=np.float64)
@@ -3356,6 +3359,23 @@ def keepout_census(pcb_data, routing_layers, tol=FP_EPS_MM, net_ids=None):
                                      inside_mm=0.0,
                                      intrusion_mm=round(reach, 4)))
     return rows
+
+
+def keepout_refusal(pcb_data, segments=(), vias=()):
+    """Why these not-yet-laid items may not be laid ('' when they may): the
+    first one whose copper reaches into a keep-out rule area forbidding it,
+    measured by `keepout_census` -- so a generator refuses exactly what this
+    checker would report. Free on a board with no forbidding area."""
+    if not getattr(pcb_data.board_info, 'keepouts', None):
+        return ''
+    rows = keepout_census(pcb_data,
+                          list(getattr(pcb_data.board_info, 'copper_layers', None) or ()),
+                          segments=list(segments), vias=list(vias))
+    if not rows:
+        return ''
+    r = rows[0]
+    return (f"{r['item']} on {r['layer']} would reach {r['intrusion_mm']:.3f}mm into "
+            f"keep-out rule area {r['area'] or '(unnamed)'} ({r['forbids']} not allowed)")
 
 
 def _keepout_key(row):
