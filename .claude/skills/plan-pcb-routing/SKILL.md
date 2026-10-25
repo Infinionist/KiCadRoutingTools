@@ -631,8 +631,8 @@ Use the printed flags as-is:
   or falls back** — `route_diff.py`'s `JSON_SUMMARY` lists it in `failed_diff_pairs`,
   `single_ended_diff_pairs`, `partial_diff_pairs` (coupled, but the member audit
   found member pads left open) or `uncoupled_diff_pairs` (#1303: routed, but the
-  copper it ships is not coupled -- members on separate layers, or apart wider than
-  the gap; route_diff reads this off the board, not off its own result, and protects
+  copper it ships is not coupled -- members on separate layers, apart wider than
+  the gap, or coupled over less than one pitch or 25% of the pair's length; route_diff reads this off the board, not off its own result, and protects
   such a pair only while its members still run alongside within 1 mm
   (`pair_reports[].protected`, #1361), so a retry may rip the rest), or DRC shows an
   intra-pair / via-via graze — re-run
