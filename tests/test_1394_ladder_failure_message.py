@@ -7,11 +7,15 @@ Rows:
   1. `static_boxin_hint` advises a clearance / track only when it is NARROWER
      than the run's: a run at 0.09 / 0.0762 gets the grid advice alone, a run
      at 0.2 / 0.2 is still offered 0.15 / 0.15.
-  2. The 4-layer rp2350 chain (rip ladder to N=5 on a net that stays blocked):
-     the log's "All rip-up attempts failed" is followed by
-     "ROUTE FAILED - ripping N blocker net(s) (...) did not free a path", with
-     no "no rippable blockers found" and no "search exhausted" static verdict
-     after a ladder that ripped.
+  2. The 4-layer rp2350 chain (rip ladder to N=5 on nets that stay blocked):
+     every "All rip-up attempts failed" is followed by an HONEST line -- the
+     main pass's "ROUTE FAILED - ripping N blocker net(s) (...) did not free
+     a path", or the phase-3 re-route's "RIP-RESTORE" of the victim -- never by
+     "no rippable blockers found" or a "search exhausted" static verdict.
+     Which site the board's ladders land in moves with routing changes
+     elsewhere (the main pass's ladder on one tree, only the re-route's on
+     another), so the row holds every site to the contract rather than
+     requiring one of them.
 
     python3 tests/test_1394_ladder_failure_message.py     (about 1.5 min)
 """
@@ -70,9 +74,16 @@ def main():
     nxt = [lines[j] for i in after for j in range(i + 1, min(i + 3, len(lines)))
            if 'ROUTE FAILED' in lines[j]]
     check('2. the repro hit a ladder failure', bool(after), f'{len(after)} ladder failure(s)')
-    check('2. a failure after the ladder names the ripped nets',
-          any(re.search(r'ROUTE FAILED - ripping \d+ blocker net\(s\) \(.*\) did not free a path', l)
-              for l in nxt), str(nxt[:2]))
+
+    def honest(i):
+        follow = lines[i + 1:i + 3]
+        return any(re.search(r'ROUTE FAILED - ripping \d+ blocker net\(s\) \(.*\) '
+                             r'did not free a path', l) or 'RIP-RESTORE' in l
+                   for l in follow)
+    dishonest = [lines[i] for i in after if not honest(i)]
+    check('2. every ladder failure is followed by an honest line (the ripped '
+          'nets named, or the victim\'s restore)', bool(after) and not dishonest,
+          str(dishonest[:2]))
     check('2. no "no rippable blockers found" follows a ladder failure',
           not any('no rippable blockers found' in l for l in nxt), str(nxt[:2]))
     bad = [lines[j] for i in after for j in range(i + 1, min(i + 4, len(lines)))

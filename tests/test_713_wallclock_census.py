@@ -151,6 +151,8 @@ REGISTRY = {
 
     # --- reporting only: elapsed accumulated or printed ---------------------
     'py_router/route.py': ('reporting', 'phase timing prints'),
+    'py_placer/placement/decap_repair.py': (
+        'reporting', "the repair's elapsed seconds in its record (#1382)"),
     'py_tools/board_score.py': ('reporting', "per-tool wall seconds, SCORE_JSON "
                                 "tool_seconds (#1202)"),
     'py_router/route_diff.py': ('reporting', 'phase timing prints'),
@@ -205,6 +207,11 @@ REGISTRY = {
         'status.py pins the three arms wx-free.'),
 
     # --- filesystem timestamps, not our elapsed time ------------------------
+    'py_router/net_queries.py': (
+        'file_mtime',
+        'multipad_unconnected_to_route keys its cache of a board\'s jumper '
+        'declarations on (path, os.path.getmtime) so a re-saved board is read '
+        'afresh (#1405); the mtime decides only whether the file is re-read'),
     'py_router/route_planes.py': (
         'file_mtime',
         'compares the output file st_mtime before/after to detect that a '

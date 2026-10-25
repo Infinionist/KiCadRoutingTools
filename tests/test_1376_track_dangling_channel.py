@@ -139,6 +139,8 @@ def main():
         print(f"\nFAIL ({len(failures)}): " + '; '.join(failures))
         return 1
     print("\nAll checks passed" if ran else "\nUnit checks passed; kicad-cli leg NOT RUN")
+    if not ran:
+        print("SKIP: the real-report leg needs kicad-cli")
     return 0 if ran else SKIP_EXIT
 
 

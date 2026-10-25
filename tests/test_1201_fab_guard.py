@@ -331,8 +331,9 @@ class SilkContainmentIsNamed(unittest.TestCase):
 
     def test_a_closed_silk_body_gates(self):
         """#1401: the same holder with its silk CLOSED is a housing, and DC1's
-        pad copper wholly inside it gates; the marker inside it is still
-        exempt as a marker."""
+        pad copper wholly inside it is listed as `silk_enclosed` -- a pair
+        that gates where a member MOVED vs --baseline (check_assembly), not
+        absolutely; the marker inside it is still exempt as a marker."""
         with tempfile.TemporaryDirectory() as td:
             path = _board(td, _holder_silk() + _dc1(22, 15)
                           + _fiducial('FID1', 30, 15), size=(44, 30))
@@ -341,11 +342,12 @@ class SilkContainmentIsNamed(unittest.TestCase):
             out, _js = _check_assembly(td, path)
         why = {frozenset((q.a, q.b)): q.gate_exempt
                for q in g['containment_pairs']}
-        self.assertEqual(why.get(frozenset(('BAT1', 'DC1'))), '')
+        self.assertEqual(why.get(frozenset(('BAT1', 'DC1'))), 'silk_enclosed')
         self.assertEqual(why.get(frozenset(('BAT1', 'FID1'))), 'marker_class')
         self.assertEqual({frozenset((q.a, q.b))
-                          for q in g['containment_blocking_pairs']},
+                          for q in g['silk_enclosed_pairs']},
                          {frozenset(('BAT1', 'DC1'))})
+        self.assertEqual(g['containment_blocking_pairs'], [])
 
     def test_a_gating_containment_is_labelled_as_gating(self):
         """A part wholly inside another's FAB body gates; its label is '',

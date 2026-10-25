@@ -148,4 +148,6 @@ if __name__ == '__main__':
         print(f"\nFAIL ({len(failures)}): " + '; '.join(failures))
         sys.exit(1)
     print('\nAll checks passed' if ran else '\nUnit checks passed; end-to-end NOT RUN')
+    if not ran:
+        print('SKIP: the end-to-end re-save needs KiCad (pcbnew) to fill the board')
     sys.exit(0 if ran else SKIP_EXIT)
