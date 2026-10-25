@@ -17,6 +17,12 @@ Checks (on glasgow_revC U30.E8, a 0.35 mm ball, under-pad engine):
   3. Precondition: the same net with no track at all is escaped, so the
      skip above is the detection's doing.
   4. find_existing_fanouts (the channel path) names the off-centre net too.
+  5. The skip is per BALL, not per net: on the array's many-ball ground net
+     with a track on ONE ball (the first listed -- the pre-#1411 lookup kept
+     only the last), --check-for-previous escapes every other ball and not
+     that one; the bare board (control) escapes all of them. The per-ball
+     answer: a ball-to-ball strap fans both balls, and a via in a ball fans
+     it only when its net is fanned elsewhere.
 
     python3 tests/test_1411_fanout_detection_inside_ball.py
 """
@@ -62,10 +68,10 @@ def parse(path):
         return parse_kicad_pcb(path)
 
 
-def with_track(inp, path, a, b):
+def with_track(inp, path, a, b, net=NET):
     text = open(inp, encoding='utf-8').read()
     trk = (f'\t(segment\n\t\t(start {a[0]} {a[1]})\n\t\t(end {b[0]} {b[1]})\n'
-           f'\t\t(width 0.0762)\n\t\t(layer "F.Cu")\n\t\t(net "{NET}")\n'
+           f'\t\t(width 0.0762)\n\t\t(layer "F.Cu")\n\t\t(net "{net}")\n'
            f'\t\t(uuid "14111411-0000-4000-8000-000000001411")\n\t)\n')
     i = text.rstrip().rfind(')')
     open(path, 'w', encoding='utf-8').write(text[:i] + trk + text[i:])
@@ -74,9 +80,9 @@ def with_track(inp, path, a, b):
     return path
 
 
-def fan(inp, out, extra=()):
+def fan(inp, out, extra=(), args=ARGS, net=NET):
     r = subprocess.run([sys.executable, '-X', 'utf8', 'py_router/bga_fanout.py',
-                        inp, '-o', out] + ARGS + list(extra), cwd=ROOT,
+                        inp, '-o', out] + args + list(extra), cwd=ROOT,
                        capture_output=True, text=True, encoding='utf-8',
                        errors='replace')
     line = next((l for l in r.stdout.splitlines() if 'JSON_SUMMARY' in l), '')
@@ -84,10 +90,73 @@ def fan(inp, out, extra=()):
     before = {(s.start_x, s.start_y, s.end_x, s.end_y, s.layer)
               for s in parse(inp).segments}
     after = parse(out)
-    nid = next(i for i, n in after.nets.items() if n.name == NET)
+    nid = next(i for i, n in after.nets.items() if n.name == net)
     added = [s for s in after.segments if s.net_id == nid
              and (s.start_x, s.start_y, s.end_x, s.end_y, s.layer) not in before]
     return r.returncode, js, added
+
+
+def escaped_balls(balls, added):
+    return {b.pad_number for b in balls for s in added
+            if endpoint_on_pad(b, s.start_x, s.start_y, 0.05)
+            or endpoint_on_pad(b, s.end_x, s.end_y, 0.05)}
+
+
+def per_ball(inp, tmp):
+    fp = parse(inp).footprints['U30']
+    gnd = [p for p in fp.pads if p.net_name == 'GND']
+    first = gnd[0]
+    check('5. precondition: the ground net has many balls', len(gnd) >= 6,
+          f'{len(gnd)} balls')
+    args = list(ARGS)
+    i = args.index('--nets')
+    args[i + 1] = 'GND'
+    args[args.index('--escape-method') + 1] = 'channel'
+    trk = with_track(inp, os.path.join(tmp, 'gnd.kicad_pcb'),
+                     (first.global_x, first.global_y),
+                     (first.global_x, first.global_y - 1.5), net='GND')
+    rc, _, added = fan(inp, os.path.join(tmp, 'gnd_bare.kicad_pcb'),
+                       args=args, net='GND')
+    bare = escaped_balls(gnd, added)
+    check('5. control: the bare board escapes every ground ball',
+          rc == 0 and bare == {p.pad_number for p in gnd},
+          f'rc={rc} escaped={sorted(bare)}')
+    rc, _, added = fan(trk, os.path.join(tmp, 'gnd_out.kicad_pcb'),
+                       ['--check-for-previous'], args=args, net='GND')
+    got = escaped_balls(gnd, added)
+    check('5. the ball carrying the track is not re-escaped',
+          rc == 0 and first.pad_number not in got, f'escaped={sorted(got)}')
+    check('5. the net\'s other balls are still escaped (no net-wide skip)',
+          len(got) >= len(gnd) - 2, f'{len(got)}/{len(gnd) - 1} others')
+
+    # find_existing_fanouts' per-ball answer, on a synthetic array.
+    def pad(n, x, net):
+        return SimpleNamespace(pad_number=n, global_x=x, global_y=0.0,
+                               size_x=0.35, size_y=0.35, shape='circle',
+                               rect_rotation=0.0, net_id=net, net_name=f'N{net}')
+
+    def seg(a, b, net):
+        return SimpleNamespace(start_x=a, start_y=0.0, end_x=b, end_y=0.0,
+                               net_id=net, layer='F.Cu')
+    pads = [pad('A1', 0.0, 1), pad('A2', 0.8, 1), pad('A3', 1.6, 1),
+            pad('A4', 2.4, 1), pad('B1', 4.0, 2), pad('B2', 4.8, 2)]
+    vias = [SimpleNamespace(x=2.4, y=0.0, net_id=1),      # in A4, net 1 fanned
+            SimpleNamespace(x=4.8, y=0.0, net_id=2)]      # in B2, net 2 not
+    board = SimpleNamespace(segments=[seg(0.0, 0.8, 1)], vias=vias)
+    nets, _, balls = find_existing_fanouts(
+        board, SimpleNamespace(pads=pads), SimpleNamespace(pitch_x=0.8, pitch_y=0.8),
+        [], return_balls=True)
+    check('5. a ball-to-ball strap fans both balls, and only those',
+          {(0.0, 0.0), (0.8, 0.0)} <= balls and (1.6, 0.0) not in balls,
+          f'balls={sorted(balls)}')
+    check('5. a via in a ball of a fanned net fans that ball',
+          (2.4, 0.0) in balls)
+    check('5. a via alone does not fan a ball of an unfanned net',
+          (4.8, 0.0) not in balls and 2 not in nets, f'nets={sorted(nets)}')
+    two = find_existing_fanouts(board, SimpleNamespace(pads=pads),
+                                SimpleNamespace(pitch_x=0.8, pitch_y=0.8), [])
+    check('5. the default call keeps its two-value answer',
+          len(two) == 2 and two[0] == nets)
 
 
 def main():
@@ -131,6 +200,8 @@ def main():
             pitch_x=0.5, pitch_y=0.5), [])
         check('4. find_existing_fanouts names the off-centre net',
               nid in fanned, f'fanned={sorted(fanned)}')
+
+        per_ball(inp, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

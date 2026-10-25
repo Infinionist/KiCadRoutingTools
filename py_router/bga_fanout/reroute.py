@@ -753,12 +753,18 @@ def try_jogged_route(route: 'FanoutRoute',
 
 def find_existing_fanouts(pcb_data: PCBData, footprint: Footprint,
                           grid: BGAGrid, channels: List[Channel],
-                          tolerance: float = FANOUT_DETECTION_TOLERANCE) -> Tuple[Set[int], Dict[Tuple[str, str, float], str]]:
+                          tolerance: float = FANOUT_DETECTION_TOLERANCE,
+                          return_balls: bool = False):
     """
     Find pads that already have fanout tracks and identify occupied channel positions.
 
     A pad is considered to have an existing fanout if there's a segment that starts
-    or ends at the pad position.
+    or ends in the pad's copper (#1411).
+
+    The net set says which NETS carry fanout copper at some ball; it is not a
+    per-ball answer. A many-ball net (a ground or supply) with copper on one
+    ball still has every other ball to escape, so a consumer that skips balls
+    asks for `return_balls` and skips by ball.
 
     Args:
         pcb_data: Full PCB data with segments
@@ -767,12 +773,19 @@ def find_existing_fanouts(pcb_data: PCBData, footprint: Footprint,
         channels: List of routing channels
         tolerance: Position matching tolerance in mm
 
+        return_balls: also return the fanned balls (see Returns)
+
     Returns:
         Tuple of:
         - Set of net_ids that already have fanouts
         - Dict of occupied exit positions: (layer, direction_axis, position) -> net_name
+        - with return_balls only: Set of (global_x, global_y) of the balls that
+          are fanned themselves -- a same-net track end lands in the ball's
+          copper, or, on a net that is fanned, a same-net via sits in it (a
+          via-in-pad escape lays no track)
     """
     fanned_out_nets: Set[int] = set()
+    fanned_balls: Set[Tuple[float, float]] = set()
     occupied_exits: Dict[Tuple[str, str, float], str] = {}
 
     # Build a lookup of the array's pads by net_id
@@ -790,13 +803,16 @@ def find_existing_fanouts(pcb_data: PCBData, footprint: Footprint,
         if segment.net_id not in pads_by_net:
             continue
 
+        # Every ball an end lands on is fanned (a ball-to-ball strap fans
+        # both); the first one decides the exit, as it always has.
         hit = None
         for pad in pads_by_net[segment.net_id]:
             s_at = endpoint_on_pad(pad, segment.start_x, segment.start_y, tolerance)
             e_at = endpoint_on_pad(pad, segment.end_x, segment.end_y, tolerance)
             if s_at or e_at:
-                hit = (pad, s_at)
-                break
+                fanned_balls.add((pad.global_x, pad.global_y))
+                if hit is None:
+                    hit = (pad, s_at)
         if hit is None:
             continue
         pad_x, pad_y = hit[0].global_x, hit[0].global_y
@@ -845,7 +861,18 @@ def find_existing_fanouts(pcb_data: PCBData, footprint: Footprint,
                         occupied_exits[exit_key] = net_names.get(segment.net_id, f"net_{segment.net_id}")
                         break
 
-    return fanned_out_nets, occupied_exits
+    if not return_balls:
+        return fanned_out_nets, occupied_exits
+    # A via-in-pad escape is a via and no track. On a net already fanned, a
+    # same-net via in a ball fans that ball too, so naming balls rather than
+    # nets does not re-escape a via-in-pad ball the net-level skip covered.
+    for via in pcb_data.vias:
+        if via.net_id not in fanned_out_nets:
+            continue
+        for pad in pads_by_net.get(via.net_id, ()):
+            if endpoint_on_pad(pad, via.x, via.y, tolerance):
+                fanned_balls.add((pad.global_x, pad.global_y))
+    return fanned_out_nets, occupied_exits, fanned_balls
 
 
 def resolve_collisions(routes: List[FanoutRoute], tracks: List[Dict],
