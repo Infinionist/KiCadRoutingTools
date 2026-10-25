@@ -5,7 +5,7 @@
 pair pitch (track width + gap, 0.2 mm here), whatever the pair's length: a
 21.5 mm pair with 0.5 mm coupled read 'coupled', stayed in routed_diff_pairs
 and kept its #521 protection. Now `diff_pair_custody.measure_pair_copper`
-asks for the pitch AND `COUPLED_SHARE_FLOOR` (25%) of the pair's length --
+asks for the pitch AND `COUPLED_SHARE_FLOOR` (10%) of the pair's length --
 the longer member's track length, the length KiCad's coupling test measures
 against -- and discloses the share as `coupled_share`. The same two floors
 decide `alongside` (#1361), so a sliver alongside is not protected either.
@@ -16,8 +16,8 @@ for its coupled length, then turns 45 degrees away and finishes 2.1 mm from
 P, outside both the coupled and the alongside windows.
 
   X  sliver     0.5 mm coupled (2%)  -> uncoupled, not alongside, unprotected
-  B  below      24% coupled          -> uncoupled
-  A  above      26% coupled          -> coupled
+  B  below      9% coupled           -> uncoupled
+  A  above      11% coupled          -> coupled
   Y  thirty     30% coupled          -> coupled, protected
   T  tight      fully coupled        -> coupled
   Z  short      0.15 mm long, fully coupled: 100% but under the pitch
@@ -74,7 +74,7 @@ _HEAD = ('(kicad_pcb\n\t(version 20260206)\n\t(generator "pcbnew")\n'
          '\t(setup\n\t\t(pad_to_mask_clearance 0)\n\t)\n')
 
 # name -> coupled length (mm) of a LONG pair
-LONG_PAIRS = {'X': 0.5, 'B': 0.24 * LONG, 'A': 0.26 * LONG, 'Y': 0.30 * LONG}
+LONG_PAIRS = {'X': 0.5, 'B': 0.09 * LONG, 'A': 0.11 * LONG, 'Y': 0.30 * LONG}
 
 
 def fixture_text():
@@ -140,8 +140,8 @@ def unit():
                                    audit_pair_members)
     from route_diff import coupled_protection_pairs
 
-    check('the share floor is one named constant at 25%',
-          getattr(dpc, 'COUPLED_SHARE_FLOOR', None) == 0.25,
+    check('the share floor is one named constant at 10%',
+          getattr(dpc, 'COUPLED_SHARE_FLOOR', None) == 0.10,
           str(getattr(dpc, 'COUPLED_SHARE_FLOOR', None)))
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -178,8 +178,8 @@ def unit():
           f"{copper['X']['coupled_mm']} vs {copper['X']['coupled_floor_mm']}")
 
     coupled = {k: v['coupled'] for k, v in copper.items()}
-    check('coupled needs one pitch AND 25% of the length: the sliver (2%), 24% and '
-          'the 0.15 mm pair do not couple; 26%, 30% and the full run do',
+    check('coupled needs one pitch AND 10% of the length: the sliver (2%), 9% and '
+          'the 0.15 mm pair do not couple; 11%, 30% and the full run do',
           coupled == {'X': False, 'B': False, 'A': True, 'Y': True, 'T': True,
                       'Z': False}, str(coupled))
     share = {k: v.get('coupled_share') for k, v in copper.items()}
@@ -187,7 +187,7 @@ def unit():
           all(isinstance(s, float) for s in share.values())
           and abs(share['X'] - 0.5 / LONG) < 1e-3 and abs(share['Y'] - 0.30) < 1e-3
           and share['T'] == 1.0 and share['Z'] == 1.0
-          and all(v.get('coupled_share_floor') == 0.25 for v in copper.values()),
+          and all(v.get('coupled_share_floor') == 0.10 for v in copper.values()),
           str(share))
     along = {k: v.get('alongside') for k, v in copper.items() if not v['coupled']}
     check('alongside obeys the same two floors: the sliver runs alongside for '
@@ -218,7 +218,7 @@ def unit():
         old = quiet(measure_pair_copper, pcb, pairs, results, lambda _p: (WIDTH, GAP))
     finally:
         dpc.COUPLED_SHARE_FLOOR = saved
-    check('negative control: with no share floor the sliver and 24% read coupled, '
+    check('negative control: with no share floor the sliver and 9% read coupled, '
           'the sub-pitch pair still does not',
           old['X']['coupled'] and old['B']['coupled'] and not old['Z']['coupled'],
           str({k: v['coupled'] for k, v in old.items()}))
@@ -249,11 +249,11 @@ def end_to_end():
     for r in reps:
         c = r['copper']
         length = max(c['length_p_mm'], c['length_n_mm'])
-        ok = (c.get('coupled_share_floor') == 0.25
+        ok = (c.get('coupled_share_floor') == 0.10
               and isinstance(c.get('coupled_share'), float)
               and abs(c['coupled_share'] - min(1.0, c['coupled_mm'] / length)) < 1e-3
               and c['coupled'] == (c['coupled_mm'] >= c['coupled_floor_mm'] - 1e-9
-                                   and c['coupled_share'] >= 0.25 - 1e-3))
+                                   and c['coupled_share'] >= 0.10 - 1e-3))
         check(f"end to end: {r['pair']}'s copper record carries coupled_share "
               f"and its verdict follows both floors", ok,
               str({k: c.get(k) for k in ('coupled_mm', 'coupled_share',

@@ -177,9 +177,12 @@ ALONGSIDE_GAP_MM = 1.0
 #: the pair to read COUPLED, on top of the one-pitch floor
 #: (`coupled_floor_mm`). The pitch alone let a sliver pass on any length: a
 #: 21.5 mm pair carrying 0.5 mm coupled read 'coupled', kept its routed
-#: credit and its #521 protection. A hybrid's coupled middle (1.4 mm of a
-#: 3 mm pair) is still well above it.
-COUPLED_SHARE_FLOOR = 0.25
+#: credit and its #521 protection. 10% catches such slivers and spares a short
+#: pair whose fan-in from far-apart pads is most of its length (a USB pair
+#: coupled over a quarter of it); over the corpus's routed pairs it reads 62 of
+#: 1008 that pass the pitch as uncoupled. A hybrid's coupled middle (1.4 mm of
+#: a 3 mm pair) is well above it.
+COUPLED_SHARE_FLOOR = 0.10
 
 
 def coupled_floor_mm(track_width: float, gap: float) -> float:

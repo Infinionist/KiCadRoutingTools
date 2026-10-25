@@ -724,7 +724,7 @@ the GUI diff tab gets the same answer:
   names it with what does ship:
 
   ```
-  Not coupled:   1 pair(s) routed whose shipped copper is not coupled (#1303: under one pitch or 25% of the pair's length, #1429; not credited as routed; protected only while the members still run alongside, #1361): /DRAM/DRAM_DQS0 (0.000mm coupled of 21.081mm (0.0%); P on F.Cu/In2.Cu, N on B.Cu/F.Cu; skew 4.510mm; 0.000mm alongside within 1mm, not protected)
+  Not coupled:   1 pair(s) routed whose shipped copper is not coupled (#1303: under one pitch or 10% of the pair's length, #1429; not credited as routed; protected only while the members still run alongside, #1361): /DRAM/DRAM_DQS0 (0.000mm coupled of 21.081mm (0.0%); P on F.Cu/In2.Cu, N on B.Cu/F.Cu; skew 4.510mm; 0.000mm alongside within 1mm, not protected)
   ```
 
   A `partial` pair with no coupled copper is flagged `no_coupled_trunk` and
@@ -736,7 +736,7 @@ the GUI diff tab gets the same answer:
   coupled also carries `alongside_mm`: KiCad's coupled length again, at any gap
   up to 1 mm (`diff_pair_custody.ALONGSIDE_GAP_MM`, the radius beyond which the
   seam re-ask's score counts copper as split), and its share `alongside_share`.
-  When that run passes the same two floors as `coupled` -- one pitch and 25% of
+  When that run passes the same two floors as `coupled` -- one pitch and 10% of
   the pair's length (#1429) -- and both members end terminal to terminal, the
   pair stays protected and its report says `"protected": true`. The case is the seam re-ask: on ulx3s it
   routes GPDI straight from the AC caps to the HDMI pins, P and N 0.8 mm apart

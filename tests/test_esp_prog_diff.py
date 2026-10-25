@@ -72,14 +72,7 @@ def main():
         # the whole downstream chain FileNotFoundErrors -- which is the bug.
         diff_out = _tmp("esp_prog_diff_")
         txt = _run(["py_router/route_diff.py", BOARD, diff_out, "--nets", *NETS, *DIFF_GEOM], args.verbose)
-        # #1429: the coupled router routed both members off their pads -- the
-        # #166 escape -- whether or not the shipped coupled run covers 25% of
-        # the pair's length. This short pair fans in from pads far apart and
-        # its coupled run is ~25% of it, so it may read 'uncoupled'
-        # (uncoupled_diff_pairs); a blocked escape is 'failed' either way.
-        coupled = (('"routed_diff_pairs": ["/D"]' in txt
-                    or '"uncoupled_diff_pairs": ["/D"]' in txt)
-                   and '"failed": 0' in txt)
+        coupled = '"routed_diff_pairs": ["/D"]' in txt and '"failed": 0' in txt
         if not coupled:
             fails.append("route_diff did not coupled-route /D_P//D_N "
                          "(source escape blocked -- issue #166)")
