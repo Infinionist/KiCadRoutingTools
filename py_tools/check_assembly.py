@@ -36,7 +36,9 @@ with a member moved vs --baseline (see PAD ON ANOTHER PART'S COPPER, #1266;
 armed by --baseline like the courtyard gate) OR two of one part's own pads
 touching on two different real nets, KiCad's shorting_items (see OWN PADS
 TOUCHING, #1306; with --baseline a pair the baseline's footprint already had
-does not gate).
+does not gate) OR a pad or footprint inside a rule area that forbids it,
+an item the --baseline did not have (see IN A RULE AREA THAT FORBIDS IT,
+#1451; report-only without --baseline).
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -282,6 +284,7 @@ def main():
     moved_refs = None
     base_pile = False
     own_pad_inherited = None
+    rule_inherited = None
     if args.baseline:
         try:
             base_pcb = parse_kicad_pcb(args.baseline)
@@ -327,6 +330,9 @@ def main():
             (r['ref'], r['index_a'], r['index_b'])
             for r in legality.own_pad_channel(base_pcb)['own_pad_contact_rows']
             if r['short']}
+        # #1451: the rule-area items the baseline already had.
+        rule_inherited = {tuple(r) for r in legality.rule_area_item_findings(
+            base_pcb, args.baseline)['rule_area_items']}
 
     print(f"Assembly audit of {args.board} (clearance {clearance}):")
     if dup_refs:
@@ -1001,6 +1007,29 @@ def main():
         if len(own_contacts) > 20:
             print(f"    ... and {len(own_contacts) - 20} more (--json lists "
                   f"every one)")
+    # #1451, the THIRTEENTH: a pad or footprint inside a rule area that
+    # forbids it (KiCad: items_not_allowed), board-level or footprint-owned
+    # -- an RF module's antenna keep-out. A row GATES when the --baseline did
+    # not have it; without one it is REPORT-ONLY, because a pristine board
+    # ships such items (a module's own paste pads inside its own area).
+    rule_items = leg.get('rule_area_items') or []
+    rule_gating = [r for r in rule_items if rule_inherited is not None
+                   and tuple(r) not in rule_inherited]
+    if rule_items:
+        print(f"  IN A RULE AREA THAT FORBIDS IT ({len(rule_items)} item(s), "
+              f"KiCad: items_not_allowed; {len(rule_gating)} GATE"
+              + (" -- an item the --baseline did not have"
+                 if rule_inherited is not None
+                 else "; REPORT-ONLY: pass --baseline <the board the run "
+                      "started from> to gate")
+              + ")" + (" -- NOT BUILDABLE" if rule_gating else ''))
+        for r in (rule_gating + [r for r in rule_items if r not in rule_gating])[:20]:
+            print(f"    {r[2]} {r[3]} in '{r[0] or 'rule area'}'"
+                  + (f" of {r[1]}" if r[1] else ' (board level)')
+                  + ("  baseline's own" if rule_inherited is not None
+                     and r not in rule_gating else ''))
+        if len(rule_items) > 20:
+            print(f"    ... and {len(rule_items) - 20} more (--json lists every one)")
     # #1250, the NINTH: a test point a move left under another part's body
     # (`tp_gating`, above). #1255, the TENTH: a body inside the body-to-edge
     # band the intent DECLARES (`edge_band_gating`, empty when undeclared).
@@ -1009,7 +1038,7 @@ def main():
                          or courtyard_gating or off_outline_pads or mating
                          or graphic_gating
                          or pin_hits or tp_gating or edge_band_gating
-                         or own_gating)
+                         or own_gating or rule_gating)
     verdict = 'NOT BUILDABLE' if not_buildable else 'buildable (blocking 0)'
     print(f"  VERDICT: {verdict}")
 
@@ -1202,6 +1231,11 @@ def main():
                                      for r in own_gating],
             'own_pad_contacts': own_contacts,
             'own_pad_basis': leg.get('own_pad_basis'),
+            # #1451: pads and footprints in a rule area forbidding them --
+            # every row, and the gating ones (None without --baseline).
+            'rule_area_items': rule_items,
+            'rule_area_gating': (rule_gating if rule_inherited is not None
+                                 else None),
             # #1031: pads in a board rule-area keep-out band -- the same
             # non-gating contract as the two off-outline channels.
             'oob_keepout_copper_count': leg.get('oob_keepout_copper_count', 0),

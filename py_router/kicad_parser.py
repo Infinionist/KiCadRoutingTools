@@ -875,7 +875,7 @@ class BoardInfo:
     # inside the panel frame -- dropping it outright let the router lay copper
     # straight across the milled gap between the two keyboard halves (85 items).
     board_edge_contours: List[List[Tuple[float, float]]] = field(default_factory=list)
-    keepouts: List[dict] = field(default_factory=list)  # Keep-out rule areas: {polygon, layers:set, tracks_allowed, vias_allowed, copper_pour_allowed, name}
+    keepouts: List[dict] = field(default_factory=list)  # Keep-out rule areas: {polygon, layers:set, tracks_allowed, vias_allowed, copper_pour_allowed, pads_allowed, footprints_allowed, owner, name}
     # Smallest copper clearance any routing step actually used on this board this
     # run -- e.g. a fine-pitch tap that escalated below the nominal --clearance.
     # None until a step records one. Routers fold this into the .kicad_pro DRC
@@ -6834,7 +6834,16 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
 
 
 def _iter_zone_blocks(content: str):
-    """Yield the inner body of each top-level ``(zone ...)`` block.
+    """Yield `(body, in_footprint)` for each ``(zone ...)`` block
+    (`_iter_zone_spans` without the offset)."""
+    for _at, body, in_footprint in _iter_zone_spans(content):
+        yield body, in_footprint
+
+
+def _iter_zone_spans(content: str):
+    """Yield `(offset, body, in_footprint)` for each ``(zone ...)`` block: the
+    offset of its opening paren in `content`, which names the footprint block
+    a footprint-owned zone sits in (`extract_keepouts`).
 
     Zones are at the top level, indented with a single tab. Uses ``\\r?\\n`` to
     handle both Unix and Windows line endings. Each yielded string is the
@@ -6865,7 +6874,7 @@ def _iter_zone_blocks(content: str):
         body_start = open_idx + len('(zone')
         if zone_end <= body_start:
             continue
-        yield content[body_start:zone_end], in_footprint
+        yield open_idx, content[body_start:zone_end], in_footprint
 
 
 # --- Zone outlines as pcbnew loads them ---------------------------------------
@@ -7589,17 +7598,24 @@ def pad_joins_zone(pad, zone) -> bool:
 def extract_keepouts(content: str) -> List[dict]:
     """Extract keep-out rule areas (zones with a (keepout ...) clause and no net fill).
 
-    These define regions where tracks, vias and/or zone fill are not allowed
-    — e.g. an antenna-flange RF clearance. Returns a list of dicts:
+    These define regions where tracks, vias, zone fill, pads and/or
+    footprints are not allowed — e.g. an antenna-flange RF clearance. Returns
+    a list of dicts:
         {polygon: [(x,y),...], layers: set(layer_names),
          tracks_allowed: bool, vias_allowed: bool, copper_pour_allowed: bool,
-         in_footprint: bool, name: str}
+         pads_allowed: bool, footprints_allowed: bool,
+         in_footprint: bool, owner: str, name: str}
+    `owner` is the key (as `parse_kicad_pcb` names it, `iter_footprint_blocks`)
+    of the footprint a footprint-owned area sits in, '' for a board-level one.
+    A pad or a footprint inside an area forbidding it is KiCad's
+    `items_not_allowed` (#1451, `legality.rule_area_item_findings`).
     `name` is the area's `(name ...)` ('' when it has none): a .kicad_dru
     condition names the area it restricts (`A.intersectsArea('corridor')`),
     and an area that allows everything can still be one (net_keepouts).
     """
     keepouts = []
-    for zc, in_footprint in _iter_zone_blocks(content):
+    spans = None
+    for zone_at, zc, in_footprint in _iter_zone_spans(content):
         # The keepout clause holds nested sub-clauses, e.g.
         #   (keepout (tracks not_allowed) (vias not_allowed) (pads allowed) ...)
         # so capture its full balanced-paren body rather than just the first ).
@@ -7623,6 +7639,13 @@ def extract_keepouts(content: str) -> List[dict]:
         # zone fill, splitting planes into islands -- the fill model must see
         # them or it grades keep-out-split planes as one piece.
         copper_pour_allowed = 'copperpour not_allowed' not in ko_body
+        pads_allowed = 'pads not_allowed' not in ko_body
+        footprints_allowed = 'footprints not_allowed' not in ko_body
+        owner = ''
+        if in_footprint:
+            if spans is None:
+                spans = [(s0, e0, key) for s0, e0, _t, _r, key in iter_footprint_blocks(content)]
+            owner = next((key for s0, e0, key in spans if s0 <= zone_at < e0), '')
 
         # Layers: (layers "F.Cu" "In1.Cu" ...) or single (layer "F.Cu").
         # v5/v6 write tokens UNQUOTED ((layers F&B.Cu)) -- accept both (#369 A5).
@@ -7666,7 +7689,9 @@ def extract_keepouts(content: str) -> List[dict]:
         keepouts.append({'polygon': polys[0], 'holes': polys[1:], 'layers': layers,
                          'tracks_allowed': tracks_allowed, 'vias_allowed': vias_allowed,
                          'copper_pour_allowed': copper_pour_allowed,
-                         'in_footprint': in_footprint,
+                         'pads_allowed': pads_allowed,
+                         'footprints_allowed': footprints_allowed,
+                         'in_footprint': in_footprint, 'owner': owner,
                          'name': nm.group(1).replace('\\"', '"') if nm else ''})
     return keepouts
 

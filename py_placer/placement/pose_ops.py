@@ -78,7 +78,9 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
                  'graphic_pad_conflicts', 'graphic_pad_stack_count',
                  'pad_stack_count',
                  # #1306: one footprint's own pads touching on two nets.
-                 'own_pad_short_count')
+                 'own_pad_short_count',
+                 # #1451: a pad or footprint in a rule area forbidding it.
+                 'rule_area_item_count')
 
 #: The MAGNITUDES, and they are not a nicety: a count arm alone accepts a
 #: request that keeps the tally and deepens the damage. Measured on the
@@ -100,10 +102,12 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
 #: #1306: a `["U1.1", "U1.2"]` pair of one footprint's pads shorted.
 #: #1385: `[a, b]` courtyard pairs KiCad reports as errors, when the project
 #: declares `courtyards_overlap` an error (`courtyard_error_pairs`).
+#: #1451: `[ref, area]`, a part with a pad or its courtyard in a rule area
+#: that forbids it (`rule_area_item_pairs`).
 PAIR_KEYS = ('pad_conflict_pairs', 'hole_conflict_pairs',
              'graphic_pad_conflict_pairs', 'graphic_pad_stack_pairs',
              'pad_stack_pairs', 'own_pad_short_pairs',
-             'courtyard_error_pairs')
+             'courtyard_error_pairs', 'rule_area_item_pairs')
 
 MAGNITUDE_KEYS = ('pad_shortfall', 'oob_pad_amount', 'pad_edge_shortfall',
                   'oob_keepout_copper_amount',
@@ -128,7 +132,10 @@ LEGAL_SCOPE = ('pad-pad clearance', 'hole-hole clearance', 'pad copper vs the '
                "one footprint's own pads touching on two different real nets "
                "(KiCad's shorting_items; #1306)",
                "a NEW courtyard overlap pair, when the project declares "
-               "courtyards_overlap an error (#1385)")
+               "courtyards_overlap an error (#1385)",
+               "pads and courtyards inside a rule area, board-level or "
+               "footprint-owned, whose (pads not_allowed) / (footprints "
+               "not_allowed) forbids them (KiCad's items_not_allowed; #1451)")
 LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
                     '(disclosed as graphic_edge_shortfall_refs, not gated)',
                     'footprint copper the parser does not model: pad-less '
@@ -137,8 +144,8 @@ LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
                     'footprint graphic copper on a board with no outline, and '
                     'on a part that changed side in memory (listed as '
                     'no-outline / moved-side in oob_graphic_copper_unmeasured)',
-                    'rule areas a footprint owns (listed in '
-                    'keepout_copper_unmeasured)',
+                    'the track band of rule areas a footprint owns (listed '
+                    'in keepout_copper_unmeasured)',
                     'solder paste and mask openings', 'component bodies, and '
                     'courtyards unless the project declares courtyards_overlap '
                     'an error', 'routing', 'zone fill',
@@ -165,7 +172,8 @@ SUMMARY_LISTS = ('pad_clearance_required', 'worst',
                  'keepout_copper_unmeasured_after', 'pad_stack_pairs_after',
                  'graphic_pad_conflict_pairs_after',
                  'graphic_pad_stack_pairs_after', 'graphic_pad_rows_after',
-                 'graphic_pad_unmeasured_after', 'own_pad_short_pairs_after')
+                 'graphic_pad_unmeasured_after', 'own_pad_short_pairs_after',
+                 'rule_area_items_after')
 
 #: ...and the lists inside each pad-edge grade (`pad_edge_before/_after`).
 PAD_EDGE_LISTS = ('findings', 'unmeasured', 'rules_unmeasured')
@@ -676,7 +684,8 @@ PAIR_OF = {'pad_conflicts': 'pad_conflict_pairs',
            'graphic_pad_conflicts': 'graphic_pad_conflict_pairs',
            'graphic_pad_stack_count': 'graphic_pad_stack_pairs',
            'pad_stack_count': 'pad_stack_pairs',
-           'own_pad_short_count': 'own_pad_short_pairs'}
+           'own_pad_short_count': 'own_pad_short_pairs',
+           'rule_area_item_count': 'rule_area_item_pairs'}
 
 
 def regrade_refusal(before: Dict, after: Dict, bad: List[str],
@@ -763,6 +772,8 @@ def _legality_row(before: Dict, after: Dict) -> Dict:
     # #1306: which of one footprint's own pads are shorted together.
     row['own_pad_short_pairs_after'] = after.get('own_pad_short_pairs')
     row['own_pad_basis'] = after.get('own_pad_basis')
+    # #1451: which pads and footprints sit in a rule area forbidding them.
+    row['rule_area_items_after'] = after.get('rule_area_items')
     # #1385: courtyard pairs KiCad reports as errors (project severity error).
     row['courtyard_error_pairs_before'] = before.get('courtyard_error_pairs')
     row['courtyard_error_pairs_after'] = after.get('courtyard_error_pairs')
