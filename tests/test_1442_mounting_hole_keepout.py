@@ -5,9 +5,10 @@ KiCad checks a mounting hole against the ordinary hole clearance only, so
 route.py laid +5V and signal tracks 0.10-0.25 mm from holes whose M3 head
 covers 1.3 mm past the edge, and no checker saw it.
 
-  1. mounting_holes: a footprint of 9 pads or fewer, all drilled 2.0 mm or
-     wider, none on a signal net, is a hole; a via-sized drill, a signal pad
-     and a ground-tied hole are told apart.
+  1. mounting_holes: a footprint that is ONE round hole (9 pads or fewer, all
+     round drills of 2.0 mm or wider at one position, none on a signal net)
+     is a hole; a via-sized drill, a signal pad, a ground-tied hole, a milled
+     slot and a part of several holes (a stabilizer) are told apart.
   2. check_mounting_holes: exit 1, naming the hole and the nets, when another
      net's track or via is inside the ring; exit 0 with the track outside it
      or on the hole's own net.
@@ -60,6 +61,30 @@ def hole(rb, ref, x, y, drill=3.2, net=''):
         '    %s\n  )' % (rb._uid(), x, y, ref, rb._uid(), pad))
 
 
+def multi_hole(rb, ref, x, y, holes):
+    """A footprint of several NPTH holes: [(dx, dy, drill)] -- a keyboard
+    stabilizer's shape, which takes no screw."""
+    pads = ' '.join('(pad "" np_thru_hole circle (at %s %s) (size %s %s) '
+                    '(drill %s) (layers "*.Cu" "*.Mask") (uuid "%s"))'
+                    % (dx, dy, d, d, d, rb._uid()) for dx, dy, d in holes)
+    rb.items.append(
+        '  (footprint "synth:STAB" (layer "F.Cu") (uuid "%s") (at %s %s)\n'
+        '    (property "Reference" "%s" (at 0 -4 0) (layer "F.SilkS") '
+        '(uuid "%s")\n      (effects (font (size 0.5 0.5) (thickness 0.1))))\n'
+        '    %s\n  )' % (rb._uid(), x, y, ref, rb._uid(), pads))
+
+
+def slot(rb, ref, x, y, w, h):
+    """A one-pad footprint whose drill is a milled slot (drill oval w h)."""
+    rb.items.append(
+        '  (footprint "synth:SLOT" (layer "F.Cu") (uuid "%s") (at %s %s)\n'
+        '    (property "Reference" "%s" (at 0 -4 0) (layer "F.SilkS") '
+        '(uuid "%s")\n      (effects (font (size 0.5 0.5) (thickness 0.1))))\n'
+        '    (pad "" np_thru_hole oval (at 0 0) (size %s %s) (drill oval %s %s) '
+        '(layers "*.Cu" "*.Mask") (uuid "%s"))\n  )'
+        % (rb._uid(), x, y, ref, rb._uid(), w, h, w, h, rb._uid()))
+
+
 def write(rb, path):
     with open(path, 'w', encoding='utf-8', newline='\n') as fh:
         fh.write(rb.text())
@@ -89,9 +114,13 @@ def main():
         hole(rb, 'H3', 50, 10, net='GND')            # plated, ground-tied
         hole(rb, 'H4', 10, 30, drill=0.9)            # a via-sized drill
         hole(rb, 'H5', 30, 30, net='+5V')            # a signal pad
+        multi_hole(rb, 'S1', 45, 30, [(-6, 0, 3.05), (6, 0, 3.05),
+                                      (-6, 7, 3.99), (6, 7, 3.99)])  # a stabilizer
+        slot(rb, 'S2', 52, 20, 6.0, 2.4)             # a milled slot
         p = write(rb, os.path.join(tmp, 'holes.kicad_pcb'))
         found = {h.ref: h for h in mounting_holes(parse(p))}
-        ok('M3, M2 and the ground-tied hole are mounting holes',
+        ok('M3, M2 and the ground-tied hole are mounting holes; the via-sized '
+           'drill, the signal pad, the stabilizer and the slot are not',
            sorted(found) == ['H1', 'H2', 'H3'], str(sorted(found)))
         ok('the ground-tied hole carries its net', bool(found['H3'].nets))
         ok('the ring is 0.4 x the drill',

@@ -773,8 +773,10 @@ does not have, or a layer it does not have.
 optional `--ring MM`) writes one area per mounting hole instead of a shape: its
 screw-head ring, 0.4 x the drill past the hole's edge (about an ISO 7380 head,
 for every metric size), named `<name>_<ref>` and forbidding `tracks vias`. A
-mounting hole is a footprint of at most 9 pads, every one drilled 2.0 mm or
-wider and none on a signal net. A hole whose pad carries a net (a ground ring)
+mounting hole is a footprint that is ONE round hole: at most 9 pads, every one
+a round drill of 2.0 mm or wider, all at one position, none on a signal net (a
+milled slot, or a part of several holes such as a keyboard stabilizer, is not
+one). A hole whose pad carries a net (a ground ring)
 gets no area, since its own copper has to reach it. The router and the plane
 steps honour the areas like any other; [`check_mounting_holes.py`](#mounting-hole-copper-check_mounting_holespy)
 grades the result.

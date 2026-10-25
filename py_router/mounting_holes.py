@@ -48,24 +48,44 @@ class MountingHole(NamedTuple):
         return override if override is not None else RING_PER_DRILL * self.drill
 
 
+def _hole_centre(p) -> Tuple[float, float]:
+    """Where a pad's drill is, which is not always where its copper is (an
+    offset drill)."""
+    return (p.hole_x if p.hole_x is not None else p.global_x,
+            p.hole_y if p.hole_y is not None else p.global_y)
+
+
+def _round_drill(p) -> bool:
+    """A round hole, not a milled slot (``(drill oval w h)``)."""
+    w = getattr(p, 'drill_w', 0.0) or 0.0
+    h = getattr(p, 'drill_h', 0.0) or 0.0
+    return w <= 0 or h <= 0 or abs(w - h) < 1e-6
+
+
 def mounting_holes(pcb) -> List[MountingHole]:
-    """Every footprint whose pads are all drills of MOUNT_HOLE_MIN_DRILL or
-    more and none of which carries a signal net (none, ``unconnected-*`` or a
-    ground-named net), with at most MOUNT_HOLE_MAX_PADS pads."""
+    """Every footprint that is ONE round screw hole: at most
+    MOUNT_HOLE_MAX_PADS pads, every one a ROUND drill of MOUNT_HOLE_MIN_DRILL
+    or more, all at one position (a hole drawn as front and back pads is one
+    hole), none on a signal net (none, ``unconnected-*`` or a ground-named
+    net). A milled slot or cut-out is not a screw hole, and neither is a part
+    whose several holes take no screw (a keyboard stabilizer's four, a bracket
+    of mixed holes)."""
     out = []
     for ref, fp in sorted(pcb.footprints.items()):
         pads = fp.pads
         if not pads or len(pads) > MOUNT_HOLE_MAX_PADS:
             continue
-        if not all((p.drill or 0.0) >= MOUNT_HOLE_MIN_DRILL for p in pads):
+        if not all((p.drill or 0.0) >= MOUNT_HOLE_MIN_DRILL and _round_drill(p)
+                   for p in pads):
+            continue
+        centres = [_hole_centre(p) for p in pads]
+        if any(math.hypot(x - centres[0][0], y - centres[0][1]) > 0.01
+               for x, y in centres[1:]):
             continue
         if any(not _NO_SIGNAL_NET.match(p.net_name or '') for p in pads):
             continue
-        # The hole is where the drill is, which is not always where the
-        # copper is (an offset drill).
         p0 = max(pads, key=lambda p: p.drill)
-        hx = p0.hole_x if p0.hole_x is not None else p0.global_x
-        hy = p0.hole_y if p0.hole_y is not None else p0.global_y
+        hx, hy = _hole_centre(p0)
         out.append(MountingHole(ref, hx, hy, max(p.drill for p in pads),
                                 frozenset(p.net_id for p in pads if p.net_id)))
     return out
