@@ -40,8 +40,7 @@ sys.path.insert(0, TESTS_DIR)
 
 from run_utils import evidence, run_step, tool          # noqa: E402
 from check_drc import point_to_pad_distance              # noqa: E402
-from kicad_parser import (chamfered_pad_from_text,       # noqa: E402
-                          chamfered_rect_polygon, parse_kicad_pcb)
+from kicad_parser import parse_kicad_pcb                 # noqa: E402
 
 RUN_ALL_TIMEOUT = 600
 FAILS = []
@@ -157,6 +156,11 @@ def t_parse(board):
 
 def t_outline():
     print('B. chamfered_rect_polygon')
+    try:
+        from kicad_parser import chamfered_pad_from_text, chamfered_rect_polygon
+    except ImportError as e:
+        check('the chamfered-outline builders exist', False, str(e))
+        return
     one = chamfered_rect_polygon(0, 0, 2.0, 1.0, 0.0, ['top_left'], 0.2, 0.0)
     check('one sharp chamfered corner: five vertices, the cut 0.2 * min(w, h)',
           same_ring(one, [(-1.0, -0.3), (-0.8, -0.5), (1.0, -0.5), (1.0, 0.5), (-1.0, 0.5)]),
@@ -216,10 +220,12 @@ def t_route(d, board):
     segs = [s for s in pcb.segments if s.net_id == pad.net_id]
     check('the net is routed', bool(segs))
     ends = [(x, y) for s in segs for x, y in ((s.start_x, s.start_y), (s.end_x, s.end_y))]
-    near = min(ends, key=lambda p: point_to_pad_distance(p[0], p[1], pad), default=None)
-    reach = point_to_pad_distance(near[0], near[1], pad) if near else None
-    check('the shipped track reaches the pad copper', reach is not None and reach <= 1e-6,
-          f'nearest track end {near} is {reach} mm off the copper')
+    # Graded on the octagon itself, not on the parser's model of it: the pad
+    # sits at the origin, so its copper is |x|, |y| <= 1.2, |x| + |y| <= 2.4 - CUT.
+    inside = [(x, y) for x, y in ends
+              if max(abs(x), abs(y)) <= 1.2 + 1e-6 and abs(x) + abs(y) <= 2.4 - CUT + 1e-6]
+    check('the shipped track reaches the pad copper', bool(inside),
+          f'track ends {ends}; none on the octagon')
     run_step([tool('check_drc.py'), out])
     run_step([tool('check_connected.py'), out])
     print('  PASS check_drc and check_connected pass')
