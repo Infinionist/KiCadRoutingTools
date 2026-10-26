@@ -36,9 +36,11 @@ or `--ring MM` -- named `<name>_<ref>` and forbidding tracks and vias (the pour
 stays allowed). A hole whose pad carries a net (a ground ring under a plated
 hole) gets none: its own copper has to reach it. KiCad's `unconnected-*` net of
 a pin left unconnected is not such a net, so that hole gets its area (pads stay
-allowed in it). `check_mounting_holes.py` grades the result.
+allowed in it). `check_mounting_holes.py` grades the result. With no hole to
+ring (none on the board, or every one carries a net) the output is the input,
+copied unchanged.
 
-Exit 0 written; 2 for an argparse usage error, a `--layers` entry that is not
+Exit 0 written (the output always exists); 2 for an argparse usage error, a `--layers` entry that is not
 a copper layer of the board, or a `--ref` the board does not have; 1 for a
 malformed `--polygon` (a point that is not X,Y, or fewer than 3 points).
 """
@@ -195,9 +197,6 @@ def main():
         if skipped:
             print(f"add_rule_area: left open, they carry a net: "
                   f"{', '.join(skipped)}")
-        if not areas:
-            print("add_rule_area: no mounting hole to write a ring for")
-            return 0
     else:
         pts, frame = area_points(args, pcb)
         areas = [(args.name, pts, frame)]
@@ -206,6 +205,12 @@ def main():
         from copy_board import copy_board
         with contextlib.redirect_stdout(io.StringIO()):
             copy_board(args.input_file, args.output_file)
+    if not areas:
+        # #1455: exit 0 means <out> exists, so a chain's next step can read it.
+        print("add_rule_area: no mounting hole to write a ring for; "
+              "the board is unchanged")
+        print(f"Wrote {args.output_file}")
+        return 0
     with open(args.output_file, encoding='utf-8', newline='') as f:
         text = f.read()
     for name, pts, frame in areas:

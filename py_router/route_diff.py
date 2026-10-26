@@ -5,7 +5,7 @@ Usage:
     python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*"
 
 All nets matching the patterns are treated as differential pairs (P/N pairs).
-Nets with _P/_N, P/N, or +/- suffixes will be paired and routed together.
+Nets with _P/_N, -P/-N, P/N, or +/- suffixes will be paired and routed together.
 Nets only pair within the same suffix convention (e.g. CLK+ pairs with CLK-,
 never with an unrelated CLK_N).
 
@@ -504,7 +504,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     """
     Route differential pairs using the Rust router.
 
-    All nets provided are treated as differential pairs. Nets with _P/_N, P/N, or +/-
+    All nets provided are treated as differential pairs. Nets with _P/_N, -P/-N, P/N, or +/-
     suffixes will be paired and routed together maintaining constant spacing.
 
     Args:
@@ -1069,7 +1069,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         global _NO_PAIRS_MATCHED
         _NO_PAIRS_MATCHED = True
         print(f"Error: No differential pairs found matching the patterns!")
-        print("  Differential pairs must have _P/_N, P/N, or +/- suffixes.")
+        print("  Differential pairs must have _P/_N, -P/-N, P/N, or +/- suffixes.")
         print(f"  Patterns provided: {net_names}")
         _write_json_out(json_out, _nothing_to_do_document('no_diff_pairs'))
         if return_results:
@@ -1082,6 +1082,17 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         diff_pair_net_ids.add(pair.n_net_id)
 
     print(f"Found {len(diff_pairs)} differential pair(s)")
+    # #1456: a selected net that formed no pair is not routed here; say so
+    # rather than dropping it silently.
+    _paired = {nm for pair in diff_pairs.values()
+               for nm in (pair.p_net_name, pair.n_net_name)}
+    _board_names = {n.name for n in pcb_data.nets.values() if n.name}
+    _unpaired = [nm for nm in dict.fromkeys(net_names)
+                 if nm in _board_names and nm not in _paired]
+    if _unpaired:
+        print(f"  {len(_unpaired)} selected net(s) formed no pair and are not "
+              f"routed: {', '.join(_unpaired[:10])}"
+              f"{f' (+{len(_unpaired) - 10} more)' if len(_unpaired) > 10 else ''}")
 
     # Per-pair polarity-swap policy (#279): only pairs matching
     # --polarity-swap-nets may have their P/N pad nets swapped. No patterns =
@@ -1231,7 +1242,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
 
     if not diff_pair_ids_to_route_set:
         print("Error: No differential pairs to route!")
-        print("  Ensure your net patterns match nets with _P/_N, P/N, or +/- suffixes.")
+        print("  Ensure your net patterns match nets with _P/_N, -P/-N, P/N, or +/- suffixes.")
         _write_json_out(json_out, _nothing_to_do_document('no_diff_pairs'))
         if return_results:
             return 0, 0, 0.0, {'results': [], 'all_swap_vias': [], 'exclusion_zone_lines': [], 'boundary_debug_labels': []}
@@ -2622,7 +2633,7 @@ Wildcard patterns supported:
   "Net-(U1*DQS*)"      - matches Net-(U1-DQS_P), Net-(U1-DQS_N), etc.
 
 All nets matching the patterns are treated as differential pairs.
-Nets with _P/_N, P/N, or +/- suffixes will be paired and routed together.
+Nets with _P/_N, -P/-N, P/N, or +/- suffixes will be paired and routed together.
 
 Examples:
   python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*"

@@ -70,7 +70,7 @@ python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*"
     --layers F.Cu In1.Cu In2.Cu B.Cu
 ```
 
-Nets with _P/_N, P/N, or +/- suffixes will be paired automatically.
+Nets with _P/_N, -P/-N, P/N, or +/- suffixes will be paired automatically.
 
 A `--nets` (or positional) pattern token may list several patterns separated by
 commas, e.g. `--nets "/DVI_CK_P,/DVI_CK_N"`; the token is split so each pattern

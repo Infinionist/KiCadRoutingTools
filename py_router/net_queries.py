@@ -2621,6 +2621,7 @@ def extract_diff_pair_base(net_name: str) -> Optional[Tuple[str, bool, str]]:
     Looks for common differential pair naming conventions:
     - name_P / name_N
     - nameP / nameN
+    - name-P / name-N, name.P / name.N
     - name+ / name-
     - name_t / name_c (true/complement, common for DDR; case-insensitive)
     - name_t_X / name_c_X (true/complement with channel suffix, e.g., DQS0_t_A)
@@ -2628,7 +2629,7 @@ def extract_diff_pair_base(net_name: str) -> Optional[Tuple[str, bool, str]]:
     - nameDP / nameDM, nameDPLUS / nameDMINUS (USB data lines)
 
     Returns (base_name, is_positive, style) or None if not a diff pair.
-    style identifies the suffix convention ('_t', '_P', 'P', '+', 'DP') - nets
+    style identifies the suffix convention ('_t', '_P', '-P', 'P', '+', 'DP') - nets
     only form a pair when both use the same convention, so e.g. /CLK+ does not
     pair with an unrelated /CLK_N net.
     """
@@ -2641,8 +2642,13 @@ def extract_diff_pair_base(net_name: str) -> Optional[Tuple[str, bool, str]]:
     # buries the polarity suffix (e.g. Net-(U12-USB_D+) ends in '+)'), so peel a
     # matching wrapper before applying the suffix rules (issue #91, bitaxe USB).
     is_auto_name = net_name.startswith('Net-(') and net_name.endswith(')')
+    # Index of the '-' separating <ref> from <pin> in a peeled auto-name, which
+    # is never a polarity separator: Net-(U1-P) / Net-(U1-N) are two pads of
+    # one part, not a pair (#1456). -1 = none.
+    ref_sep = -1
     if is_auto_name:
         net_name = net_name[5:-1]
+        ref_sep = net_name.find('-')
 
     # In a 'Net-(<ref>-<pin path>)' auto-name the pin path encodes the chip's
     # internal signal path, e.g. 'U12-GPIO19/U1RTS/.../USB_D-'. The diff marker
@@ -2656,6 +2662,7 @@ def extract_diff_pair_base(net_name: str) -> Optional[Tuple[str, bool, str]]:
         path = net_name.replace('{slash}', '/')
         if '/' in path:
             net_name = path.rsplit('/', 1)[-1]
+            ref_sep = -1
 
     # NOTE (issue #192): the DDR true/complement (_t_/_c_) rules are checked LAST,
     # AFTER the explicit polarity-suffix rules below (+/-, _P/_N, P/N, USB,
@@ -2692,6 +2699,12 @@ def extract_diff_pair_base(net_name: str) -> Optional[Tuple[str, bool, str]]:
         return (net_name[:-2], True, '_P')
     if net_name.endswith('_N'):
         return (net_name[:-2], False, '_P')
+
+    # -P/-N and .P/.N, the _P/_N convention with another separator (#1456:
+    # LVDS pairs named ADC_MISO-P / ADC_MISO-N).
+    if (len(net_name) > 2 and net_name[-1] in 'PN' and net_name[-2] in '-.'
+            and len(net_name) - 2 != ref_sep):
+        return (net_name[:-2], net_name[-1] == 'P', net_name[-2] + 'P')
 
     # Try P/N suffix without underscore. Accept a digit, underscore, OR uppercase
     # letter before the final P/N so SerDes/PCIe names pair (issue #151: TXP/TXN,

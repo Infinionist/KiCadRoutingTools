@@ -227,6 +227,15 @@ def main():
         r = py(adder, out, out, '--name', 'MOUNT', '--mounting-holes', accept=True)
         ok('a re-run replaces them', len(parse(out).board_info.keepouts) == 2
            and 'replaced 1 earlier area' in r.stdout, r.stdout[-200:])
+        # #1455: every hole carries a net -> exit 0 still writes the output.
+        src = os.path.join(tmp, 'own_net.kicad_pcb')
+        out = os.path.join(tmp, 'all_netted.kicad_pcb')
+        r = py(adder, src, out, '--name', 'MOUNT', '--mounting-holes', accept=True)
+        with open(src, 'rb') as a:
+            with open(evidence(out, 'the all-netted output'), 'rb') as b:
+                same = a.read() == b.read()
+        ok('with no hole to ring, the output is the input, unchanged',
+           same and 'no mounting hole' in r.stdout, r.stdout[-300:])
         py(adder, src, os.path.join(tmp, 'x.kicad_pcb'), '--name', 'M',
            '--mounting-holes', '--ref', 'H1', refuse='finds the holes itself', code=2,
            allow=('usage:',))
