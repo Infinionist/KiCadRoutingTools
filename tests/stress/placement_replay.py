@@ -53,7 +53,9 @@ SCRIPTS = {
     'judge_seeds': 'py_placer/judge_seeds.py',
 }
 #: place_simple options the replay sets itself.
-OWN = {'--seed': 1, '--seeds': 1, '--json': 1, '--jobs': 1, '--groups': 1, '--intent': 1}
+OWN = {'--seed': 1, '--seeds': 1, '--json': 1, '--jobs': 1, '--groups': 1, '--intent': 1,
+       '--scattered': 1, '--clustered': 1, '--anchored': 1,
+       '--clustered-seeds': 1, '--anchored-seeds': 1}
 
 
 def remapper(old_run: str, new_run: str):
@@ -94,7 +96,7 @@ def replay_prep(doc, old_run, work, src) -> dict:
 
 
 def split_place(argv):
-    """`(board, groups, intent, seeds, extra)` of a recorded place_simple argv."""
+    """`(board, groups, intent, extra)` of a recorded place_simple argv."""
     pos, extra, opts, it = [], [], {}, iter(argv)
     for tok in it:
         if tok in OWN:
@@ -105,7 +107,27 @@ def split_place(argv):
             extra.append(tok)
         else:
             pos.append(tok)
-    return pos[0], opts.get('--groups'), opts.get('--intent'), opts.get('--seeds'), extra
+    return pos[0], opts.get('--groups'), opts.get('--intent'), extra
+
+
+def recorded_starts(argv):
+    """`(seeds, flags)` of a recorded place_simple run: the seeds it placed
+    and the `--clustered-seeds` / `--anchored-seeds` that start each seed as
+    the run started it. A run without --seed(s) numbers its own starts
+    (6 scattered, then 6 clustered, by default), which an explicit seed list
+    would lose: every seed would start scattered."""
+    import place_simple
+    r = place_simple.build_parser().parse_args(argv)
+    if r.seeds or r.seed is not None:
+        seeds, cs, an = r.seeds or str(r.seed), r.clustered_seeds, r.anchored_seeds
+    else:
+        sc, cl, na = (place_simple.SCATTERED_SEEDS if r.scattered is None else r.scattered,
+                      place_simple.CLUSTERED_SEEDS if r.clustered is None else r.clustered,
+                      place_simple.ANCHORED_SEEDS if r.anchored is None else r.anchored)
+        seeds = f'0-{sc + cl + na - 1}'
+        cs, an = place_simple.start_lists(sc, cl, na)
+    return seeds, ((['--clustered-seeds', cs] if cs else [])
+                   + (['--anchored-seeds', an] if an else []))
 
 
 def _takes_value(flag):
@@ -119,8 +141,9 @@ def _takes_value(flag):
 
 def place(board_name, step, seeds, out_dir, src, modal, corpus) -> str:
     """Place the seeds; return the directory holding s<seed>.kicad_pcb/.json."""
-    board, groups, intent, rec_seeds, extra = split_place(step['argv'])
-    seeds = seeds or rec_seeds or '0-11'
+    board, groups, intent, extra = split_place(step['argv'])
+    rec_seeds, starts = recorded_starts(step['argv'])
+    seeds, extra = seeds or rec_seeds, starts + extra
     placed = os.path.join(out_dir, 'placed')
     if modal:
         cmd = [sys.executable, os.path.join(HERE, 'placement_ab', 'place_modal.py'),
