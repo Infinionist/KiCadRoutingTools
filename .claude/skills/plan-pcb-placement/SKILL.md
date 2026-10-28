@@ -921,7 +921,11 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
   by one big IC those route clearly better, on others the scattered ones do,
   and the judge takes whichever routes best.
   The run is 500 moves per movable part by default (`--moves N` sets the
-  total), roughly 2 s for 25 parts.
+  total), roughly 2 s for 25 parts. A seed may anneal several times
+  (restarts, the courtyard fallback, the face pass): place_simple names the
+  worst case up front, prints an estimate after each anneal's first tenth,
+  and its last line counts every anneal that ran -- read those before
+  waiting on a large board.
 - **Place 12 seeds (6 scattered, 6 clustered); judge the 6 the objective
   rates best.** place_simple ends by naming them: printed, and written to
   `wk/<run>/judge.json` (`judge`, in judging order; a seed that left a part

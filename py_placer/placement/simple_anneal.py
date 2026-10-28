@@ -1277,6 +1277,12 @@ def anneal(model, movable: List[str], *, moves: int = 11000,
                     f"cost {v['cur']:7.1f} overlap {v['ov']:6.2f} mm2 best {v['best'][0]:7.1f} "
                     f"accepted {v['window'][1] / max(1, v['window'][0]):.2f}")
                 v['window'] = [0, 0]
+                if not run.get('estimated'):
+                    # #1483: the first tenth's pace, for a board whose
+                    # anneal runs for minutes
+                    run['estimated'] = True
+                    log(f"estimate: about {(time.time() - t_start) * moves / max(1, run['done']):.0f} s "
+                        f"for this anneal ({moves} moves)")
 
     # A LONG seated part with no mating face may lie either way round along
     # its edge, and which way is one decision for the whole board: a 1x24

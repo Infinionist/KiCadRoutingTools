@@ -320,6 +320,14 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb preview.png \
   region or shape; its gap tree is a cost term that keeps it in one piece.
   The hints are soft terms; the intent's keep-outs and zones bind every part
   through the anneal's overlap term. Every weight is a flag (`--help`).
+- **How much it runs (#1483).** One seed anneals up to three times per pass
+  (a restart from a fresh start until one is legal), and the #1300 courtyard
+  fallback and the face pass are passes of their own. place_simple prints the
+  worst case before it starts ("up to N anneal(s) in all"), an estimate after
+  each anneal's first tenth of moves ("estimate: about S s for this anneal"),
+  and in its last line the kept run's moves with every anneal counted
+  ("N anneal(s), M moves in all, 3 front, 3 face"); the `--json` report
+  carries each one (`anneals`: pass, run, moves, seconds) and `moves_total`.
 - **A part that draws no courtyard** is seated on an estimated one (#1300,
   `body.estimated_courtyards`): its .Fab body, else its silk, else its pads,
   united with its pads -- what `check_assembly` grades it on -- with no

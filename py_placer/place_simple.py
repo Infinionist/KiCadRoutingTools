@@ -978,6 +978,14 @@ def _preview(a, argv) -> int:
     return 0
 
 
+def _pass_counts(passes):
+    """[(pass label, anneals)] in the order the passes ran."""
+    out = {}
+    for p in passes:
+        out[p['pass']] = out.get(p['pass'], 0) + 1
+    return list(out.items())
+
+
 def main(argv=None):
     ap = build_parser()
     a = ap.parse_args(argv)
@@ -1209,7 +1217,11 @@ def main(argv=None):
         close = [r for r in kp[0] if r not in too_big and tight_ok(r, st, mdl)]
         return ([r for r in kp[0] if r not in close],) + tuple(kp[1:])
 
-    def runs(st, mdl):
+    # every anneal this seed runs, kept or not (#1483): the log line and the
+    # report count them all, not only the kept run's
+    passes = []
+
+    def runs(st, mdl, label='front'):
         """The restarts on one state: `(kept, k)`, the run that left the
         fewest parts illegal -- (illegal refs, poses, res), the earlier on a
         tie -- and the last run's index."""
@@ -1222,6 +1234,8 @@ def main(argv=None):
             res = simple_anneal.anneal(mdl, movable, moves=moves, seed=seed,
                                        log=lambda s: print(f"  {s}"),
                                        repair=k == RESTARTS, seats=mdl.edge_seats)
+            passes.append({'pass': label, 'run': k + 1, 'moves': res['moves'],
+                           'seconds': res['seconds']})
             illegal = [r for r in movable if not ok(r, st, mdl)]
             if kept is None or len(illegal) < len(kept[0]):
                 kept = (illegal, {r: (st.parts[r].x, st.parts[r].y, st.parts[r].rot)
@@ -1236,6 +1250,12 @@ def main(argv=None):
         print("place_simple: nothing to place; the board is written as it is")
         k, kept = -1, ([], {}, {'moves': 0, 'reseated': [], 'stats': {}})
     else:
+        est = set(state.courtyard_estimates)
+        worst = (RESTARTS + 1) * (1 + (2 if est else 0)
+                                  + (1 if flip_ok else 0))
+        print(f"place_simple: {moves} moves per anneal, {RESTARTS + 1} anneal(s) per pass "
+              f"until one is legal; up to {worst} anneal(s) in all (the #1300 courtyard "
+              f"fallback{' and the face pass' if flip_ok else ''} included)")
         kept, k = runs(state, model)
         # #1300: an ESTIMATED courtyard is ours, not the board's. When the
         # runs leave a part no legal pose on the estimates, the part itself
@@ -1255,7 +1275,7 @@ def main(argv=None):
                   f"the board draws (#1300)")
             st2, mdl2, _m2, _n2 = build(pcb, src, doc, base, a, intent, blocks,
                                         set(fixed), estimate_skip=skip)
-            kept2, k2 = runs(st2, mdl2)
+            kept2, k2 = runs(st2, mdl2, 'fallback')
             if len(kept2[0]) < len(kept[0]):
                 state, model, kept, k, fallback = st2, mdl2, kept2, k2, sorted(skip)
     # a flippable part the front had no room for goes to the back, or makes
@@ -1291,7 +1311,7 @@ def main(argv=None):
             pcb2 = parse_kicad_pcb(src2)
             blocks2, _problems = floorplan.resolve_blocks(intent, pcb2, sources)
             st2, mdl2, _m2, _n2 = build(pcb2, src2, doc, base, a, intent, blocks2, set(fixed))
-            kept2, k2 = runs(st2, mdl2)
+            kept2, k2 = runs(st2, mdl2, 'face')
             kept2 = settle(st2, mdl2, kept2)
             after = outcome(st2, mdl2, kept2)
             better = after[:3] < before[:3]
@@ -1347,7 +1367,10 @@ def main(argv=None):
                          if o != r and P.sides & q.sides), default=(None, None))
         tight[r] = {'gap_mm': None if gap is None else round(gap, 4), 'neighbour': near}
     illegal = [r for r in illegal if r not in tight]
-    print(f"place_simple: annealed {res['moves']} moves in {t2 - t1:.1f} s; {_line(final)}")
+    print(f"place_simple: annealed {res['moves']} moves in {t2 - t1:.1f} s "
+          f"({len(passes)} anneal(s), {sum(p['moves'] for p in passes)} moves in all"
+          + (f", {', '.join(f'{n} {lab}' for lab, n in _pass_counts(passes))}"
+             if len(passes) > 1 else '') + f"); {_line(final)}")
     if res.get('repaired'):
         print("  NOTE: the last run never came clean; its overlaps were shoved apart where it stood")
     if res['reseated']:
@@ -1446,13 +1469,14 @@ def main(argv=None):
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'hints_saturated': saturated, 'template_keepout': tk, 'pad_overhang': wide,
               'template_off': off, 'faces': face_report,
-              'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
+              'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)},
+              'anneals': passes, 'moves_total': sum(p['moves'] for p in passes)}
     if a.json:
         json.dump(report, open(a.json, 'w', encoding='utf-8'), indent=1)
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal', 'tight',
                                            'refused', 'oversubscribed', 'claim_arity', 'floorplan',
-                                           'assembly', 'bga_field', 'template_off', 'decap_residual', 'hints_saturated', 'estimate_fallback', 'faces', 'fold', 'links', 'seconds')}))
+                                           'assembly', 'bga_field', 'template_off', 'decap_residual', 'hints_saturated', 'estimate_fallback', 'faces', 'fold', 'links', 'moves_total', 'seconds')}))
     return 4 if illegal or refused or model.edge_oversubscribed else 0
 
 
