@@ -587,6 +587,10 @@ in the vocabulary of `docs/floorplan-intent.md`:
   It draws each zone with its members' names and each keep-out. On a pile
   the frame crops to the pile, so give `--view` the intent's
   `envelope.rect`.
+- **To see where the groups go before writing a region:** `place_simple.py
+  ... --preview` places one seed and draws each group's box over it (with
+  `--draft-zones` written as draft `blocks[]`, never applied). It is a
+  review, not a step: the groups place the board.
 
 ### 3.5 Datasheet layouts (your judgement)
 

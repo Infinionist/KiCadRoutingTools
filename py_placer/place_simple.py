@@ -880,6 +880,16 @@ def build_parser():
                     help='with several seeds, how many run at once (default: one per '
                          'seed, at most 4)')
     ap.add_argument('--json', help='write the report here')
+    ap.add_argument('--preview', action='store_true',
+                    help='preview where each group goes (#1481): place ONE seed (--seed, '
+                         'default 0, from the anchored start) in a scratch directory, '
+                         'print each group\'s box and centre there, and draw OUT, a PNG '
+                         'of that board with the boxes as draft zones. Non-binding: no '
+                         'board is written and the intent is not changed')
+    ap.add_argument('--draft-zones', metavar='JSON', default=None,
+                    help='with --preview: also write those boxes as draft blocks[] '
+                         'to JSON, for the author to edit, check with check_floorplan '
+                         '--plan-only and paste into the intent; never applied')
     ap.add_argument('--plan-checked', action='store_true',
                     help='skip the plan check made before any seed: the plan was '
                          'checked already (a --seeds run checks it once and passes '
@@ -887,9 +897,101 @@ def build_parser():
     return ap
 
 
+def _preview(a, argv) -> int:
+    """`--preview` (#1481): place ONE seed -- `--seed` (default 0) from the
+    anchored start, what place_simple itself does -- into a scratch
+    directory, and report where each group of the groups file landed: its
+    box over its members' courtyards, on the basis a zone measures them
+    (`floorplan.zone_parts`), as the seed packed it -- `check_floorplan
+    --plan-only` then says which are tighter than a zone should be -- and
+    its centre. Printed, drawn (the seed's
+    board with the boxes as draft zones) to OUT, and with `--draft-zones`
+    written as draft `blocks[]`. Nothing else is written, and nothing reads
+    the draft back unless an author pastes it."""
+    import subprocess
+    import pose_score
+    from placement import floorplan
+    seed = 0 if a.seed is None else a.seed
+    groups = json.load(open(a.groups, encoding='utf-8'))['groups']
+    base = json.load(open(a.intent, encoding='utf-8'))
+    with tempfile.TemporaryDirectory() as td:
+        placed = os.path.join(td, 'preview.kicad_pcb')
+        # the same call, OUT the scratch board, one anchored seed
+        rest, skip, out_done = [], {'--preview': 0, '--draft-zones': 1, '--seed': 1,
+                                    '--json': 1, '--anchored-seeds': 1,
+                                    '--clustered-seeds': 1}, False
+        it = iter(argv)
+        for tok in it:
+            if tok in skip:
+                for _ in range(skip[tok]):
+                    next(it, None)
+            elif any(tok.startswith(k + '=') for k in skip):
+                continue
+            elif tok == a.out and not out_done:
+                rest.append(placed)
+                out_done = True
+            else:
+                rest.append(tok)
+        code = main(rest + ['--seed', str(seed), '--anchored-seeds', str(seed)])
+        if not os.path.exists(placed):
+            return code or 1
+        pcb = parse_kicad_pcb(placed)
+        parts = floorplan.zone_parts(pose_score.make_state(pcb, placed), pcb, placed)
+        blocks = []
+        print(f"place_simple --preview: where each group landed in seed {seed} "
+              f"(anchored start), non-binding")
+        for g in groups:
+            rs = [parts[r].rect() for r in g['refs'] if r in parts]
+            if not rs:
+                continue
+            x0, y0 = min(q[0] for q in rs), min(q[1] for q in rs)
+            x1, y1 = max(q[2] for q in rs), max(q[3] for q in rs)
+            zone = [round(v, 2) for v in (x0, y0, x1, y1)]
+            print(f"  {g['name']:16s} {len(rs):3d} part(s)  centre "
+                  f"({(zone[0] + zone[2]) / 2:.1f}, {(zone[1] + zone[3]) / 2:.1f})  "
+                  f"box {zone}")
+            blocks.append({'name': f"draft_{g['name']}", 'refs': list(g['refs']),
+                           'zone': zone,
+                           'why': f"draft from place_simple --preview: where seed {seed} "
+                                  f"put the group"})
+        if a.draft_zones:
+            with open(a.draft_zones, 'w', encoding='utf-8') as fh:
+                json.dump({'draft': True, 'source': f'place_simple --preview, seed {seed}',
+                           'blocks': blocks}, fh, indent=1)
+            print(f"  draft blocks[] -> {a.draft_zones} (not applied; edit, check with "
+                  f"check_floorplan.py --plan-only, then paste into the intent)")
+        doc = dict(base)
+        doc['blocks'] = list(base.get('blocks') or ()) + blocks
+        ipath = os.path.join(td, 'preview_intent.json')
+        json.dump(doc, open(ipath, 'w', encoding='utf-8'))
+        r = subprocess.run(
+            [sys.executable, '-X', 'utf8',
+             os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'py_tools',
+                          'render_placement.py'),
+             placed, '--intent', ipath, '--flat', '-o', a.out],
+            capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.exists(a.out):
+        print(f"place_simple: the preview render failed: {(r.stderr or r.stdout)[-400:]}",
+              file=sys.stderr)
+        return 1
+    print(f"  preview -> {a.out}")
+    return 0
+
+
 def main(argv=None):
     ap = build_parser()
     a = ap.parse_args(argv)
+    if a.draft_zones and not a.preview:
+        print("place_simple: --draft-zones is a --preview output", file=sys.stderr)
+        return 2
+    if a.preview:
+        if (a.seeds or '{seed}' in a.out or a.scattered is not None
+                or a.clustered is not None or a.anchored is not None):
+            print("place_simple: --preview places ONE seed (--seed, default 0, from the "
+                  "anchored start): OUT is the PNG to draw, and --seeds, {seed} and the "
+                  "start counts do not apply", file=sys.stderr)
+            return 2
+        return _preview(a, list(sys.argv[1:] if argv is None else argv))
     starts = [f for f, v in (('--scattered', a.scattered), ('--clustered', a.clustered),
                              ('--anchored', a.anchored)) if v is not None]
     if a.seed is None and not a.seeds and '{seed}' in a.out:

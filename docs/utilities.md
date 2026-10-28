@@ -279,7 +279,20 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
 python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
     --groups groups.json --intent intent.json --seeds 0-3 [--clustered-seeds 2-3] \
     [--jobs 4] --json 's{seed}.json'
+# where each group would go, non-binding (#1481): one anchored seed, nothing written
+python3 -X utf8 py_placer/place_simple.py board.kicad_pcb preview.png \
+    --groups groups.json --intent intent.json --preview [--seed 0] [--draft-zones draft.json]
 ```
+
+- **A preview before placing** (`--preview`, #1481). It places ONE seed --
+  `--seed`, default 0, from the anchored start -- in a scratch directory,
+  prints each group's box and centre there (over its members' courtyards, on
+  the basis a zone measures them), and draws OUT: that board, with the boxes
+  as draft zones. `--draft-zones` also writes them as draft `blocks[]` to
+  edit, check with `check_floorplan --plan-only` and paste into the intent;
+  nothing reads the draft back. No board is written, and the intent is not
+  changed. (The anchored start's own solve, unannealed, is no preview: on a
+  pile with nothing fixed it puts every group on the board's centre.)
 
 - **Inputs.** `--groups` is the groups file (`py_tools/check_groups.py`
   checks it): each group a set of parts kept together, with optional `near`,
