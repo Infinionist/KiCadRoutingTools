@@ -78,7 +78,12 @@ the best and copper within `CLOSE_COPPER` of it -- the run NOTEs them, and
 `--confirm close` (or `--confirm K` for the K best) routes those seeds again
 at full level (`--quick` taken off every route step) into `s<S>_full_route/`,
 `s<S>_full.kicad_pcb` and `s<S>_full.score.json`, and names the best of the
-confirmed seeds by the same key.
+confirmed seeds by the same key. `--confirm close` takes at most
+`CONFIRM_MAX` (4) seeds, the best of the close ones; when more are close,
+the NOTE and the confirming run name the ones it leaves out and the options
+that confirm every one (`--seeds <the close seeds> --confirm K`, #1473). The
+re-run routes its seeds at level 2 again before confirming them: no score
+on disk records the chain, intent and code it was routed with.
 
 Exit codes: 0 every seed scored; 4 a seed's chain wrote no board or its
 score could not be read (named); 2 nothing run: judge.json unreadable or
@@ -115,7 +120,8 @@ QUICK_SCRIPTS = ('route.py', 'route_diff.py')
 #: the full route per seed, so a gap inside that cannot rank them (#1383).
 CLOSE_BLOCKING = 1
 CLOSE_COPPER = 0.10
-#: `--confirm close` full-routes at most this many seeds (the best ones).
+#: `--confirm close` full-routes at most this many seeds (the best ones); the
+#: ones it leaves out are named, with the options that confirm them (#1473).
 CONFIRM_MAX = 4
 
 
@@ -307,6 +313,16 @@ def close_seeds(scored):
     return out
 
 
+def confirm_all(close, ranking):
+    """The options that confirm every close seed, where `--confirm close`
+    takes only the `CONFIRM_MAX` best of them: `--confirm K` when the close
+    seeds are the K best ranked, else `--seeds <them> --confirm K` (#1473)."""
+    k = len(close)
+    if ranking[:k] == close:
+        return f'--confirm {k}'
+    return f"--seeds {','.join(map(str, close))} --confirm {k}"
+
+
 def _line(res):
     if 'failed' in res:
         return f"FAILED: {res['failed']}"
@@ -336,7 +352,9 @@ def main(argv=None):
                     help="after the level-2 ranking, route these seeds again at the FULL level "
                          "and name the best of them: the K best ranked seeds, or `close`, the "
                          "best ones whose level-2 scores lie within the quick/full spread of "
-                         "the best's (at most 4). Level 2 cannot tell such seeds apart (#1383)")
+                         f"the best's (at most {CONFIRM_MAX}; the rest are named, with the "
+                         f"--seeds ... --confirm K that confirms them). Level 2 cannot tell such "
+                         f"seeds apart (#1383)")
     ap.add_argument('--jobs', type=int, default=1,
                     help='seeds routed at once (default 1: a judging route takes up to about '
                          '1.3 GB on a small board and 5 GB on a 350-part one)')
@@ -423,16 +441,21 @@ def main(argv=None):
         print(f"judge_seeds: best seed {scored[0]['seed']}: keep its placement "
               f"s{scored[0]['seed']}.kicad_pcb (never the --quick board)")
     close = close_seeds(scored)
+    ranking = [r['seed'] for r in scored]
+    # the close seeds `--confirm close` leaves out, past its cap
+    left = close[CONFIRM_MAX:] if a.confirm in (None, 'close') else []
+    capped = (f"--confirm close takes at most {CONFIRM_MAX}, the {CONFIRM_MAX} best of the "
+              f"{len(close)} close seeds, and leaves out {', '.join(map(str, left))} "
+              f"({confirm_all(close, ranking)} confirms every one)") if left else ''
     confirmed, best = [], (scored[0]['seed'] if scored else None)
     if scored and a.confirm is not None:
-        pick = (close[:CONFIRM_MAX] if a.confirm == 'close'
-                else [r['seed'] for r in scored][:int(a.confirm)])
+        pick = close[:CONFIRM_MAX] if a.confirm == 'close' else ranking[:int(a.confirm)]
         if len(pick) < 2 and a.confirm == 'close':
             print('judge_seeds: --confirm close: no other seed lies within the quick/full '
                   'spread of the best; nothing to confirm')
         else:
             print(f"judge_seeds: confirming seed(s) {', '.join(map(str, pick))} with a full "
-                  f"route (--quick taken off every route step)")
+                  f"route (--quick taken off every route step)" + (f": {capped}" if capped else ''))
             with ThreadPoolExecutor(max_workers=max(1, a.jobs)) as pool:
                 full = list(pool.map(lambda s: judge_seed(run, s, steps, a.intent, lock,
                                                           baseline, full=True), pick))
@@ -450,11 +473,14 @@ def main(argv=None):
                     f" (level 2 had put seed {scored[0]['seed']} first)"
                 print(f"judge_seeds: best seed {best} by the full route{note}: keep its "
                       f"placement s{best}.kicad_pcb")
+                if capped:
+                    print(f"  NOTE: best of the confirmed seeds only: {capped}")
     elif len(close) > 1:
         print(f"  NOTE: seeds {', '.join(map(str, close))} lie within the quick/full spread of "
               f"the best (same defects, blocking within {CLOSE_BLOCKING}, copper within "
               f"{CLOSE_COPPER:.0%}): level 2 cannot rank them. Re-run with --confirm close "
-              f"to route them at the full level")
+              f"to route them at the full level"
+              + (f": {capped}" if capped else ''))
     for r in failed:
         print(f"  WARNING: seed {r['seed']} "
               f"{r['stage'] + ' failed' if r.get('stage') else 'not judged'}: "

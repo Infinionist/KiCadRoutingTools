@@ -1148,7 +1148,7 @@ judges on.
 
 ```bash
 python3 -X utf8 py_placer/judge_seeds.py wk/run/judge.json --chain wk/run/judge_chain.txt \
-    --intent wk/run/intent.json [--seeds 3,4] [--jobs 1]
+    --intent wk/run/intent.json [--seeds 3,4] [--confirm close|K] [--jobs 1]
 ```
 
 - Every `route.py` and `route_diff.py` step runs at `--quick 2`, added when
@@ -1169,6 +1169,17 @@ python3 -X utf8 py_placer/judge_seeds.py wk/run/judge.json --chain wk/run/judge_
 - At the end the seeds are ranked by `quick_score.judge_key` and the best
   named; keeping it (its placement, never the `--quick` board) is the
   skill's step. `JSON_SUMMARY:` carries every seed's score and the ranking.
+- Level 2 is a screen, not a verdict: its copper reads a few percent off the
+  full route's per seed. Seeds within that spread of the best (the same
+  placement defects, blocking within 1 net, copper within 10%) are NOTEd
+  (`close` in `JSON_SUMMARY:`), and `--confirm close` routes them again at
+  the full level (`--quick` taken off every route step) into
+  `s<S>_full.kicad_pcb` / `s<S>_full.score.json` and names the best of them
+  (`confirmed`); `--confirm K` confirms the K best ranked instead.
+  `--confirm close` takes at most 4 seeds, the best of the close ones; when
+  more are close, the NOTE and the confirming run name the seeds it leaves
+  out with the `--seeds <the close seeds> --confirm K` that confirms every one
+  (#1383, #1473). The re-run routes its seeds at level 2 again first.
 
 Exit 0 every seed scored; 4 a seed's chain wrote no board or its score could
 not be read (named); 2 nothing run: `judge.json` unreadable or naming no
