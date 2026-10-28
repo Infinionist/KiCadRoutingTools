@@ -899,6 +899,11 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
    python3 -X utf8 py_router/route_planes.py {in} {out} --nets GND --plane-layers B.Cu
    python3 -X utf8 py_router/route.py {in} {out} --nets '*' --json-out {dir}/route.json
    ```
+   When `python3 -X utf8 py_router/list_nets.py <board> --diff-pairs` finds
+   pairs, the chain carries a `route_diff.py` step before `route.py`: the one
+   `identify-diff-pairs` / `plan-pcb-routing` give the board. Without it
+   `route.py` routes each pair as two single nets and the seeds are ranked
+   without their pairs; `judge_seeds` WARNs, naming the pair count.
    The chain is ONE arm of the routing recipe, and the arms can pick different
    seeds. Where `plan-pcb-routing` prescribes two arms for the board's class
    (a 2-layer through-hole board without buses: its defaults, and

@@ -1140,6 +1140,12 @@ python3 -X utf8 py_placer/place_fanout_clearance.py {in} {out} --clearance 0.2 -
 python3 -X utf8 py_router/route.py {in} {out} --nets '*' --json-out {dir}/route.json
 ```
 
+When `list_nets.py --diff-pairs` finds pairs on the board, the chain carries
+a `route_diff.py` step before `route.py`, the one `identify-diff-pairs` /
+`plan-pcb-routing` give the board. Without one, `route.py` routes each pair as
+two single nets, and the runner WARNs once, naming the pair count (#1472); it
+judges on.
+
 ```bash
 python3 -X utf8 py_placer/judge_seeds.py wk/run/judge.json --chain wk/run/judge_chain.txt \
     --intent wk/run/intent.json [--seeds 3,4] [--jobs 1]

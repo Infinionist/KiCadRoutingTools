@@ -29,6 +29,11 @@ e.g.
     python3 -X utf8 py_router/route.py {in} {out} --nets '*' --track-width 0.127 \\
         --json-out {dir}/route.json
 
+When `list_nets.py --diff-pairs` finds pairs on the board, the chain carries
+a `route_diff.py` step before route.py, the one `identify-diff-pairs` /
+`plan-pcb-routing` give the board. A chain without one routes each pair as two
+single nets: the run WARNs, naming the pair count, and judges on (#1472).
+
 Every `route.py` and `route_diff.py` step runs with `--quick 2`, added when
 the line has no `--quick` of its own, so the chain plan-pcb-routing writes for
 the full route can be the file as it stands. A command runs from the current
@@ -158,6 +163,17 @@ def chain_problems(steps):
 def _script(argv):
     """The basename of the first .py the command runs, or ''."""
     return next((os.path.basename(t) for t in argv if t.endswith('.py')), '')
+
+
+def unpaired_diff_pairs(board, steps):
+    """The differential pairs `list_nets.find_differential_pairs` finds by
+    name on `board` when no chain step runs route_diff.py, else [] (#1472):
+    without that step route.py routes each pair as two single nets."""
+    if any(_script(shlex.split(s)) == 'route_diff.py' for s in steps):
+        return []
+    from kicad_parser import parse_kicad_pcb
+    from list_nets import find_differential_pairs
+    return find_differential_pairs(parse_kicad_pcb(board))
 
 
 def _strip_quick(argv):
@@ -376,6 +392,13 @@ def main(argv=None):
           f"{max(1, a.jobs)} at a time")
     if not a.intent:
         print('  NOTE: no --intent: quick_score leaves the floorplan ungraded')
+    pairs = unpaired_diff_pairs(os.path.join(run, f's{named[0]}.kicad_pcb'), steps)
+    if pairs:
+        print(f"  WARNING: the board has {len(pairs)} differential pair(s) by name (e.g. "
+              f"{pairs[0][0]} / {pairs[0][1]}) and no chain step runs route_diff.py: route.py "
+              f"routes each pair as two single nets, so the seeds are ranked without their "
+              f"pairs. Add the route_diff.py step identify-diff-pairs / plan-pcb-routing give "
+              f"the board, before route.py")
     # the board the seeds were placed from, which place_simple records: the
     # assembly is graded against it, as board_score --baseline grades it
     baseline = doc.get('baseline') if isinstance(doc, dict) else None
