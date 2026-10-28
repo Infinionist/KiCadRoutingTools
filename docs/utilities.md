@@ -287,6 +287,11 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
   (`check_floorplan --emit-intent`): its `proximity[]` claims, keep-outs,
   zones, declared faces, `fixed_poses[]`, and the decap limits it grades at
   error (priced per mm past each limit, `--decap-limit-weight`).
+- **The plan, checked first.** Before any seed (once, in the parent of a
+  `--seeds` run) the intent goes through `floorplan.plan_check`, what
+  `check_floorplan --plan-only` runs: its warnings are printed once, and an
+  error -- a plan no placement can satisfy, or a block that resolves to
+  nothing -- refuses the run at exit 2 with nothing written (#1468).
 - **What stays put.** Parts the board locks (`(locked yes)`) and parts the
   intent seats at a declared pose, written there first. Faces the intent or a
   group's `side` declares are applied first, by the writer's flip.
