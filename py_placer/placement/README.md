@@ -580,7 +580,8 @@ gate, `place_pose` and the graders:
 - **Containers.** A large outline-only part (an e-paper panel's frame) or a
   pin-frame module (a Teensy) is graded by its holes, not as a body. The
   anneal's overlap prices it the same way: a courtyard over a pin frame's
-  drilled holes, on either face, and nothing for the frame's rect.
+  drilled holes, on either face, and nothing for the frame's rect -- nor
+  does an exclusive zone, which treats a container as no stranger.
 - **Bodies.** A footprint without a courtyard is graded by its fab drawing,
   else its silk, else its pad box (`body.py`); the fallback is named in the
   output.

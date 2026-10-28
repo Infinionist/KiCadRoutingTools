@@ -56,7 +56,9 @@ BOARD_TOL = 1e-9
 # fa10 human boards: U8 'pin_frame', watchy REF** 'outline', nothing else.
 # An outline's courtyard pairs are waived `container_class`; a pin frame's
 # rect pairs are dropped and its HOLES graded (`pin_in_courtyard`); the pad
-# layer applies in full to both.
+# layer applies in full to both. Neither is a stranger to an exclusive zone
+# (#1463, `floorplan.rule_zone_exclusive` and the seat's
+# `quench.build_zone_spec`).
 CONTAINER_RATIO = 0.5
 
 BOTH_SIDES = frozenset(('F', 'B'))

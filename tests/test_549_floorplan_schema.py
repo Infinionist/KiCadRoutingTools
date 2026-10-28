@@ -710,6 +710,8 @@ def test_severity_keys_are_checked_against_the_rule_names():
                                         'plan_fixed_pose_conflict',
                                         'plan_fixed_overlap',
                                         'plan_fixed_overlap_budget',
+                                        # #1463
+                                        'plan_fixed_in_exclusive_zone',
                                         # #959 (#1000)
                                         'edge_connector_side',
                                         # an edge whose declared parts
