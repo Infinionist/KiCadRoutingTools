@@ -1294,8 +1294,12 @@ def main(argv=None):
             st.parts[r].ensure_rotation(pose[2])
             st.apply_move(r, *pose)
         mdl.reprice_all()
+        # total() FIRST: it resyncs the breakdowns the limit counts read,
+        # which otherwise still hold the last restart's poses, not this
+        # run's (#1485)
+        cost = mdl.total()['cost']
         return (len(set(kp[0]) - too_big), len(decap_repair.residual(mdl)),
-                mdl.claims_broken(), mdl.total()['cost'])
+                mdl.claims_broken(), cost)
     if movable:
         kept = settle(state, model, kept)
     if flip_ok and movable:
