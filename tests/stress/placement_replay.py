@@ -146,6 +146,7 @@ def place(board_name, step, seeds, out_dir, src, modal, corpus) -> str:
     seeds, extra = seeds or rec_seeds, starts + extra
     placed = os.path.join(out_dir, 'placed')
     if modal:
+        board, groups, intent = (_abs(p, step['cwd']) for p in (board, groups, intent))
         cmd = [sys.executable, os.path.join(HERE, 'placement_ab', 'place_modal.py'),
                os.path.join(out_dir, 'arm'), f'{board_name}={board}:{groups}:{intent}', seeds,
                '--src', src, '--corpus', corpus] + (['--'] + extra if extra else [])
@@ -161,21 +162,28 @@ def place(board_name, step, seeds, out_dir, src, modal, corpus) -> str:
     return placed
 
 
-def chosen(placed, which):
-    """The seeds `which` routes, from the placed boards and judge.json."""
+def chosen(placed, which, judge=None):
+    """The seeds `which` routes, from the placed boards and judge.json (or,
+    with none, the `judge` seeds place_simple would name)."""
     seeds = sorted(int(f[1:-len('.kicad_pcb')]) for f in os.listdir(placed)
                    if f.startswith('s') and f.endswith('.kicad_pcb') and f[1:-10].isdigit())
     if which == 'all':
         return seeds
     j = os.path.join(placed, 'judge.json')
-    judged = json.load(open(j)).get('judge') if os.path.exists(j) else None
+    reports = {s: json.load(open(p)) for s in seeds
+               for p in [os.path.join(placed, f's{s}.json')] if os.path.exists(p)}
+    if os.path.exists(j):
+        judged = json.load(open(j)).get('judge')
+    else:
+        # each seed placed alone (on Modal) writes no judge.json: judge
+        # its reports as place_simple judges a run of several seeds
+        import place_simple
+        judged = place_simple.judge_order(reports)[:judge or place_simple.JUDGED_SEEDS]
     if not judged:
         # no seed came out legal, so place_simple judged none: a stress test
         # still routes and grades them, cheapest first
-        def cost(s):
-            p = os.path.join(placed, f's{s}.json')
-            return json.load(open(p))['final']['cost'] if os.path.exists(p) else float('inf')
-        judged = sorted(seeds, key=cost)
+        judged = sorted(seeds, key=lambda s: reports[s]['final']['cost'] if s in reports
+                        else float('inf'))
     return judged[:1] if which == 'kept' else judged
 
 
@@ -247,7 +255,8 @@ def replay(run, a) -> dict:
     if step is None:
         return {'board': name, 'error': 'the record has no place_simple step'}
     placed = place(name, step, a.seeds, out_dir, a.src, a.modal, a.corpus)
-    seeds = chosen(placed, a.route)
+    import place_simple
+    seeds = chosen(placed, a.route, place_simple.build_parser().parse_args(step['argv']).judge)
     rows = grade(placed, route(name, cset, placed, seeds, out_dir, a.src, a.modal, a.corpus))
     doc = {'board': name, 'set': cset, 'src': a.src, 'route': a.route, 'seeds': rows,
            'human': human(name, cset, out_dir, a.src, a.corpus)}
