@@ -11,7 +11,8 @@ Invocation: `/make-3d-movie <board.kicad_pcb> [--route BOARD:SET] [--seed N]
   fast-routed, the best one routed in full. BOARD:SET names the
   stress-corpus board whose recorded chain routes it, as its name and
   set number.
-- `--seed` picks the seed of a placement-only movie (default 0).
+- `--seed` picks the seed of a placement-only movie (default 0). A kept
+  seed is filmed with its start (Step 4).
 - A given groups or intent file is used in place of writing one.
 
 `movie3d/README.md` says what the movie shows and how it is made.
@@ -142,6 +143,13 @@ Placement only:
 python3 -X utf8 movie3d/make_movie.py wk/<run>/fixed.kicad_pcb wk/<run>/placed.kicad_pcb \
     --groups wk/<run>/groups.json --intent wk/<run>/intent.json --seed 0
 ```
+
+A seed kept from a placement run is filmed with its start: pass that run's
+`--scattered`/`--clustered`/`--anchored` counts (none, for a default run),
+or its start list, `--clustered-seeds N` or `--anchored-seeds N` (the run's
+`s<N>.json` records its `"start"`). make_movie turns the counts into those
+lists and prints `make_movie: filming seed N from a ... start`; check that it
+names the kept seed's start, or the film is another placement.
 
 With `--route BOARD:SET`, add it to that command. Every argument other than
 make_movie's own is passed to `place_simple`. The movie goes to

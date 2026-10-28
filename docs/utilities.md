@@ -1533,7 +1533,15 @@ A movie of a placement, step by step, in the routing movie's style -- and,
 with `--route`, of the placement skill's whole flow: seeds placed, the
 cheapest fast-routed and judged, the best routed in full. It takes every
 `place_simple.py` argument (BOARD and OUT first) and places the board exactly
-as `place_simple.py` does: the same placement for the same seed.
+as `place_simple.py` does: the same placement for the same seed and start.
+`--seed S` is filmed from the start seed S has in a run of `--scattered`,
+`--clustered` and `--anchored` (place_simple's default seeds when none is
+given), whose counts become that run's `--clustered-seeds` and
+`--anchored-seeds` lists, and a `place_movie: filming seed S from a ... start`
+line names it. So a kept seed is filmed with its run's counts, or with its
+start list (`--clustered-seeds S`); a list and a count that start the seed
+differently are refused (exit 2). The 3D movie (`movie3d/make_movie.py`)
+takes the seed and its start the same way.
 
 ```bash
 python3 -X utf8 py_placer/place_movie.py board.kicad_pcb placed.kicad_pcb \

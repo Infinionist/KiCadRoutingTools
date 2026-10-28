@@ -7,7 +7,13 @@
         --groups groups.json --intent intent.json --route NAME:SET
 
 BOARD and OUT come first; every argument but this tool's own is
-place_simple.py's. Three steps, each printed with its time:
+place_simple.py's. Without --route, --seed S is filmed from the start seed S
+has in a place_simple run of --scattered/--clustered/--anchored (its default
+seeds when none is given): the counts become the --clustered-seeds and
+--anchored-seeds lists that run numbers its seeds by, so OUT is that run's
+placement of seed S exactly, and a `make_movie:` line names the start. Lists
+given instead are kept; beside a count that starts the seed otherwise, they are
+refused (exit 2). Three steps, each printed with its time:
 
   1. record  (record.py)   place_simple runs in-process with read-only hooks
                            and writes scene.json + timeline.json to --work;
@@ -60,15 +66,11 @@ def flow(a, rest):
     work = os.path.abspath(a.route_work or os.path.splitext(os.path.abspath(out))[0] + '_work')
     opts = place_movie._strip(rest[2:], '--seed', '--json', '--seeds', '--jobs', '--clustered-seeds',
                               '--anchored-seeds')
-    c0 = a.scattered + a.clustered
-    n = c0 + a.anchored
-    if min(a.scattered, a.clustered, a.anchored) < 0 or n < 1 or a.judge < 1:
+    if min(a.scattered, a.clustered, a.anchored) < 0 or a.scattered + a.clustered + a.anchored < 1 \
+            or a.judge < 1:
         sys.exit('make_movie: --scattered, --clustered and --anchored of 0 or more, at least one seed, '
                  '--judge 1 or more')
-    if a.clustered:
-        opts += ['--clustered-seeds', f'{a.scattered}-{c0 - 1}']
-    if a.anchored:
-        opts += ['--anchored-seeds', f'{c0}-{n - 1}']
+    opts += place_movie.start_opts(a.scattered, a.clustered, a.anchored)
     fa = argparse.Namespace(route=a.route, fresh=a.fresh, scattered=a.scattered, clustered=a.clustered,
                             anchored=a.anchored, judge=a.judge, jobs=a.jobs, route_jobs=a.route_jobs)
     got = place_movie.run_flow(fa, board, out, opts, work)
@@ -123,12 +125,15 @@ def main(argv=None):
     ap.add_argument('--route', metavar='BOARD:SET',
                     help="run and film place_movie's placement flow, routing with this "
                          "stress-corpus board's recorded chain (NAME:SET: the board and its set number)")
-    ap.add_argument('--scattered', type=int, default=SCATTERED_SEEDS,
-                    help=f'with --route, the seeds started scattered (default {SCATTERED_SEEDS})')
-    ap.add_argument('--clustered', type=int, default=CLUSTERED_SEEDS,
-                    help=f'with --route, the seeds started clustered (default {CLUSTERED_SEEDS})')
-    ap.add_argument('--anchored', type=int, default=ANCHORED_SEEDS,
-                    help=f'with --route, the seeds started anchored (default {ANCHORED_SEEDS}: opt-in)')
+    ap.add_argument('--scattered', type=int,
+                    help=f'the seeds started scattered (default {SCATTERED_SEEDS}): with --route, '
+                         f'the seeds placed; without, the run whose --seed is filmed, from the '
+                         f'start that run gives it')
+    ap.add_argument('--clustered', type=int,
+                    help=f'the seeds started clustered, after the scattered ones (default {CLUSTERED_SEEDS})')
+    ap.add_argument('--anchored', type=int,
+                    help=f'the seeds started anchored, after the clustered ones (default {ANCHORED_SEEDS}: '
+                         f'opt-in)')
     ap.add_argument('--judge', type=int, default=JUDGED_SEEDS,
                     help=f'with --route, the cheapest legal seeds fast-routed (default {JUDGED_SEEDS})')
     ap.add_argument('--jobs', type=int, default=4, help='with --route, placements and routes at once (default 4)')
@@ -163,11 +168,19 @@ def main(argv=None):
         sys.exit('make_movie: no `ffmpeg` on PATH')
 
     # 1. record
+    import place_movie
+    given = place_movie.start_counts(a)
     t0 = time.time()
     if a.route:
         rc, got = flow(a, rest)
     else:
-        rc, got = record.record(a, rest)
+        opts, line = place_movie.seed_starts('make_movie', given, rest[2:], rest[1])
+        if opts is None:
+            print(line, file=sys.stderr)
+            return 2
+        if line:
+            print(line)
+        rc, got = record.record(a, rest[:2] + opts)
     t_rec = time.time() - t0
     if not got:
         print('make_movie: place_simple did not get as far as a placement', file=sys.stderr)

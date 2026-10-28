@@ -445,6 +445,15 @@ def _seed_list(spec):
     return out
 
 
+def start_lists(scattered, clustered, anchored):
+    """(--clustered-seeds, --anchored-seeds) of a run of these start counts,
+    numbered as the default seeds are: the scattered seeds from 0, then the
+    clustered, then the anchored; None for a count of 0."""
+    c0 = scattered + clustered
+    return (f'{scattered}-{c0 - 1}' if clustered else None,
+            f'{c0}-{c0 + anchored - 1}' if anchored else None)
+
+
 def _many_seeds(ap, a):
     """`--seeds` (or the default seeds): each seed a `--seed` run of this
     script in its own process, `--jobs` at a time, every other option passed
@@ -777,8 +786,7 @@ def main(argv=None):
                   "with at least one seed", file=sys.stderr)
             return 2
         a.seeds = f'0-{n - 1}'
-        a.clustered_seeds = f'{sc}-{sc + cl - 1}' if cl else None
-        a.anchored_seeds = f'{sc + cl}-{n - 1}' if an else None
+        a.clustered_seeds, a.anchored_seeds = start_lists(sc, cl, an)
     elif starts:
         print(f"place_simple: {', '.join(starts)} set the default seeds of an OUT carrying "
               "{seed}; with --seed or --seeds, list the starts with --clustered-seeds and "
