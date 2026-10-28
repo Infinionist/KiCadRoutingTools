@@ -69,11 +69,17 @@ def _abs(p: str, cwd: str) -> str:
 
 
 def replay_prep(doc, old_run, work, src) -> dict:
-    """Replay every step before place_simple in `work`; return the
-    place_simple step with its paths remapped (None when there is none)."""
+    """Replay every step before the LAST place_simple in `work`; return
+    that step with its paths remapped (None when there is none). The last
+    is the placement the run judged: an agent that re-places (a relaxed
+    intent, say) writes the same seeds over the first pass."""
     from placement import run_record
     remap = remapper(old_run, work)
-    for step in doc['steps']:
+    last = max((i for i, s in enumerate(doc['steps']) if s['tool'] == 'place_simple'),
+               default=None)
+    if last is None:
+        return None
+    for i, step in enumerate(doc['steps'][:last + 1]):
         cwd = remap(step['cwd'])
         os.makedirs(cwd, exist_ok=True)
         run_record.restore_inputs(doc, step, lambda p: remap(_abs(p, step['cwd'])))
@@ -82,9 +88,9 @@ def replay_prep(doc, old_run, work, src) -> dict:
         for t in argv:                     # the directories the run had made
             if t.startswith(work + os.sep):
                 os.makedirs(os.path.dirname(t), exist_ok=True)
-        if step['tool'] == 'place_simple':
+        if i == last:
             return dict(step, argv=argv, cwd=cwd)
-        if step['tool'] == 'judge_seeds':
+        if step['tool'] in ('place_simple', 'judge_seeds'):
             continue
         r = subprocess.run([sys.executable, '-u', '-X', 'utf8',
                             os.path.join(src, SCRIPTS[step['tool']])] + argv,
@@ -92,7 +98,6 @@ def replay_prep(doc, old_run, work, src) -> dict:
         with open(os.path.join(work, 'prep.log'), 'a', encoding='utf-8') as fh:
             fh.write(f"$ {step['tool']} {shlex.join(argv)}\nexit {r.returncode}\n"
                      f"{r.stdout[-2000:]}{r.stderr[-2000:]}\n")
-    return None
 
 
 def split_place(argv):
