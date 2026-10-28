@@ -142,7 +142,7 @@ KEY_SETS = {
         # a chip's datasheet layout, seated and carried by place_simple.
         'templates',
         # #1443: a body a connector carries, and declared part heights.
-        'covers', 'heights', 'links', 'chains'},
+        'covers', 'heights', 'links', 'chains', 'rails'},
     '_ENVELOPE_KEYS': {'rect', 'tolerance_mm'},
     '_DEFAULTS_KEYS': {'zone_tolerance_mm'},
     '_BLOCK_KEYS': {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
@@ -211,6 +211,8 @@ KEY_SETS = {
     # #1477: two sets of parts within max_mm; a chain of such links.
     '_LINK_KEYS': {'name', 'a', 'b', 'max_mm', 'context'} | FREE,
     '_CHAIN_KEYS': {'name', 'stages', 'max_mm', 'context'} | FREE,
+    # #1478: supply nets priced as rails whatever their fan-out.
+    '_RAILS_KEYS': {'nets', 'context'} | FREE,
     # #1211: `place_pose replicate`'s own flags, plus the grade's tolerance.
     '_REPLICATE_KEYS': {'from', 'to', 'anchor', 'allow_net_mismatch', 'only',
                         'skip', 'search_mm', 'tolerance_mm',
@@ -271,6 +273,7 @@ def test_the_key_sets_are_exactly_what_is_documented():
         '_KEEP_AWAY_KEYS': 'keep_away[]',
         '_LINK_KEYS': 'links[]',
         '_CHAIN_KEYS': 'chains[]',
+        '_RAILS_KEYS': 'rails[]',
         '_REPLICATE_KEYS': 'replicate[]',
         '_COVER_KEYS': 'covers[]',
         '_COVER_STANDOFF_KEYS': 'covers[].standoffs[]',
@@ -392,6 +395,8 @@ def test_an_intent_using_every_known_key_loads():
                    'why': 'w', 'context': {'why': 'w'}}],
         'chains': [{'name': 'c', 'stages': [['J1'], ['U3'], ['U1']],
                     'max_mm': [5, 10], 'why': 'w', 'context': {'why': 'w'}}],
+        # #1478. Supplies priced as rails.
+        'rails': [{'nets': ['+5V', '/VBUS'], 'why': 'w', 'context': {'why': 'w'}}],
         # #1211. `only` and `skip` are exclusive, so the second row carries
         # `skip`.
         'replicate': [{'from': 'CH1', 'to': ['CH2', 'CH3'], 'anchor': 'J1',
@@ -435,7 +440,7 @@ def test_an_intent_using_every_known_key_loads():
     seen |= set(raw['proximity'][0])
     seen |= set(raw['arrays'][0]) | set(raw['fixed_poses'][0])
     seen |= set(raw['keep_away'][0])
-    seen |= set(raw['links'][0]) | set(raw['chains'][0])
+    seen |= set(raw['links'][0]) | set(raw['chains'][0]) | set(raw['rails'][0])
     for r in raw['replicate']:
         seen |= set(r)
     seen |= set(raw['dispositions'])

@@ -186,7 +186,7 @@ emptied `clock` group is dropped, and `near` entries that named it point at
 | term | what it costs | flag (default) |
 |---|---|---|
 | signal wire | the Manhattan spanning tree of each signal net's pads, per mm | 1 (fixed) |
-| supply rails | the same tree for a rail (a net reaching more than a quarter of the parts, and more than 6 of them), per mm | `--rail-weight` (0.3) |
+| supply rails | the same tree for a rail (a net reaching more than a quarter of the parts, and more than 6 of them, or one the intent's `rails[]` declares), per mm | `--rail-weight` (0.3) |
 | ground | the same tree for ground: a plane, each pad only drops a via | `--ground-weight` (0.02) |
 | crossings | each crossing among the signal trees' edges, in mm of wire | `--crossing-weight` (2) |
 | claims | each claimed pad's distance to its partner's pad, per mm (intent `proximity[]`, crystals) | `--claim-weight` (1) |

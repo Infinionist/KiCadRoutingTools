@@ -303,7 +303,24 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
             (agg, vic, _g), = resolve_rule_sides(pcb, (rule,))[0]
             if agg and vic:
                 ka_rules.append((float(rule.gap), set(agg), set(vic)))
-    model = Model(state, pcb, rails=view.rails, claims=claims,
+    # the intent's declared rails (#1478): supplies priced as rails whatever
+    # their fan-out, beside the ones the fan-out rule finds
+    declared_rails = set()
+    if intent is not None and intent.rails:
+        import fnmatch
+        named = {nid: n.name for nid, n in pcb.nets.items() if nid and n.name}
+        for row in intent.rails:
+            for pat in row['nets']:
+                hit = {nid for nid, nm in named.items() if fnmatch.fnmatchcase(nm, pat)}
+                if not hit:
+                    print(f"  WARNING: {row['source']}: {pat!r} matches no net on this "
+                          f"board, so it prices nothing")
+                declared_rails |= hit
+        added = sorted(named[n] for n in declared_rails - set(view.rails))
+        if added:
+            notes.append(f"rails declared: {', '.join(added)} priced as rails "
+                         f"(--rail-weight {args.rail_weight:g}) whatever their fan-out")
+    model = Model(state, pcb, rails=set(view.rails) | declared_rails, claims=claims,
                   decaps=decaps, supply=supply, decap_pins=decap_pins,
                   groups=groups, congestion_weight=args.congestion_weight,
                   track_pitch=args.track_pitch, congestion_nets=cnets,

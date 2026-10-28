@@ -139,7 +139,7 @@ suspect, suspect_reason, why
 
 | object | keys |
 |---|---|
-| top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `keep_away`, `links`, `chains`, `replicate`, `templates`, `covers`, `heights`, `dispositions`, `arrays`, `fixed_poses`, `context` |
+| top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `keep_away`, `links`, `chains`, `rails`, `replicate`, `templates`, `covers`, `heights`, `dispositions`, `arrays`, `fixed_poses`, `context` |
 | `envelope` | `rect`, `tolerance_mm` |
 | `defaults` | `zone_tolerance_mm` |
 | `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `fence_mm` (a band that wide round `zone` no part may use, members included; see "`fence_mm`" below; needs `min_reader` 16), `why` (or `note` / `reason`), `context`. `rigid` is refused by name: its only reader, the retired quench engine, is gone, and `place_simple` moves each group of the groups file together |
@@ -154,6 +154,7 @@ suspect, suspect_reason, why
 | `keep_away[]` | `rule` (ONE rule in route.py's `--keep-away` syntax, `AGGRESSOR:VICTIM:GAP`), `why` (or `note` / `reason`), `context`, and the compiler-written `source` (see "`keep_away[]`" below; needs `min_reader` 10) |
 | `links[]` | `name`, `a`, `b` (each a list of reference globs), `max_mm`, `why` (or `note` / `reason`), `context` (see "`links[]` and `chains[]`" below; needs `min_reader` 17) |
 | `chains[]` | `name`, `stages` (two or more lists of reference globs, in order), `max_mm` (one number, or one per link), `why` (or `note` / `reason`), `context` (needs `min_reader` 17) |
+| `rails[]` | `nets` (net-name globs, as `--nets` takes them), `why` (or `note` / `reason`), `context` (see "`rails[]`" below; needs `min_reader` 18) |
 | `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why` (or `note` / `reason`), `context`, `source` (see "`replicate[]`" below; needs `min_reader` 11) |
 | `templates[]` | `anchor` (the chip), `members` (each `ref`, `at` [dx, dy] mm and `rot`, a quarter turn, in the chip's own frame; `pads` and `note` as the fit wrote them), `tolerance_mm`, `kind` (`switching stage` or `rf front end`), `ground_return_mm`, `source`, `why` (or `note` / `reason`), `context`, and the fit-written `fitted` (see "`templates[]`" below; needs `min_reader` 13, and 14 with `kind` or `ground_return_mm`) |
 | `covers[]` | `connector`, `side` (`F`/`B`), `axis_deg` (a quarter turn in the connector's frame), `width_mm`, `underside_mm`, `length_mm`, `offset_mm`, `standoffs`, `removable`, `source`, `why` (or `note` / `reason`), `context` (see "`covers[]` and `heights[]`" below; needs `min_reader` 15) |
@@ -275,7 +276,7 @@ claim").
 intent file at once — far too blunt for "this build learned a new field".
 
 So field-level compatibility is a second number. `READER_VERSION` (currently
-`17`) is what this build can act on, and an intent sets `min_reader` when a
+`18`) is what this build can act on, and an intent sets `min_reader` when a
 claim must not be silently ignored:
 
 ```jsonc
@@ -323,6 +324,7 @@ Each `min_reader` level and the keys it covers:
 | 15 | `covers[]`, `heights[]`, `keepouts[].max_height_mm` |
 | 16 | `blocks[].fence_mm` |
 | 17 | `links[]`, `chains[]` |
+| 18 | `rails[]` |
 
 The emitter and the design-brief compiler stamp the level their output needs.
 
@@ -1143,6 +1145,30 @@ to hold a declared distance (at the `near` weight, 2, it was noise), and it
 stops pulling once the parts are close enough, so a regulator linked to its
 filter and its loads may sit anywhere that keeps both links, and its wiring
 decides where.
+
+### `rails[]`: supplies priced as rails, whatever their fan-out
+
+`place_simple` prices each net's tree by what kind of net it is. A net is a
+RAIL when its name says ground, or when it reaches more than a quarter of
+the board's parts and more than six of them (`grouping.rail_net_ids`). A
+ground's tree costs `--ground-weight` (0.02) per mm, every other rail's
+`--rail-weight` (0.3), and every other net -- a supply that misses the
+threshold included -- costs a signal's full weight and its crossings. So the
+pull between a regulator and its loads depends on the fan-out of its output:
+on an 85-part board a 29-part 3.3 V rail is a rail and a 7-part 5 V supply a
+signal, and on a 458-part board (a threshold of 114.5 parts) only ground is.
+
+`rails[]` declares the supplies that are rails whatever they reach -- the
+wide or poured ones:
+
+```jsonc
+"rails": [{ "nets": ["+5V", "/VBUS", "+1V8"], "why": "power tree, wide tracks" }]
+```
+
+`nets` are net-name globs, matched as `--nets` matches them. `place_simple`
+prices each matching net at `--rail-weight` and names them (`rails declared:
+...`); a pattern matching no net is a WARNING. Only the placer reads it: the
+decap and group logic keep the fan-out rule, and nothing grades it.
 
 ### `replicate[]`: sibling sheet instances laid out alike
 

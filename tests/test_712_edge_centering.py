@@ -436,8 +436,9 @@ def test_the_loader_refuses_every_malformed_along_edge_claim():
     # carries; `heights[]`, declared part heights; a keep-out's
     # `max_height_mm`. 16 since #1475: `blocks[].fence_mm`, a band round a
     # zone no part may use. 17 since #1477: `links[]` and `chains[]`, two
-    # sets of parts within a distance, their groups unmerged.
-    assert fp.READER_VERSION == 17, (
+    # sets of parts within a distance, their groups unmerged. 18 since
+    # #1478: `rails[]`, supplies priced as rails whatever their fan-out.
+    assert fp.READER_VERSION == 18, (
         f"{fp.READER_VERSION}: the field vocabulary grew. Re-state this "
         f"literal and say which field arrived, the way #712, #837, #902, "
         f"#893, #959 and #1051 did")

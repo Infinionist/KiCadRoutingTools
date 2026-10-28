@@ -308,7 +308,10 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
   and its loads, name only the entry: its output net already pulls it toward
   the parts it feeds (at `--rail-weight` 0.3 per mm when that net is a rail
   -- ground, or more than a quarter of the parts and more than six -- else
-  at a signal's full weight). When the user gives a distance or an order
+  at a signal's full weight). On a large board that rule leaves every
+  supply but ground at signal weight; list the supplies that are routed wide
+  or poured in the intent's `rails[]` (`{"nets": [...]}`, net-name globs;
+  `min_reader` 18) and they are priced as rails. When the user gives a distance or an order
   ("the filter within 8 mm of the input", "filter, then regulator, then
   load"), declare it in the intent as a link -- `links[]` (`a`, `b`: the two
   sets of parts, `max_mm`) or `chains[]` (`stages` in order, `max_mm` one or

@@ -211,7 +211,10 @@ EDGE_BAND_SANITY_MM = 5.0
 #: a chain is links between consecutive stages. Graded by `link` (WARN by
 #: default, promotable) and priced by `place_simple`, so the rule above
 #: mandates the bump; an older build refuses both keys by name.
-READER_VERSION = 17
+#: 18 (#1478): `rails[]` -- supply nets priced by `place_simple` as rails
+#: (`--rail-weight`) whatever their fan-out. It changes what the placer
+#: pulls where; an older build refuses the key by name.
+READER_VERSION = 18
 #: The reader version that first reads `templates[]`.
 TEMPLATES_READER = 13
 #: The reader version that first reads a template row's `kind` and
@@ -224,6 +227,8 @@ COVERS_READER = 15
 FENCE_READER = 16
 #: The reader version that first reads `links[]` and `chains[]` (#1477).
 LINKS_READER = 17
+#: The reader version that first reads `rails[]` (#1478).
+RAILS_READER = 18
 #: #1475. The keep-outs a block's `fence_mm` compiles to are named
 #: `fence:<block>:<N|S|W|E>`; an intent may not name its own keep-out so.
 FENCE_KEEPOUT_PREFIX = 'fence:'
@@ -275,7 +280,7 @@ _TOP_LEVEL_KEYS = {
     'health', 'severity', 'context', 'overlap_waivers', 'min_reader',
     'assembly', 'proximity', 'dispositions', 'arrays', 'fixed_poses',
     'keep_away', 'replicate', 'templates', 'covers', 'heights',
-    'links', 'chains',
+    'links', 'chains', 'rails',
 }
 #: #959 (#997). WRITTEN answers to "why is this not graded", one map per kind
 #: of question: a rule the plan leaves dark, a budget key the emitter withheld,
@@ -464,6 +469,9 @@ _KEEP_AWAY_KEYS = {'rule', 'source', 'context'} | _FREE_TEXT_KEYS
 #: one per link.
 _LINK_KEYS = {'name', 'a', 'b', 'max_mm', 'context'} | _FREE_TEXT_KEYS
 _CHAIN_KEYS = {'name', 'stages', 'max_mm', 'context'} | _FREE_TEXT_KEYS
+#: #1478. Supply nets (net-name globs, as `--nets` takes them) that
+#: `place_simple` prices as rails whatever their fan-out.
+_RAILS_KEYS = {'nets', 'context'} | _FREE_TEXT_KEYS
 #: #1211. One declared channel copy: `from` and `to` name sheet INSTANCES
 #: (a sheet name or a path, as `place_pose replicate` takes them); the rest
 #: are that verb's own flags, so a declaration and a command line read
@@ -639,6 +647,11 @@ class Intent:
     #: how close two parts of a design must sit is a design decision. Graded
     #: by `link`; priced by `place_simple` past `max_mm`, groups unmerged.
     links: Tuple[Dict[str, object], ...] = ()
+    #: #1478. Declared supply rails, `[{nets, source, why?}]` (`nets`
+    #: net-name globs). NEVER emitted: which supplies are wide or poured is a
+    #: design fact. Read by `place_simple` only, which prices them as rails;
+    #: nothing grades them.
+    rails: Tuple[Dict[str, object], ...] = ()
     #: #1211. Declared channel copies, `[{from, to[], anchor?, ...}]`. NEVER
     #: emitted: which instance is the template is a design decision. Copied
     #: by `place_pose replicate --intent`; graded by `replicate`, which the
@@ -1131,6 +1144,32 @@ def _link_claims(raw: Dict) -> List[Dict]:
             for k in range(len(stages) - 1):
                 add(f"{name}:{k}", stages[k], stages[k + 1],
                     _number(ms[k], f"{where}.max_mm", lo=0.0), where, row)
+    return out
+
+
+def _rail_claims(raw: Dict) -> List[Dict]:
+    """Validate `rails[]` (#1478), AT LOAD: each row's `nets`, a non-empty
+    list of net-name globs."""
+    got = raw.get('rails')
+    if got is None:
+        return []
+    if not isinstance(got, list):
+        raise IntentError(f"rails: expected a list of rows, got "
+                          f"{type(got).__name__}")
+    out = []
+    for i, row in enumerate(got):
+        where = f"rails[{i}]"
+        if not isinstance(row, dict):
+            raise IntentError(f"{where}: expected an object with `nets`")
+        _reject_unknown(row, _RAILS_KEYS, where)
+        _entry_context(row, where)
+        _free_text_strings(row, where)
+        nets = _str_tuple(row.get('nets'), f"{where}.nets")
+        if not nets:
+            raise IntentError(f"{where}.nets: expected a non-empty list of "
+                              f"net-name globs")
+        out.append({'nets': nets, 'source': where, 'why': free_text(row),
+                    'context': row.get('context') or {}})
     return out
 
 
@@ -2090,6 +2129,7 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         fixed_poses=tuple(fixed_poses),
         keep_away=tuple(_keep_away_claims(raw)),
         links=tuple(_link_claims(raw)),
+        rails=tuple(_rail_claims(raw)),
         replicate=tuple(_replicate_claims(raw)),
         templates=tuple(_template_claims(raw)),
         covers=tuple(_cover_claims(raw)),
