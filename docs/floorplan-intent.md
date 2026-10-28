@@ -142,7 +142,7 @@ suspect, suspect_reason, why
 | top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `keep_away`, `replicate`, `templates`, `covers`, `heights`, `dispositions`, `arrays`, `fixed_poses`, `context` |
 | `envelope` | `rect`, `tolerance_mm` |
 | `defaults` | `zone_tolerance_mm` |
-| `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `why` (or `note` / `reason`), `context`. `rigid` is refused by name: its only reader, the retired quench engine, is gone, and `place_simple` moves each group of the groups file together |
+| `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `fence_mm` (a band that wide round `zone` no part may use, members included; see "`fence_mm`" below; needs `min_reader` 16), `why` (or `note` / `reason`), `context`. `rigid` is refused by name: its only reader, the retired quench engine, is gone, and `place_simple` moves each group of the groups file together |
 | `keepouts[]` | `name`, `rect`, `circle`, `sides`, `allow`, `max_height_mm` (a part whose height is KNOWN and no more than this may stand in it; see "`covers[]` and `heights[]`" below; needs `min_reader` 15), `why` (or `note` / `reason`), `context` |
 | `edge_connectors[]` | `ref`, `edge`, `overhang_mm`, `max_setback_mm`, `center_on_edge`, `along_edge_band`, `side` (`F`/`B`, the connector's face, graded as the advisory `edge_connector_side`; needs `min_reader` 6), `mating_face` (`+x`/`-x`/`+y`/`-y`, see "Which way it opens" below), `class`, `why` (or `note` / `reason`), `context`, and the emitter-written `source`, `suspect`, `suspect_reason`, `overhang_capped`, `observed_overhang_mm` |
 | `edge_connectors[].overhang_mm` | `min`, `max` |
@@ -271,7 +271,7 @@ claim").
 intent file at once — far too blunt for "this build learned a new field".
 
 So field-level compatibility is a second number. `READER_VERSION` (currently
-`11`) is what this build can act on, and an intent sets `min_reader` when a
+`16`) is what this build can act on, and an intent sets `min_reader` when a
 claim must not be silently ignored:
 
 ```jsonc
@@ -317,6 +317,7 @@ Each `min_reader` level and the keys it covers:
 | 13 | `templates[]` |
 | 14 | `templates[].kind`, `templates[].ground_return_mm` |
 | 15 | `covers[]`, `heights[]`, `keepouts[].max_height_mm` |
+| 16 | `blocks[].fence_mm` |
 
 The emitter and the design-brief compiler stamp the level their output needs.
 
@@ -771,6 +772,33 @@ entry, so `allow: ["MH1", "MH01"]` still reports the typo. "Resolved" means the
 pattern matches *some* reference — deliberately not "the exemption changes an
 outcome", because a pattern naming a real part the keep-out would not have bound
 anyway (wrong side) is not a typo.
+
+### `fence_mm`: a band round a zone that no part may use
+
+A shield can's wall stands on a band round the circuit it covers, and the band
+must stay clear before the can is drawn -- while its members are still moving.
+`blocks[].fence_mm` declares it on the block that holds those members:
+
+```jsonc
+{ "name": "can_rf", "refs": ["U4", "C1*", "L2"], "zone": [131, 159.7, 161.8, 190.5],
+  "side": "F", "exclusive": true, "fence_mm": 1.8 }
+```
+
+It is compiled at load into four keep-outs round `zone` -- named
+`fence:<block>:N`, `:S`, `:W` and `:E`, the north and south ones spanning the
+corners -- on the block's `side` (both faces when it names none), with no
+`allow`. So every reader of `keepouts` sees one declaration: the grade's
+`keepout` rule, `place_simple`'s seat and anneal, and check_assembly. Members
+are kept out of the band too: a member the zone's `tolerance_mm` lets stray
+past the zone is still refused there. `fence_mm` needs a `zone`, and an
+intent may not name its own keep-out `fence:...` (refused at load). Holding
+the members inside and strangers out of the zone itself is the block's own
+job (`refs`, `exclusive`); the fence only adds the band.
+
+A container -- an enclosure drawn as a footprint round the parts, a pin frame
+-- is graded by every keep-out on its pads, not its frame rect, as the seat
+already measures it: a fence (or any keep-out) inside an enclosure is no hit
+on the enclosure, while a post standing in a keep-out still is.
 
 ### `pad stacks` (printed, not a rule)
 

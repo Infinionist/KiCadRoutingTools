@@ -547,6 +547,9 @@ in the vocabulary of `docs/floorplan-intent.md`:
   sheet the board derives (`render_placement.py --list-groups` lists them),
   not a group of `groups.json`, and a groups-file name there resolves to
   nothing (`block_unresolved`).
+- **A shield can's wall:** `fence_mm` on that block keeps a band that wide
+  round its `zone` clear of every part, members too, for the wall (the
+  can's outline less its interior; `min_reader` 16).
 - **An area only some parts may enter** (a keep-in for everyone else): a
   `keepouts[]` entry whose `allow` names the parts that may. A pattern that
   matches no part is a WARN, and the part it meant is pushed out.

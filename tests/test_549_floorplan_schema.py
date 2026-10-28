@@ -148,7 +148,9 @@ KEY_SETS = {
     '_BLOCK_KEYS': {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
                     'tolerance_mm', 'context',
                     # #893: a DECISION and a SET, never both on one block.
-                    'rotation', 'rotation_candidates'} | FREE,
+                    'rotation', 'rotation_candidates',
+                    # #1475: a band round the zone no part may use.
+                    'fence_mm'} | FREE,
     # #1443: `max_height_mm`, a part of known height no taller may stand in it.
     '_KEEPOUT_KEYS': {'name', 'rect', 'circle', 'sides', 'allow', 'max_height_mm',
                       'context'} | FREE,
@@ -304,7 +306,7 @@ def test_an_intent_using_every_known_key_loads():
         # block, so the vocabulary cannot be covered by a single entry.
         'blocks': [{'name': 'power', 'group': 'sheet:1', 'refs': ['U3'],
                     'zone': [2, 2, 40, 30], 'side': 'F', 'exclusive': True,
-                    'tolerance_mm': 0.7, 'rotation': 90,
+                    'tolerance_mm': 0.7, 'rotation': 90, 'fence_mm': 1.0,
                     'note': 'n', 'context': {'why': 'w'}},
                    {'name': 'mcu', 'refs': ['U1'],
                     'rotation_candidates': [0, 90, 180, 270]}],

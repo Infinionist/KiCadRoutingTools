@@ -201,7 +201,12 @@ EDGE_BAND_SANITY_MM = 5.0
 #: or underside; and a keep-out's `max_height_mm`. Each changes what the
 #: placer may put where and what check_assembly gates, so the rule above
 #: mandates the bump; an older build refuses every one of them by name.
-READER_VERSION = 15
+#: 16 (#1475): `blocks[].fence_mm` -- a band that wide round a block's zone,
+#: kept clear of every part (members too): where a shield can's wall will
+#: stand. Compiled at load into four keep-outs (`fence_keepouts`), so it
+#: changes what the placer may put where and what the grade reports; an
+#: older build refuses the key by name.
+READER_VERSION = 16
 #: The reader version that first reads `templates[]`.
 TEMPLATES_READER = 13
 #: The reader version that first reads a template row's `kind` and
@@ -210,6 +215,11 @@ TEMPLATE_KIND_READER = 14
 #: The reader version that first reads `covers[]`, `heights[]` and a
 #: keep-out's `max_height_mm` (#1443).
 COVERS_READER = 15
+#: The reader version that first reads `blocks[].fence_mm` (#1475).
+FENCE_READER = 16
+#: #1475. The keep-outs a block's `fence_mm` compiles to are named
+#: `fence:<block>:<N|S|W|E>`; an intent may not name its own keep-out so.
+FENCE_KEEPOUT_PREFIX = 'fence:'
 #: How far (mm) a cover's standoff may sit from where the row puts it -- its
 #: length along the axis, on the centre line -- before the `cover` rule
 #: reports it: room for the anneal's final legality step, as a template's.
@@ -275,7 +285,9 @@ _BLOCK_KEYS = {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
                # #893. `rotation` is a DECISION (this angle);
                # `rotation_candidates` is a SET a search may choose from.
                # Declaring both on one block is refused -- see `_rotation`.
-               'rotation', 'rotation_candidates'}
+               'rotation', 'rotation_candidates',
+               # #1475: a band round the zone no part may use
+               'fence_mm'}
 #: Block keys a retired reader honoured, refused by name with what replaced
 #: them rather than as unknown: an author who wrote one meant it.
 _RETIRED_BLOCK_KEYS = {
@@ -533,6 +545,9 @@ class Zone:
     #: honoured exactly), and the set a search may choose from. Never both.
     rotation: Optional[float] = None
     rotation_candidates: Optional[Tuple[float, ...]] = None
+    #: #1475. The width of the band round `rect` kept clear of every part,
+    #: compiled into `Intent.keepouts` (`fence_keepouts`).
+    fence_mm: Optional[float] = None
     note: str = ''
     #: Free-form provenance, read by nothing (see `_BLOCK_KEYS`). Carried on
     #: the Zone rather than dropped: `keepouts`/`edge_connectors`/
@@ -1653,6 +1668,16 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
                          b['rotation_candidates'],
                          f"blocks[{i}].rotation_candidates"))
         zone_rect = b.get('zone')
+        fence = None
+        if b.get('fence_mm') is not None:
+            fence = _number(b['fence_mm'], f"blocks[{i}].fence_mm", lo=0.0)
+            if fence <= 0:
+                raise IntentError(f"blocks[{i}] ({name}): fence_mm must be "
+                                  f"more than 0")
+            if not zone_rect:
+                raise IntentError(
+                    f"blocks[{i}] ({name}): fence_mm needs a `zone` -- the "
+                    f"band is drawn round it")
         blocks.append(Zone(
             name=name,
             rect=_rect(zone_rect, f"blocks[{i}].zone") if zone_rect else None,
@@ -1663,6 +1688,7 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
             tolerance_mm=b.get('tolerance_mm'),
             rotation=rot,
             rotation_candidates=rot_cands,
+            fence_mm=fence,
             note=free_text(b),
             context=b.get('context') or {},
         ))
@@ -1680,6 +1706,11 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         _entry_context(k, f"keepouts[{i}]")
         k = dict(k)
         k.setdefault('name', f"keepout{i}")
+        if str(k['name']).startswith(FENCE_KEEPOUT_PREFIX):
+            raise IntentError(
+                f"keepouts[{i}]: the name {k['name']!r} is reserved -- "
+                f"`{FENCE_KEEPOUT_PREFIX}` keep-outs are compiled from "
+                f"`blocks[].fence_mm` (#1475). Declare the fence there")
         if 'rect' in k and k['rect'] is not None:
             k['rect'] = _rect(k['rect'], f"keepouts[{i}].rect")
         elif 'circle' in k and k['circle'] is not None:
@@ -1700,6 +1731,7 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
             k['max_height_mm'] = _number(k['max_height_mm'],
                                          f"keepouts[{i}].max_height_mm", lo=0.0)
         keepouts.append(k)
+    keepouts += fence_keepouts(blocks)
 
     conns = []
     for i, c in enumerate(raw.get('edge_connectors') or []):
@@ -2980,6 +3012,30 @@ def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None
                                 f", no 3D model, courtyard at the outline",
                                 'inset_mm': MATING_INSET_MM}})
     return tuple(out)
+
+
+def fence_keepouts(blocks) -> List[Dict]:
+    """The keep-outs each block's `fence_mm` compiles to (#1475): a band that
+    wide round its zone, as four rects -- the north and south ones spanning
+    the corners -- on the block's face (both faces when it names none), with
+    no `allow`. Members are kept out of it too: the band is where a shield
+    can's wall will stand, wherever the parts inside end up, so a member
+    the zone's own `tolerance_mm` lets stray is still refused there."""
+    out = []
+    for z in blocks:
+        if not z.fence_mm or z.rect is None:
+            continue
+        x0, y0, x1, y1 = z.rect
+        w = z.fence_mm
+        for edge, r in (('N', (x0 - w, y0 - w, x1 + w, y0)),
+                        ('S', (x0 - w, y1, x1 + w, y1 + w)),
+                        ('W', (x0 - w, y0, x0, y1)),
+                        ('E', (x1, y0, x1 + w, y1))):
+            out.append({'name': f"{FENCE_KEEPOUT_PREFIX}{z.name}:{edge}",
+                        'rect': r, 'sides': (z.side,) if z.side else ('F', 'B'),
+                        'allow': (), 'why': f"block {z.name!r}'s fence_mm {w:g}",
+                        'context': {'compiled_from': f"blocks.{z.name}.fence_mm"}})
+    return out
 
 
 def with_derived_keepouts(keepouts, pcb_data, pcb_file: Optional[str] = None
@@ -5288,6 +5344,20 @@ def rule_zone_exclusive(ctx) -> Iterator[Violation]:
                     expected={'zone': list(z.rect), 'overlap_area_mm2': 0.0})
 
 
+def _container_pad_rects(ctx, ref):
+    """A container's pad copper boxes at the pose the grade holds it at
+    (`ctx.state`, else the file's): what `rule_keepout` measures it on."""
+    fp = ctx.pcb.footprints[ref]
+    p = (getattr(ctx.state, 'parts', None) or {}).get(ref)
+    pose = (p.x, p.y, p.rot) if p is not None else (fp.x, fp.y,
+                                                    fp.rotation or 0.0)
+    out = []
+    for q in legality.pads_at_pose(fp, pose):
+        cx, cy, hx, hy = legality.pad_copper_box(q)
+        out.append((cx - hx, cy - hy, cx + hx, cy + hy))
+    return out
+
+
 def rule_keepout(ctx) -> Iterator[Violation]:
     # PART-outer, so `keepouts_for_ref` is called once per part over the whole
     # list -- which is the resolution its own docstring describes, and the
@@ -5297,7 +5367,14 @@ def rule_keepout(ctx) -> Iterator[Violation]:
     # #1443: a height-limited keep-out admits a part whose height is known
     hts = (_ctx_heights(ctx) if any(k.get('max_height_mm') is not None
                                     for k in ctx.intent.keepouts) else None)
+    cont = set(getattr(ctx.state, 'container_refs', ()) or ())
     for ref, part in sorted(ctx.parts.items()):
+        # #1475: a CONTAINER is graded on its pads, never its frame rect (as
+        # #1463 for exclusive zones): a keep-out inside an enclosure -- a
+        # can's fence -- is no hit on the enclosure, while a post standing
+        # in a keep-out still is. The seat already reads pads only.
+        rects = (_container_pad_rects(ctx, ref) if ref in cont
+                 else (part.rect, part.tht_rect))
         # `allow` and the side filter, from the SHARED resolver: the grader
         # and the seat predicate must agree on WHICH keep-outs bind a ref, not
         # merely on the geometry once they do. A through-hole part occupies
@@ -5306,7 +5383,7 @@ def rule_keepout(ctx) -> Iterator[Violation]:
         # the hit test is given both rects.
         for k in keepouts_for_ref(ctx.intent.keepouts, ref, part.sides,
                                   hts.height(ref) if hts is not None else None):
-            if keepout_hit(k, (part.rect, part.tht_rect)):
+            if keepout_hit(k, rects):
                 name = k['name']
                 shape = (_fmt_rect(k['rect']) if k.get('rect') is not None
                          else f"circle {k['circle']}")
