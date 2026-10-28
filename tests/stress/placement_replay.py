@@ -24,7 +24,8 @@ its corpus set). For each RUN:
 4. OUT/<board>/grade.json and the table printed at the end carry, per seed,
    the routed score (blocking, joins needed, vias, copper, segments) and the
    placement's own report (parts without a legal pose, floorplan errors,
-   assembly, broken limits, seconds).
+   assembly, broken limits, seconds), and the human original's routed vias,
+   copper and segments as the benchmark to approach.
 
 Two arms are two OUT directories over the same RUNs with different `--src`
 trees; `--compare A B` prints them paired per board and seed.
@@ -197,6 +198,20 @@ def grade(placed, scores) -> dict:
     return rows
 
 
+def human(name, cset, out_dir, src, corpus):
+    """The human original's routed quality (vias, copper, segments), by the
+    same scorer: the benchmark to approach, never a pose to match."""
+    orig = os.path.join(corpus, f'boards_set{cset}', f'{name}.kicad_pcb')
+    out = os.path.join(out_dir, 'human.score.json')
+    if not os.path.exists(out) and os.path.exists(orig):
+        subprocess.run([sys.executable, '-X', 'utf8', os.path.join(src, 'py_tools', 'board_score.py'),
+                        orig, '--json', out, '--quiet'], check=False, capture_output=True)
+    if not os.path.exists(out):
+        return None
+    q = json.load(open(out)).get('quality', {})
+    return {k: q.get(k) for k in ('vias', 'copper_mm', 'segments')}
+
+
 def replay(run, a) -> dict:
     from placement import run_record
     doc = run_record.load(os.path.join(run, 'placement_manifest.json'))
@@ -211,7 +226,8 @@ def replay(run, a) -> dict:
     placed = place(name, step, a.seeds, out_dir, a.src, a.modal, a.corpus)
     seeds = chosen(placed, a.route)
     rows = grade(placed, route(name, cset, placed, seeds, out_dir, a.src, a.modal, a.corpus))
-    doc = {'board': name, 'set': cset, 'src': a.src, 'route': a.route, 'seeds': rows}
+    doc = {'board': name, 'set': cset, 'src': a.src, 'route': a.route, 'seeds': rows,
+           'human': human(name, cset, out_dir, a.src, a.corpus)}
     json.dump(doc, open(os.path.join(out_dir, 'grade.json'), 'w'), indent=1)
     return doc
 
@@ -226,6 +242,10 @@ def table(docs):
         for s, row in d.get('seeds', {}).items():
             print(f"{d['board']:20s} {s:>4s} " + ' '.join(
                 f"{'-' if row[k] is None else round(row[k]):>9}" for k in KEYS))
+        h = d.get('human')
+        if h:
+            print(f"{d['board']:20s} {'hum':>4s} {'':>9} {'':>9} " + ' '.join(
+                f"{'-' if h[k] is None else round(h[k]):>9}" for k in ('vias', 'copper_mm', 'segments')))
 
 
 def compare(a_dir, b_dir):
