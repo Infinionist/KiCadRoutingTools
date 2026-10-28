@@ -24,7 +24,12 @@ is risked on a guess. So is every pair where neither part has room under it.
 A part something reaches from above -- a connector its plug mates with, a
 switch, a test point, a fiducial, a mounting hole (`part_class` gives it a
 class, or its designator is one of those) -- never goes under a cover,
-whatever its height, and admits nothing inside its own occupancy.
+whatever its height, and admits nothing inside its own occupancy: the room
+its model shows under it is set aside, and every reader names the part
+(`Heights.notices`). A declared `heights[].underside_mm` is the exception:
+the datasheet outranks a designator, so a shield can named J7 with a
+declared underside has room under it (and the notice says it is applied
+over the rule).
 
 Only the surfaces of a model that face the board (or stand on it) say how
 much room there is under it: a model drawn without a bottom face would
@@ -42,7 +47,11 @@ An intent may DECLARE what the models cannot say (`with_declared`):
 `covers[]`, a body a connector carries over the board -- a card in a socket,
 a module on a stacking connector -- whose underside depends on the socket
 and on the card fitted, so it is never read off a model; and `heights[]`, a
-part's height or the room under its body, from its datasheet. A declared
+part's height or the room under its body, from its datasheet. A `heights[]`
+row's `ref` is a reference, else a reference glob (`fnmatch`, as a block's
+`refs`); a row naming a part literally outranks a glob, and of two globs the
+earlier row wins. A row that names no part on the board is named in
+`Heights.notices`, never dropped in silence. A declared
 body moves with its connector, and under it a part must be KNOWN to fit
 (`MARGIN_MM`): a part of unknown height is refused there. So is a part
 reached from above, except a test point under a body declared `removable`
@@ -285,7 +294,8 @@ class Heights:
     """The board's heights: `top[ref]` (mm, how it was known) and `covers[ref]`
     for the parts with room under them. Empty when nothing was measured."""
 
-    def __init__(self, top=None, covers=None, note='', reached=(), bodies=None):
+    def __init__(self, top=None, covers=None, note='', reached=(), bodies=None,
+                 set_aside=None, notices=()):
         self.top: Dict[str, Tuple[float, str]] = dict(top or {})
         #: each modelled part's body, local frame: (cell centres (n, 2), the
         #: model's top over each (n,), their bounding box)
@@ -294,9 +304,23 @@ class Heights:
         self.note = note
         #: the parts reached from above, which nothing may cover
         self.reached = frozenset(reached)
+        #: ...and why each is (`_reached`), when the caller said
+        self.reached_why: Dict[str, str] = dict(reached) if isinstance(reached, dict) else {}
+        #: the parts whose model shows room under them that the reached rule
+        #: keeps solid: {ref: why it is reached}
+        self.set_aside: Dict[str, str] = dict(set_aside or {})
+        #: what was set aside or not applied, one line each, for every reader
+        #: to print: a model's room kept solid, a declaration applied over
+        #: the reached rule, a `heights[]` row that names no part
+        self.notices: Tuple[str, ...] = tuple(notices)
 
     def __bool__(self):
         return bool(self.covers)
+
+    def room_refs(self):
+        """The covers a part may stand under: not solid, or carrying a
+        declared body -- never one the reached rule keeps solid."""
+        return sorted(r for r, c in self.covers.items() if not c.solid or c.decl is not None)
 
     def height(self, ref) -> Optional[float]:
         t = self.top.get(ref)
@@ -483,7 +507,9 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
     the room under the part across its occupancy (outside its drawn courtyard
     and pads); each `covers[]` row a declared body on its connector
     (`Cover.decl`), which moves with it. Declared values win over measured
-    ones. `h` itself when nothing is declared."""
+    ones. A declared underside outranks the reached rule (`_reached`): the
+    part is no solid cover, and the notice says so. `h` itself when nothing
+    is declared."""
     if not declared or not (declared.get('covers') or declared.get('heights')):
         return h
     key = (id(h), id(pcb_data), json.dumps(declared, sort_keys=True, default=str))
@@ -494,27 +520,29 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
     fps = pcb_data.footprints or {}
     # what a probe or a plug reaches from above, whether or not a model was
     # measured: without kicad-cli no measurement named them
-    reached = h.reached or frozenset(_reached(pcb_data))
+    if h.reached:
+        reached, why = h.reached, h.reached_why
+    else:
+        why = _reached(pcb_data)
+        reached = frozenset(why)
     top, covers = dict(h.top), dict(h.covers)
     n_h = n_u = n_c = 0
+    rows, unresolved = height_rows(declared.get('heights') or (), fps)
     unders = []
-    for row in declared.get('heights') or ():
-        r = row.get('ref')
-        if r not in fps:
-            continue
+    for r, row in rows.items():
         if row.get('height_mm') is not None:
             top[r] = (float(row['height_mm']), 'declared')
             n_h += 1
         if row.get('underside_mm') is not None:
-            unders.append(row)
+            unders.append((r, row))
+    applied = {}
     if unders:
         try:
             from placement.body import board_bodies
             geo = board_bodies(pcb_data, pcb_file)
         except Exception:                                    # noqa: BLE001
             geo = {}
-        for row in unders:
-            r = row['ref']
+        for r, row in unders:
             g = geo.get(r)
             occ = getattr(g, 'occupancy_local', None)
             if occ is None:
@@ -529,8 +557,10 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
             lo[inb] = float(row['underside_mm'])
             court = _mask(_no_go(fps[r], getattr(g, 'court_shape_local', None)),
                           x0, y0, nx, ny)
-            covers[r] = Cover(r, x0, y0, lo, court, r in reached,
+            # the datasheet outranks the designator: never solid
+            covers[r] = Cover(r, x0, y0, lo, court, False,
                               base.decl if base is not None else None)
+            applied[r] = float(row['underside_mm'])
             n_u += 1
     # a footprint with no pads is no part (a logo, a mechanical drawing)
     padless = frozenset(k for k, f in fps.items() if not f.pads)
@@ -555,11 +585,57 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
                                      (n_u, 'underside(s)')) if n]
     if said:
         note = f"{note}; declared: {', '.join(said)}"
-    out = Heights(top, covers, note=note, reached=reached, bodies=h.bodies)
+    set_aside = {r: w for r, w in h.set_aside.items() if r not in applied}
+    notices = _set_aside_notices(set_aside)
+    notices += [f"{r}: declared underside_mm {u:g} applied, though it is reached "
+                f"from above ({why.get(r, 'reached')})"
+                for r, u in sorted(applied.items()) if r in reached]
+    notices += unresolved
+    out = Heights(top, covers, note=note, reached=why or reached, bodies=h.bodies,
+                  set_aside=set_aside, notices=notices)
     if len(_DECL_MEMO) > 64:
         _DECL_MEMO.clear()
     _DECL_MEMO[key] = out
     return out
+
+
+def is_glob(ref: str) -> bool:
+    """Does a `heights[]` ref read as a glob (`*`, `?` or `[`)?"""
+    return any(c in ref for c in '*?[')
+
+
+def height_rows(rows, refs):
+    """The `heights[]` rows each part on the board takes, {ref: row}, and a
+    line for every row that names none: a reference not on the board, or a
+    glob matching nothing. A row naming the part literally outranks a glob;
+    of two globs over one part, the earlier row."""
+    import fnmatch
+    out, lines = {}, []
+    for row in rows:
+        r = row.get('ref')
+        if isinstance(r, str) and r in refs:
+            out[r] = row
+    for i, row in enumerate(rows):
+        r = row.get('ref')
+        if not isinstance(r, str) or r in refs:
+            continue
+        if not is_glob(r):
+            lines.append(f"heights[{i}] names {r}, which is not on this board -- "
+                         f"the row is not applied")
+            continue
+        hit = [k for k in refs if fnmatch.fnmatchcase(k, r)]
+        if not hit:
+            lines.append(f"heights[{i}] {r!r} matches no part on this board -- "
+                         f"the row is not applied")
+        for k in hit:
+            out.setdefault(k, row)
+    return out, lines
+
+
+def _set_aside_notices(set_aside):
+    return [f"{r}: model room under it not applied: reached from above ({w}) -- "
+            f"declare heights[].underside_mm to override"
+            for r, w in sorted(set_aside.items())]
 
 
 def _grid_union(base, box):
@@ -970,6 +1046,7 @@ def _load(raw, pcb_data, pcb_file, names) -> Heights:
     top.update(_ipc_tops(pcb_data, top, names))
     covers = {}
     reached = _reached(pcb_data)
+    set_aside = {}
     shapes, occ = {}, {}
     if raw.get('covers'):
         try:
@@ -988,13 +1065,19 @@ def _load(raw, pcb_data, pcb_file, names) -> Heights:
         lo = np.where(cm == 65535, np.inf, cm / 100.0)
         court = _mask(shapes.get(r), x0, y0, nx, ny)
         solid = r in reached
+        if solid and _room_inside(lo, court, x0, y0, occ.get(r)) >= ROOM_MIN_MM2:
+            # the room its model shows over its occupancy is kept solid:
+            # said, never silent (its raised body past it still binds)
+            set_aside[r] = reached[r]
         if _room(lo, court, x0, y0, occ.get(r), solid) >= ROOM_MIN_MM2:
             covers[r] = Cover(r, x0, y0, lo, court, solid)
     n_model = sum(1 for v in top.values() if v[1] == 'model')
+    n_room = sum(1 for c in covers.values() if not c.solid)
     return Heights(top, covers, note=f'{n_model} part heights from models, '
                                      f'{len(top) - n_model} from IPC names, '
-                                     f'{len(covers)} part(s) with room under them',
-                   reached=reached, bodies=_bodies(raw.get('bodies') or {}, top))
+                                     f'{n_room} part(s) with room under them',
+                   reached=reached, bodies=_bodies(raw.get('bodies') or {}, top),
+                   set_aside=set_aside, notices=_set_aside_notices(set_aside))
 
 
 def _bodies(raw, top):
@@ -1028,18 +1111,23 @@ def _reached(pcb_data):
     and those whose designator is a connector's, a switch's, a test point's
     or a mounting part's (`part_class`'s prefix tables) -- a connector drawn
     with a library's own name is still a connector, and a crystal called X1
-    kept out from under a cover costs nothing."""
+    kept out from under a cover costs nothing. {ref: why}, the reason as a
+    reader prints it."""
     from placement.part_class import (ACTUATOR_PREFIX, CONN_PREFIX_LOW, CONN_PREFIX_MED,
                                       _designator, _prefix, classify_part)
     prefixes = set(CONN_PREFIX_MED) | set(CONN_PREFIX_LOW) | set(ACTUATOR_PREFIX)
-    out = set()
+    out = {}
     for ref, fp in (pcb_data.footprints or {}).items():
         try:
-            if (classify_part(fp, ref).name is not None or _prefix(ref) in prefixes
-                    or _designator(ref) in prefixes):
-                out.add(ref)
+            name = classify_part(fp, ref).name
+            if name is not None:
+                out[ref] = f'classed {name}'
+            elif _prefix(ref) in prefixes:
+                out[ref] = f'reference prefix {_prefix(ref)}'
+            elif _designator(ref) in prefixes:
+                out[ref] = f'designator {_designator(ref)}'
         except Exception:                                    # noqa: BLE001
-            out.add(ref)
+            out[ref] = 'its class could not be read'
     return out
 
 
@@ -1057,6 +1145,21 @@ def _room(lo, court, x0, y0, occ, solid=False):
         out = ~(((cx >= occ[0]) & (cx <= occ[2]))[:, None] & ((cy >= occ[1]) & (cy <= occ[3]))[None, :])
         over = (free & (lo >= LIFT_MIN_MM) & out).sum()
     return max(room, over) * CELL_MM * CELL_MM
+
+
+def _room_inside(lo, court, x0, y0, occ):
+    """A raster's room for the shortest part over the part's own occupancy
+    box (the whole raster when it has none), mm^2: what the reached rule
+    keeps solid."""
+    import numpy as np
+    room = np.isfinite(lo) & ~court & (lo >= max(MARGIN_MM + _SHORTEST_MM, ROOM_FLOOR_MM))
+    if occ is not None:
+        nx, ny = lo.shape
+        cx = x0 + (np.arange(nx) + 0.5) * CELL_MM
+        cy = y0 + (np.arange(ny) + 0.5) * CELL_MM
+        room &= (((cx >= occ[0]) & (cx <= occ[2]))[:, None]
+                 & ((cy >= occ[1]) & (cy <= occ[3]))[None, :])
+    return room.sum() * CELL_MM * CELL_MM
 
 
 def _no_go(fp, court):

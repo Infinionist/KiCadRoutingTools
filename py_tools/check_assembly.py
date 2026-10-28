@@ -362,6 +362,11 @@ def main():
     if g.get('heights') and g['heights'] != 'no heights':
         print(f"  heights (#1443): {g['heights']}; {g.get('height_clear', 0)} pair(s) "
               f"clear, one part under the other's body")
+        for n in g.get('height_notices') or ():
+            print(f"    {n}")
+    else:
+        for n in g.get('height_notices') or ():
+            print(f"  heights (#1443): {n}")
     if base_pile:
         print(f"  baseline {args.baseline} is a pile: its overlaps are staging, "
               f"not a baseline (#1103), so every advisory pair counts as new")
@@ -1135,6 +1140,7 @@ def main():
             # body too low for them (kind 'height', in courtyard_blocking)
             'heights': g.get('heights'),
             'height_clear': g.get('height_clear', 0),
+            'height_notices': list(g.get('height_notices') or ()),
             'height_pairs': [q._asdict() for q in g['pairs'] if q.kind == 'height'],
             'courtyard_advisory': sum(
                 1 for q in g['advisory_pairs'] if q.kind == 'courtyard'

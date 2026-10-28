@@ -1246,6 +1246,23 @@ drawn solid to the board: across its occupancy, outside its drawn courtyard
 and pads, as a model's underside would be read). Declared values win over
 measured ones. Take them from a datasheet, never a guess.
 
+A declared `underside_mm` also wins over the "reached from above" rule: a
+part whose class or designator says something reaches it from above (a
+connector, a switch, a test point -- `J`, `P`, `X`, `SW`, `TP`, ...) admits
+nothing inside its outline, but a shield can named `J7` with a declared
+underside has room under it, and every reader says the declaration was
+applied over the rule. Without a declaration such a part stays solid even
+where its 3D model shows room under it, and every reader names it (`J9:
+model room under it not applied: reached from above (reference prefix J)`),
+never a "room under" line.
+
+A row's `ref` is a reference or a reference glob (`C*`, matched as a
+block's `refs` are): a row naming the part outright outranks a glob, and of
+two globs the earlier row wins. A row that names no part on the board (a
+reference it does not have, a glob that matches nothing) is named by every
+reader -- check_assembly, check_floorplan, `place_simple`, `place_pose` --
+and not applied.
+
 A keep-out's `max_height_mm` turns it into a height limit: a part whose
 height is known and no more than that may stand in it; an unknown height, a
 taller part and a through-hole part (its leads stand on the other face) are

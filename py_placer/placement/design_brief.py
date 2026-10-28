@@ -72,6 +72,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import floorplan as fp
+from .heights import is_glob
 
 SCHEMA_VERSION = 1
 KIND = 'design-brief'
@@ -1240,7 +1241,10 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
             entry['context'] = ctx
             declared.append(f"{key}[{row[ident]}]")
             for m in [row[ident]] + [str(x['ref']) for x in row.get('standoffs') or ()]:
-                if refs_known and refset and m not in refset:
+                if refs_known and refset and m not in refset and not (
+                        key == 'heights' and is_glob(m)
+                        and any(fnmatch.fnmatchcase(r, m) for r in refset)):
+                    # a `heights[]` ref may be a glob (`placement.heights`)
                     unmatched.append(m)
             out_rows.append(entry)
         if out_rows:

@@ -1444,9 +1444,14 @@ class QuenchState:
             if _lb is not None and (_lb[0] < _ob[0] or _lb[1] < _ob[1]
                                     or _lb[2] > _ob[2] or _lb[3] > _ob[3]):
                 self._overhangs.add(_r)
-        if self.covers:
-            print(f"  heights: {self.heights.note}; room under "
-                  + ', '.join(sorted(self.covers)))
+        # never "room under" a cover the reached rule keeps solid; what was
+        # set aside or not applied is named, one line each
+        _room = [r for r in self.heights.room_refs() if r in self.covers]
+        if _room or self.heights.notices:
+            print(f"  heights: {self.heights.note}"
+                  + ("; room under " + ', '.join(_room) if _room else ''))
+        for _n in self.heights.notices:
+            print(f"  heights: {_n}")
         self._pin_census_obj = None
         self._pin_copper = {}
         if self.container_refs:
