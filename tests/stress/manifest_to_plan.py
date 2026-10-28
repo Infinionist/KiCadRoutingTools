@@ -597,6 +597,19 @@ def _num(v):
 PATH_PARAMS = {'net_clearances_path', 'fab_overrides_path'}
 
 
+def _long_form(argv):
+    """#1460: the command with each short option respelled as its long one,
+    by the tool's own parser (cli_argv_check.long_form). Every table here is
+    keyed by long spellings, so a recorded `qfn_fanout.py ... -c U2 -w 0.15`
+    lost its component and width, and after `--nets '*'` the two short
+    options and their values were taken into the net list."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from cli_argv_check import long_form
+    return long_form(argv)
+
+
 def parse_command(argv, cwd=None):
     tool = None
     for a in argv:
@@ -611,6 +624,7 @@ def parse_command(argv, cwd=None):
             return {'_noop': f"{base}: {NOOP_TOOLS[base]}"}
     if tool is None:
         return None
+    argv = _long_form(argv)
     # A `--help` invocation (the agent inspecting a tool during the run) is not a
     # routing step -- skip it so the plan doesn't carry no-op `help: true` steps.
     if '--help' in argv or '-h' in argv:
@@ -896,6 +910,7 @@ def cap_optimization_step(argv, cwd=None):
     """A place_fanout_clearance.py invocation -> a standalone `optimize_caps` plan
     step (matching ai_plan.py's live format), carrying the non-default cap_*
     knobs so a loaded plan optimizes caps the way the recorded run did."""
+    argv = _long_form(argv)
     params = {}
     i = 0
     while i < len(argv):
