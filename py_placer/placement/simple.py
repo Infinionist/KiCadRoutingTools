@@ -13,6 +13,11 @@ this cost by simulated annealing; `place_simple.py` is the CLI.
            `max_mm`, pad edge to its partner pad as `check_floorplan` grades
            it (`claim_over`: a crystal leg past 8.1 mm of its pin, a load cap
            past 2.2 mm of its crystal)
+         + KEEP_AWAY_WEIGHT x mm each part pair falls short of a declared
+           `keep_away[]` gap, pad edge to pad edge as `check_floorplan`
+           grades it (`keep_away_pair`: an aggressor part's pads on the
+           rule's aggressor nets against a victim part's on its victim nets,
+           two pads of one net or one part never measured)
          + template_weight x each datasheet-template member's mean pad
            distance from where its template puts it for its chip's live pose
            (`placement.templates`: the members are seated there before the
@@ -106,6 +111,12 @@ FAN_MM = 0.25
 #: a part with at most this many pads, wired to a fine-pitch part, may sit
 #: in its halo (a decap at its pin, a crystal at its oscillator pins)
 HALO_SMALL_PADS = 4
+#: cost per mm a part pair falls short of a declared `keep_away[]` gap
+#: (#1476): a declared separation, so it outweighs the wire a breach saves.
+#: Measured on a 92-part board with one rule over 12 parts, 4 seeds: at 10
+#: (the claim-limit weight) 2 seeds ended inside the gap, at 100 one, at
+#: 500 none, the mean wire within the seeds' spread of the unpriced run.
+KEEP_AWAY_WEIGHT = 500.0
 #: cells per side of the congestion grid's blocks: a move visits only the
 #: blocks where a cell can overflow before or after it (`_cong_price`)
 CONG_BLOCK = 8
@@ -381,7 +392,7 @@ class Model:
                  hints: Sequence[Dict] = (), halo_coef: float = 0.25,
                  halo_weight: float = 10.0, claim_limits: Sequence = (),
                  claim_limit_weight: float = 0.0, templates: Sequence = (),
-                 template_weight: float = 0.0):
+                 template_weight: float = 0.0, keep_away: Sequence = ()):
         self.state, self.pcb = state, pcb
         self.halo_coef, self.halo_weight = halo_coef, halo_weight
         self.hints = [h for h in hints if h['weight'] > 0]
@@ -412,6 +423,29 @@ class Model:
         self._cmax = ({id(c): float(m) for c, m in zip(claims, claim_limits) if m is not None}
                       if claim_limit_weight > 0 else {})
         self._phx: Dict = {}
+        # the intent's keep_away[] rules (#1476), each (gap, aggressor
+        # nets, victim nets), priced at KEEP_AWAY_WEIGHT per mm of a part
+        # pair's shortfall: per rule, each part's connected-pad indices (in
+        # `pad_globals` order) and nets on either side
+        self.ka = []
+        if keep_away:
+            conn = {r: [p for p in pcb.footprints[r].pads if p.net_id > 0]
+                    for r in state.parts}
+            for gap, agg, vic in keep_away:
+                sides = []
+                for nets in (agg, vic):
+                    by = {}
+                    for r, pads in conn.items():
+                        ix = [(i, p.net_id) for i, p in enumerate(pads)
+                              if p.net_id in nets and p.pad_type != 'np_thru_hole']
+                        if ix:
+                            by[r] = (np.array([i for i, _n in ix], dtype=int),
+                                     np.array([n for _i, n in ix], dtype=int))
+                    sides.append(by)
+                if sides[0] and sides[1]:
+                    self.ka.append((float(gap), sides[0], sides[1]))
+        self._ka_parts = {r for _g, A, V in self.ka for r in set(A) | set(V)}
+        self._ka_gap = max((g for g, _A, _V in self.ka), default=0.0)
         # datasheet templates, one entry per member: (anchor, member row
         # {ref, at, rot}) -- `placement.templates`
         self.tw = template_weight
@@ -617,6 +651,116 @@ class Model:
                 for a in self._pad_rects(subj, spad):
                     over += max(0.0, min(rect_gap(a, b) for b in P) - m)
         return over
+
+    # -- the intent's keep_away[] (#1476) ---------------------------------------
+    def _conn_rects(self, ref):
+        """The copper rects (k x 4) of `ref`'s connected pads at its live
+        pose, in `pad_globals` order, as `legality.pad_rect` gives them (the
+        same turn of each copper box's offset as `_pad_rects`), memoised on
+        the pose."""
+        part = self.state.parts[ref]
+        key = (part.x, part.y, part.rot)
+        memo = self.__dict__.setdefault('_crmemo', {})
+        got = memo.get(ref)
+        if got is not None and got[0] == key:
+            return got[1]
+        boxes = self.__dict__.setdefault('_crbox', {})
+        hx = boxes.get(ref)
+        if hx is None:
+            from .legality import pad_copper_box
+            hx = boxes[ref] = [
+                (cx - p.global_x, cy - p.global_y, a, b)
+                for p in self.pcb.footprints[ref].pads if p.net_id > 0
+                for cx, cy, a, b in [pad_copper_box(p)]]
+        odd = abs((part.rot - part.orig_rot) % 180.0 - 90.0) < 1e-6
+        out = []
+        for (x, y, _n), (ox, oy, a, b) in zip(part.pad_globals(), hx):
+            if ox or oy:
+                ox, oy = _turn(ox, oy, part.rot - part.orig_rot)
+                x, y = x + ox, y + oy
+            if odd:
+                a, b = b, a
+            out.append((x - a, y - b, x + a, y + b))
+        val = np.asarray(out, dtype=float).reshape(-1, 4)
+        memo[ref] = (key, val)
+        return val
+
+    def _ka_box(self, ref):
+        """The bounding box of `ref`'s keep-away pads at its live pose."""
+        R = self._conn_rects(ref)
+        ix = np.unique(np.concatenate(
+            [S[ref][0] for _g, A, V in self.ka for S in (A, V) if ref in S]))
+        P = R[ix]
+        return (float(P[:, 0].min()), float(P[:, 1].min()),
+                float(P[:, 2].max()), float(P[:, 3].max()))
+
+    def keep_away_pair(self, a, b):
+        """mm parts `a` and `b` fall short of the keep_away gaps, summed over
+        the rules and both directions (a's aggressor pads to b's victim pads,
+        and b's to a's): each the rule's gap less the least pad-edge gap
+        between them, two pads of one net not measured -- the pair
+        `floorplan.rule_keep_away` reports, at its closest pads."""
+        from .floorplan import _keep_away_gaps
+        v = 0.0
+        Ra = Rb = None
+        for gap, A, V in self.ka:
+            for x, y in ((a, b), (b, a)):
+                ia, iv = A.get(x), V.get(y)
+                if ia is None or iv is None:
+                    continue
+                if Ra is None:
+                    Ra, Rb = self._conn_rects(a), self._conn_rects(b)
+                Rx, Ry = (Ra, Rb) if x == a else (Rb, Ra)
+                g = _keep_away_gaps(Rx[ia[0]], Ry[iv[0]])
+                g = np.where(ia[1][:, None] == iv[1][None, :], np.inf, g)
+                m = float(g.min())
+                if m < gap - 1e-9:
+                    v += gap - m
+        return v
+
+    def keep_away_cost(self):
+        """Every keep-away part pair's shortfall, from scratch."""
+        names = sorted(self._ka_parts)
+        box = {r: self._ka_box(r) for r in names}
+        g, total = self._ka_gap, 0.0
+        for i, a in enumerate(names):
+            ra = box[a]
+            for b in names[i + 1:]:
+                rb = box[b]
+                if (ra[2] + g <= rb[0] or rb[2] + g <= ra[0]
+                        or ra[3] + g <= rb[1] or rb[3] + g <= ra[1]):
+                    continue
+                total += self.keep_away_pair(a, b)
+        return total
+
+    def keep_away_broken(self):
+        """How many part pairs the committed poses put inside a gap."""
+        return len(getattr(self, '_kp', {}))
+
+    def _local_ka_bd(self, R, movers=True):
+        """`R`'s keep-away pairs against the parts near them as a breakdown
+        {(a, b): shortfall}, nonzero pairs only. With `movers` the index
+        holds the other movers' old boxes, so they are paired among
+        themselves too; without, every box in it is live (`_build_breakdowns`)."""
+        rset = set(R) & self._ka_parts
+        out: Dict = {}
+        g = self._ka_gap
+        for a in sorted(rset):
+            ra = self._ka_box(a)
+            near = self._ixk.query((ra[0] - g, ra[1] - g, ra[2] + g, ra[3] + g))
+            if movers:
+                near |= rset
+            for b in sorted(near):
+                if b == a or (b in rset and b < a):
+                    continue
+                rb = self._ka_box(b)
+                if (ra[2] + g <= rb[0] or rb[2] + g <= ra[0]
+                        or ra[3] + g <= rb[1] or rb[3] + g <= ra[1]):
+                    continue
+                v = self.keep_away_pair(a, b)
+                if v:
+                    out[(a, b) if a < b else (b, a)] = v
+        return out
 
     # -- datasheet templates --------------------------------------------------
     def template_target(self, i):
@@ -1315,14 +1459,16 @@ class Model:
         cong = self.congestion()
         pads = self.pad_crossings() if self.pw_pad > 0 else 0.0
         lim = self._limits_all()
+        ka = self.keep_away_cost() if self.ka else 0.0
         return {'wire': wire, 'crossings': cross, 'claims': claims, 'decaps': dec,
                 'groups': grp, 'per_group': per_group, 'hints': hint, 'per_hint': per_hint,
                 'halo': halo, 'congestion': cong, 'pad_hits': pads, 'decap_limits': lim,
                 'decap_broken': self.limits_broken(), 'claim_limits': cover,
                 'claim_broken': self.claims_broken(), 'template': tmpl,
+                'keep_away': ka, 'keep_away_broken': self.keep_away_broken(),
                 'cost': (wire + self.cw * cross + self.kw * claims + self.dw * dec
                          + self.gw * grp + hint + halo + self.qw * cong + self.pw_pad * pads
-                         + self._lw * lim + self.klw * cover + self.tw * tmpl)}
+                         + self._lw * lim + self.klw * cover + KEEP_AWAY_WEIGHT * ka + self.tw * tmpl)}
 
     # -- the intent's decap limits ---------------------------------------------
     # Each term is a MINIMUM over pairs, as the grade measures it: a supply
@@ -1732,6 +1878,7 @@ class Model:
         some other way calls this, as `total` does."""
         self._ixp = SpatialIndex()
         self._ixh = SpatialIndex()      # the parts with a halo alone
+        self._ixk = SpatialIndex()      # the keep-away parts, by their pads' box
         # each part's committed rect, row = `_pid` (the anneal's overlap)
         self._CR = np.zeros((len(self.state.parts), 4))
         self._npads = {}
@@ -1795,6 +1942,12 @@ class Model:
         self._gc = {name: self.group_cost(m) for name, m in self.groups}
         self._clc = {id(c): self.claim_cost(c) for c in self.claims}
         self._clo = {id(c): self.claim_over(c) for c in self.claims}
+        self._kp, self._knb = {}, {r: set() for r in self._ka_parts}
+        if self.ka:
+            for (a, b), v in self._local_ka_bd(sorted(self._ka_parts), movers=False).items():
+                self._kp[(a, b)] = v
+                self._knb[a].add(b)
+                self._knb[b].add(a)
         self._tpc = {i: self.template_cost(i) for i in range(len(self.tmpl))}
         self._dcc = {k: self.cluster_cost(k) for k in range(len(self.clusters))}
         self._hw = {h['key']: self._hint_full(h) for h in self.hints}
@@ -1849,6 +2002,9 @@ class Model:
         if r in self._halo_parts:
             self._ixh.remove(r)
             self._ixh.insert(r, rect)
+        if r in self._ka_parts:
+            self._ixk.remove(r)
+            self._ixk.insert(r, self._ka_box(r))
         rects, wts, nets, pids = self._pad_rows(r)
         k = len(rects)
         base = self._prow.get((r, 0))
@@ -1950,6 +2106,15 @@ class Model:
                 self._hp[(a, b) if a < b else (b, a)] = v
                 self._hnb.setdefault(a, set()).add(b)
                 self._hnb.setdefault(b, set()).add(a)
+        for r in set(R) & self._ka_parts:               # keep-away: r's pairs anew
+            for b in list(self._knb.get(r, ())):
+                self._kp.pop((r, b) if r < b else (b, r), None)
+                self._knb[b].discard(r)
+            self._knb[r] = set()
+        for (a, b), v in pend['ka'].items():
+            self._kp[(a, b)] = v
+            self._knb.setdefault(a, set()).add(b)
+            self._knb.setdefault(b, set()).add(a)
         self._gc.update(pend['groups'])
         self._clc.update(pend['claims'])
         self._clo.update(pend['claim_over'])
@@ -2027,9 +2192,14 @@ class Model:
             hint = sum(self._hc[h['key']] for h in hs)
             lim = sum(self._over_limit(i, self._lval[i]) for i in ls)
             tmpl = sum(self._tpc[i] for i in ts)
+            ka = 0.0
+            for r in R:     # in the order `_local_ka_bd` sums them, as the halo
+                for b in sorted(self._knb.get(r, ())):
+                    if b not in rset or b > r:
+                        ka += self._kp[(r, b) if r < b else (b, r)]
             return (wire + self.cw * cross + self.kw * claims + self.dw * dec
                     + self.gw * grp + hint + halo + self.qw * self.congestion()
-                    + self.pw_pad * pads + self._lw * lim + self.klw * cover
+                    + self.pw_pad * pads + self._lw * lim + self.klw * cover + KEEP_AWAY_WEIGHT * ka
                     + self.tw * tmpl)
         ccl = {id(c): self.claim_cost(c) for c in cl}
         cco = {id(c): self.claim_over(c) for c in cl}
@@ -2062,6 +2232,7 @@ class Model:
         else:
             pend['pads'], pads = {}, 0.0
         pend['halo'] = self._local_halo_bd(R)
+        pend['ka'] = self._local_ka_bd(R) if self.ka else {}
         lim = 0.0
         if ls:
             pend['lim'] = self._lim_local(ls, R)
@@ -2072,6 +2243,7 @@ class Model:
                 + self.gw * sum(groups.values()) + sum(pend['hints'].values())
                 + sum(pend['halo'].values()) + self.qw * self.congestion()
                 + self.pw_pad * pads + self._lw * lim + self.klw * cover
+                + KEEP_AWAY_WEIGHT * sum(pend['ka'].values())
                 + self.tw * sum(ctp.values()))
 
     def _group_names(self, gr):

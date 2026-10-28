@@ -279,6 +279,17 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
     # congestion counts every net that is routed as tracks: all but ground,
     # which is poured as a plane
     cnets = sorted(n for n in state.net_refs if n and not is_ground(pcb.nets[n].name))
+    # the intent's keep_away[] rules (#1476), their sides resolved as the
+    # grade resolves them (`floorplan.rule_keep_away`)
+    ka_rules = []
+    if intent is not None and intent.keep_away:
+        from keep_away import parse_keep_away_rules, resolve_rule_sides
+        from placement.simple import KEEP_AWAY_WEIGHT
+        for entry in intent.keep_away:
+            rule = parse_keep_away_rules(entry['rule'])[0]
+            (agg, vic, _g), = resolve_rule_sides(pcb, (rule,))[0]
+            if agg and vic:
+                ka_rules.append((float(rule.gap), set(agg), set(vic)))
     model = Model(state, pcb, rails=view.rails, claims=claims,
                   decaps=decaps, supply=supply, decap_pins=decap_pins,
                   groups=groups, congestion_weight=args.congestion_weight,
@@ -291,7 +302,12 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
                   hints=hints(doc, state, movable, args),
                   halo_coef=args.halo_coef, halo_weight=args.halo_weight,
                   claim_limits=limits, claim_limit_weight=args.claim_limit_weight,
-                  templates=tmpls, template_weight=args.template_weight)
+                  templates=tmpls, template_weight=args.template_weight,
+                  keep_away=ka_rules)
+    if model.ka:
+        notes.append(f"keep_away priced: {len(model.ka)} rule(s) over "
+                     f"{len(model._ka_parts)} part(s), {KEEP_AWAY_WEIGHT:g} per mm short "
+                     f"of each gap")
     model.claim_arity = model_arity
     # the fold, as data: the same in every seed, reported once per run (#1467)
     model.fold = ({'moved': {r: list(ft) for r, ft in sorted(fold['moved'].items())},

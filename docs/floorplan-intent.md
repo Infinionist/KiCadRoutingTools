@@ -948,7 +948,7 @@ reading.
 | `legality` | yes | — | a whole-board aggregate against a BUDGET. The anneal keeps only an overlap-free state as its best, and the legality check holds every part clear of its neighbours |
 | `replicate` | yes | — | `place_pose replicate --intent` applies the declaration; an anneal after it may move a copied part, and the grade then reports it |
 | `template` | yes | **seated, carried and priced**: each member starts at its template pose round its chip, moves rigidly with every move of the chip, and its mean pad distance from that pose costs `--template-weight` (default 100) per mm; a member's `jump` goes back to its pose, and a member joins the chip's group and is not priced as a decap | the final legality step can still nudge a member to its nearest legal pose; the grade then reports the drift |
-| `keep_away` | yes | — | grade only; the routers price it once there are tracks |
+| `keep_away` | yes | **priced** whenever the intent declares a row (#1476): each part pair's shortfall below GAP, pad edge to pad edge as the grade measures it (the rule's own sides, `_keep_away_gaps` on `legality.pad_rect` rects, two pads of one net or one part never measured), costs `KEEP_AWAY_WEIGHT` (500) per mm -- a declared separation, so it outweighs the wire a breach saves | a soft term, so a crowded board can still end a seed inside a gap, which the grade then reports; the routers price it again once there are tracks |
 | `pins_to_edge` | yes | — | always-WARN advice for a reviewer |
 | `array_formation` | yes | — | graded only. A group in the groups file keeps its parts together, not in a row |
 
@@ -1066,6 +1066,14 @@ pad's side:
 ```
 [warn ] keep_away: Y1 pad 1 (F.Cu) on /32K_P is 0.91mm from L2 pad 1 (F.Cu) on Net-(D5-A), inside the 1.00mm keep-away (keep_away[0] 'Net-(D5-A):/32K_P,/32K_N:1')
 ```
+
+`place_simple` prices the same measurement (#1476): each part pair's
+shortfall below GAP, summed over its rules and both directions, costs
+`KEEP_AWAY_WEIGHT` (500) per mm, so the anneal keeps the two net groups apart
+rather than learning afterwards that it broke the rule. It prints `keep_away
+priced: N rule(s) over M part(s)`, and `final.keep_away` /
+`final.keep_away_broken` in its `--json` are the shortfall and the pairs
+still inside a gap.
 
 `severity: {"keep_away": "error"}` promotes it. Every rule also prints its
 closest pair when it passes (`keep-away <rule>: closest 15.34mm, ...`), and
