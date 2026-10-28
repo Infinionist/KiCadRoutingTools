@@ -1408,6 +1408,12 @@ class QuenchState:
         self.container_refs = set(self.container_kinds)
         self.pin_frame_refs = {r for r, k in self.container_kinds.items()
                                if k == 'pin_frame'}
+        # A container that keeps a drawn courtyard (rings round its posts):
+        # its islands bind as drawn, through the grader's own pairs, beside
+        # a pin frame's pins (`_pin_hits_at`, `frame_court_boxes`).
+        self.court_frame_refs = set(legality.frame_courtyard_refs(
+            self.container_kinds, _lbs))
+        self.frame_refs = self.pin_frame_refs | self.court_frame_refs
 
         # --- #702 declared claims, resolved ONCE per state ------------------
         # The zone half is built by the free `build_zone_spec` (#698), the one
@@ -1835,8 +1841,9 @@ class QuenchState:
     def _pin_violation(self, ref, x, y, rot, exclude=None) -> float:
         """#1212: a part on a frame's pin is a violation too -- the
         clearance, as for any refused pair -- so `violation() == 0` keeps
-        implying `candidate_valid` admits it, on the waived path as well."""
-        if not self.pin_frame_refs:
+        implying `candidate_valid` admits it, on the waived path as well.
+        So is a part on a container's own drawn courtyard."""
+        if not self.frame_refs:
             return 0.0
         part = self.parts[ref]
         _px = part.x if x is None else x
@@ -1848,6 +1855,7 @@ class QuenchState:
 
     def _pin_conflict_at(self, ref, x, y, rot, exclude=None):
         """The first GATING pin_in_courtyard pair `ref` makes at this pose,
+        or courtyard pair against a container's own drawn courtyard,
         as the GRADER finds it (`legality.CourtyardCensus.pin_hits`, the
         function check_assembly's channel runs), or None. Frames sit at their
         current poses; a frame being moved is graded against every part."""
@@ -1868,6 +1876,24 @@ class QuenchState:
         p = self.parts[frame]
         return [hb for _n, _s, hb, _k in
                 self._pin_census_obj._frame_holes(frame, (p.x, p.y, p.rot))]
+
+    def frame_court_boxes(self, frame) -> list:
+        """[(x0, y0, x1, y1, sides)] of each island of a container's own
+        drawn courtyard at its current pose (`CourtyardCensus.
+        frame_islands`), on its own face: what place_simple's anneal prices
+        a courtyard over, beside the holes. Empty for a frame drawing none."""
+        if frame not in self.court_frame_refs:
+            return []
+        if self._pin_census_obj is None:
+            self._pin_census_obj = legality.CourtyardCensus(self.pcb_data,
+                                                            self.pcb_file)
+        p = self.parts[frame]
+        fg, boxes = self._pin_census_obj.frame_islands(frame,
+                                                       (p.x, p.y, p.rot))
+        if fg is None:
+            return []
+        sides = frozenset((fg.side,))
+        return [tuple(b) + (sides,) for b in boxes]
 
     def pin_copper_boxes(self, frame) -> list:
         """[(x0, y0, x1, y1, sides)] of pin frame `frame`'s copper pads at
@@ -1911,15 +1937,17 @@ class QuenchState:
         (`seeder._fixed_pose_check`), not wherever they sit right now."""
         # NOT skipped under `courtyards_ignored`: that is courtyards_overlap,
         # and a pin is KiCad's pth/npth_inside_courtyard, whose own project
-        # severity the grader's pairs already honour (phase-3 verifier).
-        if not self.pin_frame_refs:
+        # severity the grader's pairs already honour (phase-3 verifier). A
+        # container's drawn-courtyard pair IS courtyards_overlap, and the
+        # census waives it under that severity, so it never arrives here.
+        if not self.frame_refs:
             return []
         if self._pin_census_obj is None:
             self._pin_census_obj = legality.CourtyardCensus(self.pcb_data,
                                                             self.pcb_file)
         if poses is None:
-            refs = (self.parts if ref in self.pin_frame_refs
-                    else self.pin_frame_refs)
+            refs = (self.parts if ref in self.frame_refs
+                    else self.frame_refs)
             poses = {r: (self.parts[r].x, self.parts[r].y,
                          self.parts[r].rot) for r in refs}
         return self._pin_census_obj.pin_hits(ref, (x, y, rot), poses)
@@ -2381,7 +2409,7 @@ class QuenchState:
                     if self._why is not None:
                         self._veto('courtyard', other_ref, path='smd')
                     break
-        if legal and self.pin_frame_refs:
+        if legal and self.frame_refs:
             # #1212: a pin frame's PINS. Its rect is skipped above (a frame,
             # not a body), so without this a part was seated on a Teensy pin
             # (rp2350 seed 4: SW1 over U8 pins 16/17, which KiCad reports and

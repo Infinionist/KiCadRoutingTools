@@ -650,7 +650,7 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
     # against the obstacles at THEIR poses, and, like a courtyard overlap,
     # recorded instead of refused when the pair's overlap is declared: the
     # grader waives an intent-declared pin pair (`intent_declared`) too.
-    if getattr(state, 'pin_frame_refs', None):
+    if getattr(state, 'frame_refs', None):
         for _hit in state._pin_hits_at(
                 ref, *pose, poses={o: tuple(p) for o, p in obstacles.items()
                                    if o != ref}):
@@ -664,6 +664,8 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
                         _hit.pins)
                 continue
             conflicts[_other] = (
+                f"overlaps {_other}'s drawn courtyard (courtyards_overlap)"
+                if _hit.kind == 'courtyard' else
                 f"sits on {_other}'s pin(s) {_pins} (pin_in_courtyard)"
                 if _other in state.pin_frame_refs else
                 f"pin(s) {_pins} under {_other}'s courtyard "

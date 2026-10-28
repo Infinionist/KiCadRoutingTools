@@ -790,6 +790,18 @@ def container_kinds(pcb_data, local_bounds) -> Dict[str, str]:
                                       lb.synthetic, lb.court_cover),) if k}
 
 
+def frame_courtyard_refs(kinds, local_bounds) -> frozenset:
+    """The containers (`kinds`, `container_kinds`' answer) that KEEP a
+    drawn courtyard -- one covering less than `FRAME_COURTYARD_COVER` of the
+    frame, such as rings round its posts. The frame is not graded, but those
+    islands are, as drawn, as KiCad's courtyards_overlap grades them
+    (`CourtyardCensus._frame_court_pairs`)."""
+    from placement.body import SOURCE_COURTYARD
+    return frozenset(r for r in kinds
+                     if getattr(local_bounds.get(r), 'source', '')
+                     == SOURCE_COURTYARD)
+
+
 def container_courtyard_notes(pcb_data, local_bounds) -> List[str]:
     """One line per container-sized part that DRAWS a courtyard, naming what
     the courtyard decided (#1465): read as a frame because it covers little
@@ -2533,7 +2545,7 @@ class PairWaivers:
             self._classes[ref] = name
         return self._classes[ref]
 
-    def label(self, a: str, b: str) -> str:
+    def label(self, a: str, b: str, frame_court: bool = False) -> str:
         # AUTHORED FIRST (#897). An operator naming a pair in the intent's
         # `overlap_waivers` outranks every class label -- which is what the
         # consumers already assume: `blocking_waived` returns True for
@@ -2553,7 +2565,9 @@ class PairWaivers:
             if pair in self.waiver_sets:
                 self.hit.add(pair)
                 return 'intent_declared'
-        if a in self.containers or b in self.containers:
+        # A frame's own drawn courtyard (`frame_court`) is graded as drawn,
+        # so the container label that excuses its frame does not apply.
+        if not frame_court and (a in self.containers or b in self.containers):
             return 'container_class'
         if self.fits is not None and self.fits(a, b):
             return HEIGHT_WAIVER
@@ -2564,7 +2578,8 @@ class PairWaivers:
             return 'edge_class'
         return ''
 
-    def courtyard_label(self, a: str, b: str) -> str:
+    def courtyard_label(self, a: str, b: str, frame_court: bool = False
+                        ) -> str:
         """`label`, for a COURTYARD (or pin-in-courtyard) pair: an
         `overlap_waivers` pair first, then a pair a declared pose accepts
         (#1298: `FIXED_POSE_WAIVER`, authored like `intent_declared` and,
@@ -2574,7 +2589,7 @@ class PairWaivers:
             if pair in self.courtyard_sets:
                 self.courtyard_hit.add(pair)
                 return FIXED_POSE_WAIVER
-        return self.label(a, b)
+        return self.label(a, b, frame_court)
 
     def edge_live(self, ref: str) -> bool:
         """An edge-class waiver is a claim that the part's shell or actuator
@@ -2805,7 +2820,12 @@ class CourtyardCensus:
         self.containers = frozenset(self.kinds)
         self.pin_frames = frozenset(r for r, k in self.kinds.items()
                                     if k == 'pin_frame')
+        # A container that keeps a drawn courtyard (rings round its posts):
+        # its frame is still no body, but the islands are graded as drawn
+        # (`_frame_court_pairs`), as KiCad's courtyards_overlap grades them.
+        self.court_frames = frame_courtyard_refs(self.kinds, self.lbs)
         self._holes: Dict[tuple, list] = {}
+        self._islands: Dict[tuple, tuple] = {}
 
     #: Cached GradedParts at poses other than the file's; the cache is
     #: dropped when it reaches this, so a generator asking about many
@@ -2949,7 +2969,77 @@ class CourtyardCensus:
         poses = poses or {}
         parts = {r: self.graded_part(r, poses.get(r)) for r in self.lbs}
         return self._select(parts, body_overlap_pairs(list(parts.values())),
-                            moved, self._pin_pairs(parts, poses), poses=poses)
+                            moved, self._pin_pairs(parts, poses), poses=poses,
+                            frame_raw=self._frame_court_pairs(parts, poses))
+
+    #: `BodyOverlapPair.basis` of a courtyard pair against a container's own
+    #: drawn courtyard (`_frame_court_pairs`): kind 'courtyard', KiCad's
+    #: courtyards_overlap, never a pin rule.
+    FRAME_COURT_BASIS = 'frame_courtyard'
+
+    def frame_islands(self, frame: str, pose=None) -> tuple:
+        """`(part, boxes)` for a container in `court_frames` at `pose`:
+        a `GradedPart` whose outline is ONLY its drawn own-face courtyard,
+        placed (its frame is no body), and the bounds of each island, the
+        broad phase. `(None, [])` when that courtyard does not close: KiCad
+        reports malformed_courtyard there and tests nothing against it, as
+        `_pin_shapes` treats one."""
+        key = (frame, None if pose is None else tuple(pose))
+        hit = self._islands.get(key)
+        if hit is not None:
+            return hit
+        from placement.parser import OUTLINE_POLYGON
+        out = (None, [])
+        geom = self.bodies.get(frame)
+        lb = self.lbs.get(frame)
+        if (geom is not None and lb is not None
+                and geom.court_shape_local is not None
+                and geom.court_shape_how == OUTLINE_POLYGON):
+            fp = self.fps[frame]
+            x, y, rot = (pose if pose is not None
+                         else (fp.x, fp.y, fp.rotation or 0.0))
+            shape = place_local_shape(geom.court_shape_local, x, y, rot)
+            boxes = [g.bounds for g in getattr(shape, 'geoms', [shape])]
+            out = (GradedPart(ref=frame, side=lb.side, rect=shape.bounds,
+                              source=lb.source, poly=shape,
+                              local=tuple(lb.local),
+                              court_cover=lb.court_cover), boxes)
+        if len(self._islands) > self.POSE_CACHE_CAP:
+            self._islands = {}
+        self._islands[key] = out
+        return out
+
+    def _frame_court_pairs(self, parts, poses, members=None) -> list:
+        """Raw courtyard pairs against each `court_frames` container's own
+        drawn courtyard, as drawn (`frame_islands`): the pair the ordinary
+        channel would make (`courtyard_pair`) had the frame drawn only those
+        islands, basis `FRAME_COURT_BASIS`. `members` restricts to the pairs
+        one of these refs is in."""
+        out = []
+        poses = poses or {}
+        for frame in sorted(self.court_frames):
+            if frame not in parts:
+                continue
+            fg, boxes = self.frame_islands(frame, poses.get(frame))
+            if fg is None:
+                continue
+            for r, gp in parts.items():
+                if r == frame or r in self.containers:
+                    continue
+                if members is not None and frame not in members \
+                        and r not in members:
+                    continue
+                if gp.side == fg.side:
+                    c = gp.rect
+                    if not any(b[0] < c[2] and c[0] < b[2] and b[1] < c[3]
+                               and c[1] < b[3] for b in boxes):
+                        continue
+                elif not gp.has_tht:
+                    continue
+                p = courtyard_pair(fg, gp)
+                if p is not None:
+                    out.append(p._replace(basis=self.FRAME_COURT_BASIS))
+        return out
 
     def _frame_holes(self, frame: str, pose=None) -> list:
         """[(pin, hole shape, its bounds, 'pth' | 'npth')] of a pin
@@ -3091,12 +3181,16 @@ class CourtyardCensus:
         `pose` and every other part at `poses` (else the file's): the
         search's question, answered with the grader's own pairs. Cheap when
         `ref` is near no pin -- the broad phase is the frame holes' boxes
-        against `ref`'s occupancy rect, built without a polygon."""
-        if not self.pin_frames or ref not in self.lbs:
+        against `ref`'s occupancy rect, built without a polygon. With them,
+        the BLOCKING courtyard pairs against a container's own drawn
+        courtyard (`FRAME_COURT_BASIS`), whose island boxes join the broad
+        phase: the frame's rect is skipped by the seat, its islands not."""
+        frames = self.pin_frames | self.court_frames
+        if not frames or ref not in self.lbs:
             return []
         poses = dict(poses or {})
         poses[ref] = tuple(pose)
-        if ref in self.pin_frames:
+        if ref in frames:
             refs = list(self.lbs)
         else:
             lb = self.lbs[ref]
@@ -3116,17 +3210,25 @@ class CourtyardCensus:
                             or hb[3] < rect[1] or hb[1] > rect[3])
                        for f in self.pin_frames
                        for _n, _s, hb, _h in self._frame_holes(
-                           f, poses.get(f)))
+                           f, poses.get(f))) or any(
+                not (hb[2] < rect[0] or hb[0] > rect[2]
+                     or hb[3] < rect[1] or hb[1] > rect[3])
+                for f in self.court_frames
+                for hb in self.frame_islands(f, poses.get(f))[1])
             if not near:
                 return []
-            refs = [ref] + sorted(self.pin_frames)
+            refs = [ref] + sorted(frames)
         parts = {r: self.graded_part(r, poses.get(r)) for r in refs
                  if r in self.lbs}
         g = self._select(parts, [], None,
-                         self._pin_pairs(parts, poses, members={ref}))
-        return list(g.pin_blocking)
+                         self._pin_pairs(parts, poses, members={ref}),
+                         frame_raw=self._frame_court_pairs(parts, poses,
+                                                           members={ref}))
+        return list(g.pin_blocking) + [
+            p for p in g.blocking if p.basis == self.FRAME_COURT_BASIS]
 
-    def _select(self, parts, raw, moved, pin_raw=(), poses=None) -> CourtyardGrade:
+    def _select(self, parts, raw, moved, pin_raw=(), poses=None,
+                frame_raw=()) -> CourtyardGrade:
         from placement.body import SOURCE_COURTYARD, SOURCE_SILK
         containers = self.containers
         judge = self._height_judge(parts, poses) if poses is not None else None
@@ -3135,14 +3237,17 @@ class CourtyardCensus:
             containers=containers,
             fits=None if judge is None else (lambda a, b: judge(a, b) == 0.0))
         # #1212: a pin frame's RECT is not a body -- its pairs leave the
-        # courtyard channel and its pins are graded below instead.
-        raw = [p for p in raw
-               if p.a not in self.pin_frames and p.b not in self.pin_frames]
+        # courtyard channel and its pins are graded below instead. So do the
+        # pairs of a container that keeps a drawn courtyard: `frame_raw`
+        # grades that courtyard as drawn, on the same ladder.
+        _drop = self.pin_frames | self.court_frames
+        raw = [p for p in raw if p.a not in _drop and p.b not in _drop]
         pairs = []
-        for p in raw:
+        for p in list(raw) + list(frame_raw):
             # #1298: `courtyard_label` -- a declared pose's accepted pair
             # labels a courtyard pair, never a body one.
-            waiver = waivers.courtyard_label(p.a, p.b)
+            waiver = waivers.courtyard_label(
+                p.a, p.b, frame_court=p.basis == self.FRAME_COURT_BASIS)
             # #1095: the board's own severity outranks every inferred class
             # label, and only an authored waiver outranks it.
             if self.severity_waiver and waiver not in AUTHORED_WAIVERS:
