@@ -1142,9 +1142,15 @@ python3 -X utf8 py_placer/place_fanout_clearance.py {in} {out} --clearance 0.2 -
 python3 -X utf8 py_router/route.py {in} {out} --nets '*' --json-out {dir}/route.json
 ```
 
+When `list_nets.py --diff-pairs` finds pairs on the board, the chain carries
+a `route_diff.py` step before `route.py`, the one `identify-diff-pairs` /
+`plan-pcb-routing` give the board. Without one, `route.py` routes each pair as
+two single nets, and the runner WARNs once, naming the pair count (#1472); it
+judges on.
+
 ```bash
 python3 -X utf8 py_placer/judge_seeds.py wk/run/judge.json --chain wk/run/judge_chain.txt \
-    --intent wk/run/intent.json [--seeds 3,4] [--jobs 1]
+    --intent wk/run/intent.json [--seeds 3,4] [--confirm close|K] [--jobs 1]
 ```
 
 - Every `route.py` and `route_diff.py` step runs at `--quick 2`, added when
@@ -1165,6 +1171,17 @@ python3 -X utf8 py_placer/judge_seeds.py wk/run/judge.json --chain wk/run/judge_
 - At the end the seeds are ranked by `quick_score.judge_key` and the best
   named; keeping it (its placement, never the `--quick` board) is the
   skill's step. `JSON_SUMMARY:` carries every seed's score and the ranking.
+- Level 2 is a screen, not a verdict: its copper reads a few percent off the
+  full route's per seed. Seeds within that spread of the best (the same
+  placement defects, blocking within 1 net, copper within 10%) are NOTEd
+  (`close` in `JSON_SUMMARY:`), and `--confirm close` routes them again at
+  the full level (`--quick` taken off every route step) into
+  `s<S>_full.kicad_pcb` / `s<S>_full.score.json` and names the best of them
+  (`confirmed`); `--confirm K` confirms the K best ranked instead.
+  `--confirm close` takes at most 4 seeds, the best of the close ones; when
+  more are close, the NOTE and the confirming run name the seeds it leaves
+  out with the `--seeds <the close seeds> --confirm K` that confirms every one
+  (#1383, #1473). The re-run routes its seeds at level 2 again first.
 
 Exit 0 every seed scored; 4 a seed's chain wrote no board or its score could
 not be read (named); 2 nothing run: `judge.json` unreadable or naming no
@@ -1535,7 +1552,15 @@ A movie of a placement, step by step, in the routing movie's style -- and,
 with `--route`, of the placement skill's whole flow: seeds placed, the
 cheapest fast-routed and judged, the best routed in full. It takes every
 `place_simple.py` argument (BOARD and OUT first) and places the board exactly
-as `place_simple.py` does: the same placement for the same seed.
+as `place_simple.py` does: the same placement for the same seed and start.
+`--seed S` is filmed from the start seed S has in a run of `--scattered`,
+`--clustered` and `--anchored` (place_simple's default seeds when none is
+given), whose counts become that run's `--clustered-seeds` and
+`--anchored-seeds` lists, and a `place_movie: filming seed S from a ... start`
+line names it. So a kept seed is filmed with its run's counts, or with its
+start list (`--clustered-seeds S`); a list and a count that start the seed
+differently are refused (exit 2). The 3D movie (`movie3d/make_movie.py`)
+takes the seed and its start the same way.
 
 ```bash
 python3 -X utf8 py_placer/place_movie.py board.kicad_pcb placed.kicad_pcb \

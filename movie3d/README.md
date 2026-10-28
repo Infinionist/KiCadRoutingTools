@@ -28,7 +28,14 @@ library lacks, and runs `make_movie.py`.
 
 `make_movie.py` takes the board and an output board first; every other
 argument but its own goes to `place_simple.py`, so its output board is
-place_simple's placement for that seed. The movie is written beside it as
+place_simple's placement for that seed and start. `--seed S` is filmed from
+the start seed S has in a run of `--scattered`/`--clustered`/`--anchored`
+(place_simple's default seeds when none is given): the counts become the
+`--clustered-seeds`/`--anchored-seeds` lists that run numbers its seeds by,
+and a `make_movie: filming seed S from a ... start` line names the start. So a
+kept seed is filmed exactly with its run's counts, or with its start list
+(`--clustered-seeds S`, `--anchored-seeds S`); a list and a count that start
+the seed differently are refused (exit 2). The movie is written beside it as
 `_3d.mp4`, or to `--movie`, with four stills: `_start.png`, `_anneal.png`
 (mid-anneal), `_bottom.png` (the board turned over) and `_final.png`. The
 JSON and the frames go to the output's name + `_movie3d/` (or `--work`).

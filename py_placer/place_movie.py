@@ -9,7 +9,12 @@
 
 BOARD and OUT come first; every other argument but this tool's own is
 place_simple.py's (see `place_simple.py --help`). The placement is exactly
-place_simple's for the same seed.
+place_simple's for the same seed and start: --seed S is filmed from the start
+seed S has in a run of --scattered/--clustered/--anchored (place_simple's
+default seeds when none is given), whose counts become the --clustered-seeds
+and --anchored-seeds lists that run numbers its seeds by, and a `place_movie:`
+line names it. Lists given instead are kept; beside a count that starts the
+seed otherwise, they are refused (exit 2).
 
 Each placement frame is the board with every part's pads and courtyard
 (movable parts tinted by group, fixed parts dim), the airwires the objective
@@ -275,6 +280,90 @@ def _mst(pts):
     return out
 
 
+# -- the seeds and their starts ------------------------------------------------
+
+def _with_defaults(given):
+    """The start counts `given` (None where not given), place_simple's
+    defaults filled in."""
+    from place_simple import ANCHORED_SEEDS, CLUSTERED_SEEDS, SCATTERED_SEEDS
+    return tuple(d if v is None else v for v, d in zip(
+        given, (SCATTERED_SEEDS, CLUSTERED_SEEDS, ANCHORED_SEEDS)))
+
+
+def start_counts(a):
+    """(--scattered, --clustered, --anchored) as given, None where not, with
+    `a`'s own counts set to place_simple's defaults where not given."""
+    given = (a.scattered, a.clustered, a.anchored)
+    a.scattered, a.clustered, a.anchored = _with_defaults(given)
+    return given
+
+
+def start_opts(scattered, clustered, anchored):
+    """The --clustered-seeds and --anchored-seeds options of a run of these
+    start counts (place_simple's `start_lists`)."""
+    from place_simple import start_lists
+    return [x for f, v in zip(('--clustered-seeds', '--anchored-seeds'),
+                              start_lists(scattered, clustered, anchored)) if v for x in (f, v)]
+
+
+def seed_starts(tool, given, opts, out):
+    """place_simple's options for the film of one seed without --route: the
+    start counts (`given`, as start_counts returns them; place_simple's
+    defaults where None) become the --clustered-seeds and --anchored-seeds
+    lists a run of those counts numbers its seeds by (`start_lists`), so
+    `--seed S` films seed S of that run -- of a default run when no count is
+    given -- from the start it had there. Lists already in `opts` are kept;
+    beside a count, they must give the seed the start the count does. Several
+    seeds (--seeds, or an OUT carrying {seed} and no --seed) are place_simple's
+    own business, the counts passed on. Returns (opts, the line naming the seed
+    and its start), or (None, why it is refused)."""
+    from place_simple import _seed_list, start_lists
+    counts = [(f, str(v)) for f, v in zip(('--scattered', '--clustered', '--anchored'), given)
+              if v is not None]
+    named = [' '.join(c) for c in counts]
+    p = argparse.ArgumentParser(prog=tool, add_help=False, allow_abbrev=False)
+    p.add_argument('--seed', type=int)
+    for f in ('--seeds', '--clustered-seeds', '--anchored-seeds'):
+        p.add_argument(f)
+    k, _ = p.parse_known_args(opts)
+    if k.seeds or (k.seed is None and '{seed}' in out):
+        return opts + [x for c in counts for x in c], None
+    sc, cl, an = _with_defaults(given)
+    n, seed = sc + cl + an, (0 if k.seed is None else k.seed)
+    if min(sc, cl, an) < 0 or n < 1:
+        return None, f'{tool}: --scattered, --clustered and --anchored of 0 or more, at least one seed'
+
+    def start(clustered, anchored):
+        return ('anchored' if seed in _seed_list(anchored or '') else
+                'clustered' if seed in _seed_list(clustered or '') else 'scattered')
+    counted = start_lists(sc, cl, an)
+    run = ' '.join(named) if named else f'a default run ({sc} scattered, {cl} clustered, {an} anchored)'
+    if named and seed >= n:
+        return None, (f'{tool}: seed {seed} is not one of the {n} seeds {run} numbers (0-{n - 1}); '
+                      f'without a count, --clustered-seeds and --anchored-seeds give its start')
+    if k.clustered_seeds or k.anchored_seeds:
+        try:
+            listed = start(k.clustered_seeds, k.anchored_seeds)
+        except ValueError:
+            return None, (f'{tool}: --clustered-seeds {k.clustered_seeds!r} or --anchored-seeds '
+                          f'{k.anchored_seeds!r} is not a list like 0-3 or 0,1,2,3')
+        lists = ' '.join(f'{f} {v}' for f, v in (('--clustered-seeds', k.clustered_seeds),
+                                                ('--anchored-seeds', k.anchored_seeds)) if v)
+        if named and listed != start(*counted):
+            return None, (f'{tool}: seed {seed} starts {listed} by {lists} but {start(*counted)} '
+                          f'by {run}; give the lists or the counts, not both')
+        return opts, f"{tool}: filming seed {seed} from {_a(listed)} start ({lists})"
+    add = start_opts(sc, cl, an)
+    if seed >= n:
+        return opts + add, (f"{tool}: filming seed {seed} from a scattered start (past the {n} "
+                            f"seeds of {run})")
+    return opts + add, (f"{tool}: filming seed {seed} from {_a(start(*counted))} start, as {run} "
+                        f"starts it ({' '.join(add) or 'no clustered or anchored seed'})")
+
+
+def _a(start):
+    return ('an ' if start[0] in 'aeiou' else 'a ') + start
+
 
 # -- the flow (--route) ---------------------------------------------------------
 
@@ -506,14 +595,16 @@ def main(argv=None):
     ap.add_argument('--route', metavar='BOARD:SET',
                     help='run and film the placement flow, routing with this stress-corpus '
                          "board's recorded chain (e.g. ch32v003_usb:6)")
-    ap.add_argument('--scattered', type=int, default=SCATTERED_SEEDS,
-                    help=f'with --route, the seeds started scattered (default {SCATTERED_SEEDS})')
-    ap.add_argument('--clustered', type=int, default=CLUSTERED_SEEDS,
-                    help=f'with --route, the seeds started clustered, numbered after the '
-                         f'scattered ones (default {CLUSTERED_SEEDS})')
-    ap.add_argument('--anchored', type=int, default=ANCHORED_SEEDS,
-                    help=f'with --route, the seeds started anchored, numbered after the '
-                         f'clustered ones (default {ANCHORED_SEEDS}: opt-in)')
+    ap.add_argument('--scattered', type=int,
+                    help=f'the seeds started scattered (default {SCATTERED_SEEDS}): with --route, '
+                         f'the seeds placed; without, the run whose --seed is filmed, from the '
+                         f'start that run gives it')
+    ap.add_argument('--clustered', type=int,
+                    help=f'the seeds started clustered, numbered after the scattered ones '
+                         f'(default {CLUSTERED_SEEDS})')
+    ap.add_argument('--anchored', type=int,
+                    help=f'the seeds started anchored, numbered after the clustered ones '
+                         f'(default {ANCHORED_SEEDS}: opt-in)')
     ap.add_argument('--judge', type=int, default=JUDGED_SEEDS,
                     help=f'with --route, how many of the cheapest legal seeds are fast-routed '
                          f'(default {JUDGED_SEEDS})')
@@ -532,12 +623,19 @@ def main(argv=None):
         ap.error('BOARD and OUT come first')
     board, out, opts = rest[0], rest[1], rest[2:]
     movie_path = a.movie or os.path.splitext(out)[0] + '.mp4'
+    given = start_counts(a)
     if not a.route:
+        opts, line = seed_starts('place_movie', given, opts, out)
+        if opts is None:
+            print(line, file=sys.stderr)
+            return 2
+        if line:
+            print(line)
         movie = MovieWriter(movie_path, a.fps)
         film = Film(a, movie)
         install(film)
         import place_simple
-        rc = place_simple.main(rest)
+        rc = place_simple.main([board, out, *opts])
         if hasattr(film, 'state'):
             film.placed(rc, 1)
         path = movie.close(hold=END_HOLD)
@@ -548,15 +646,12 @@ def main(argv=None):
     work = os.path.abspath(a.work or os.path.splitext(out)[0] + '_work')
     opts = _strip(opts, '--seed', '--json', '--seeds', '--jobs', '--clustered-seeds',
                   '--anchored-seeds')
-    c0 = a.scattered + a.clustered
-    n = c0 + a.anchored
-    if min(a.scattered, a.clustered, a.anchored) < 0 or n < 1 or a.judge < 1:
+    if min(a.scattered, a.clustered, a.anchored) < 0 or a.scattered + a.clustered + a.anchored < 1 \
+            or a.judge < 1:
         ap.error('--scattered, --clustered and --anchored of 0 or more, at least one seed, '
                  '--judge 1 or more')
-    if a.clustered:             # the round's clustered seeds, for the placing and the filming
-        opts += ['--clustered-seeds', f'{a.scattered}-{c0 - 1}']
-    if a.anchored:
-        opts += ['--anchored-seeds', f'{c0}-{n - 1}']
+    # the round's clustered and anchored seeds, for the placing and the filming
+    opts += start_opts(a.scattered, a.clustered, a.anchored)
     got = run_flow(a, board, out, opts, work)
     if got is None:
         return 2

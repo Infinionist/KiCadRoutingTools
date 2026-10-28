@@ -1018,6 +1018,11 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
    python3 -X utf8 py_router/route_planes.py {in} {out} --nets GND --plane-layers B.Cu
    python3 -X utf8 py_router/route.py {in} {out} --nets '*' --json-out {dir}/route.json
    ```
+   When `python3 -X utf8 py_router/list_nets.py <board> --diff-pairs` finds
+   pairs, the chain carries a `route_diff.py` step before `route.py`: the one
+   `identify-diff-pairs` / `plan-pcb-routing` give the board. Without it
+   `route.py` routes each pair as two single nets and the seeds are ranked
+   without their pairs; `judge_seeds` WARNs, naming the pair count.
    The chain is ONE arm of the routing recipe, and the arms can pick different
    seeds. Where `plan-pcb-routing` prescribes two arms for the board's class
    (a 2-layer through-hole board without buses: its defaults, and
@@ -1066,6 +1071,10 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
    again at the full level (`--quick` off every route step, into
    `s<S>_full.kicad_pcb` and `s<S>_full.score.json`) and names the best of
    them by the same key (`--confirm K` confirms the K best instead).
+   `--confirm close` takes at most 4 seeds, the best of the close ones; when
+   more are close, the NOTE and the confirming run name the seeds it leaves
+   out and print the `--seeds <the close seeds> --confirm K` that confirms
+   every one. Run that when a left-out seed could be the one to keep.
 3. **Keep the best** by the placement's own defects first (floorplan errors
    plus the assembly count), then blocking, then `joins_needed`, then vias,
    copper_mm, segments (`quick_score.judge_key`): every seed whose floorplan
