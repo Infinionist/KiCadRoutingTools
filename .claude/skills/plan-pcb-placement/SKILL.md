@@ -87,6 +87,15 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   from it (next section). If the user states a mechanical fact (a
   connector's edge, a mounting-hole position), it is a requirement, and the
   verifier checks it.
+- **The user's placement intent outranks the priors.** The human-board
+  numbers in `references/placement-lessons.md` and the defaults in this
+  skill (where a regulator goes, which group a part joins) are what to do
+  when nobody says. When the user states where something goes ("each
+  regulator beside the parts it supplies", "filter, then regulator, then
+  loads"), follow the user, and write it so the placer can act on it (a
+  group, a `near`, a zone in §3.4c, a `proximity` row). In REPORT.md, name
+  each place where the user's intent and a prior differed and which you
+  followed.
 - **Ask for the EMC rows the board cannot state.** Run
   `python3 -X utf8 py_tools/board_context.py <board> --json -o <ctx.json>`
   and read `emc_roles.roles`: each converter, crystal, oscillator and ESD
@@ -105,6 +114,28 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   it from net names. A converter you give a datasheet template (§3.5) needs
   only the `keep_away` rows: the template places its support parts, so do
   not ask for their limits.
+- **Ask about the enclosure.** The board file cannot say whether it goes in
+  an enclosure, under a lid or a shield can, or has a height limit over an
+  area, so ask, in the same breath, and record each answer where a grade
+  reads it (`docs/design-brief.md` has each row):
+  - **a height limit over an area** (a lid, a can's roof, an enclosure wall
+    sloping over one corner): a keep-out with `max_height_mm` in the intent's
+    `keepouts[]` (the intent's `min_reader` 15 or more). A part whose height
+    is known and no more than that may stand in it; every other part is kept
+    out unless its `allow` names it;
+  - **a part's height nothing gives** (no 3D model), or the room under a
+    module drawn solid to the board: the brief's `heights[]` (`ref`,
+    `height_mm` or `underside_mm`, `source`), from its datasheet only;
+  - **an area no part may use** (a rib, a battery well, a boss's screw
+    head): the brief's `keepouts[]`, with `allow` naming a part that belongs
+    there;
+  - **a boss or mounting hole the enclosure fixes**: its pose, as a brief
+    `fixed[]` row with a `pose`, or placed and locked (§3.1);
+  - **parts that must sit inside a can, or outside the enclosure's reach**:
+    regions, §3.4c; a card or module over the board: a cover, §3.4b.
+
+  In REPORT.md, say what you asked and what was declared from each answer,
+  or that nobody was there to ask.
 - **Nothing is sacred except a KiCad lock.** `place_simple` re-places every
   part the board does not lock (`(locked yes)`) or the intent does not seat
   (`fixed_poses[]`). For a from-scratch experiment with everything off the
@@ -165,6 +196,17 @@ python3 -X utf8 py_tools/check_floorplan.py wk/<run>/fixed.kicad_pcb --emit-inte
 - `place_simple` reads the intent's `proximity` claims, keep-outs, zones,
   declared faces, `fixed_poses`, the edges of `edge_connectors[]` and the
   decap limits it grades at error.
+- **Answer every `OWED:` line** of the emit's rule roster. Each names a rule
+  the board says applies and nothing arms, with the key that arms it
+  (`OWED: zone_containment: ... Arm it with blocks[].zone ... or write why
+  it does not: dispositions.rules.zone_containment`). Arm it only from a
+  requirement (the user's, the brief's, a datasheet's): a region the user
+  gives (§3.4c), a decap limit, an edge. Otherwise write why it does not
+  apply, in one line, under the intent's `dispositions.rules.<rule>` (a
+  withheld budget key under `dispositions.withheld.<key>`), such as
+  `"zone_containment": "no region was given; groups place this board"`.
+  Never invent a limit to clear one. The roster prints again with every
+  `check_floorplan --intent`; list your answers in REPORT.md.
 - **Waive the locked parts' own overlaps**, right after the intent exists:
 
   ```bash
@@ -236,7 +278,13 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
   into the IC's group. The rest of their clock group follows
   only when the crystal is that group's `anchor`; any other member stays in
   the clock group. Every intent `proximity` claim works the same way: the
-  claimed part joins its partner's group. The emitted intent carries these
+  claimed part joins its partner's group, and a claimed anchor takes its
+  whole group along; claims chain, so one row can fold several groups into
+  one. A group so emptied is dropped with its own `near`, `apart` and
+  `edge`: `check_groups` WARNs once for each, naming the group that absorbs
+  it and the hints lost, and `place_simple` says it once per run and in
+  `judge.json`'s `fold`. If the group should stay, claim a member that is
+  not its anchor, or say `near` instead of writing the row. The emitted intent carries these
   crystal claims as `proximity[]` rows (`context.source`
   `placement.crystals`, `max_mm` 8.1 and 2.2), graded as warnings; edit a
   row's `max_mm` to loosen or tighten that loop, or drop the `source` to
@@ -246,8 +294,33 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
 - **Hints, each a soft term of the objective:** `near` (a list of groups to
   sit against), `apart` (groups to keep 3 mm from), `edge` (`N`/`S`/`E`/`W`,
   a group that belongs on a board side; a group holding an edge connector
-  needs none). **Do not send the power group to an edge**: on 437 human boards
-  the regulator sits by its power entry -- say `near` its entry's group.
+  needs none).
+- **`near` is a sum of pulls, never a "between".** Each entry is one
+  independent term: the gap between the two groups' nearest courtyards
+  (Manhattan, nothing once they touch) times `--near-weight` (default 2 per
+  mm), added to every other term; a pair both groups name counts once.
+  Several entries are a vote: `near: [filter, load_a, load_b, load_c]`
+  sends the group to the loads, which outnumber the filter, and with more
+  than two it goes where most of them are. To put a stage between its entry
+  and its loads, name only the entry: its output net already pulls it toward
+  the parts it feeds (at `--rail-weight` 0.3 per mm when that net is a rail
+  -- ground, or more than a quarter of the parts and more than six -- else
+  at a signal's full weight). For a stage that must stand in one area, the
+  user's region is a zone (§3.4c).
+- **Where a regulator goes** (the one rule; `references/part-roles.md` and
+  the lessons point here):
+  - **A regulator that makes a rail for several groups** is in the power
+    group, which sits by its power entry, between the entry and the loads:
+    on the human boards two conditioners in three sit nearer the entry than
+    the main IC does, and no nearer the outline than an average part. Say `near` its
+    entry's group, and only that; never its loads' groups (above), and never
+    an `edge`.
+  - **A regulator that feeds one consumer** joins that consumer's group: a
+    point-of-load LDO whose output feeds one chip or one analog section, DDR
+    termination (VTT) with its DRAM, a voltage reference with the ADC or
+    comparator it feeds. It joins the group, not the chip: humans keep a
+    single-load LDO's output pin about 12 mm from its load, so write no
+    `proximity` row pulling it onto the chip.
 - **Faces:** give a group a `side` (`F`/`B`) only to put all its parts on that
   face; without one each part keeps its face.
 - **`flippable`: the group's parts that may stand on the back.** A part stays
@@ -333,8 +406,10 @@ python3 -X utf8 py_tools/check_groups.py wk/<run>/fixed.kicad_pcb --groups wk/<r
 
 It reads the intent the way `place_simple` will: seated parts are fixed,
 and it names each claimed part that will follow its partner into the
-partner's group. The groups it lists and checks are the file as written, so
-a follower still shows in the group you gave it. Fix every ERROR (a part
+partner's group. Its group table shows the groups as `place_simple` will
+place them: a follower is listed in its partner's group, marked `(from
+<group>)`, and a group the claims empty reads `dissolved into <group>`. Its
+other checks (links, pulled parts, decaps) read the file as written. Fix every ERROR (a part
 in no group or in two, a ref not on the board) and
 read every WARN: a part with more signal links to another group may belong
 there; a decap "exempt" because no IC of its group carries its rail is right
@@ -453,6 +528,50 @@ under it: declare its height in the brief's `heights[]` (`ref`,
 solid down to the board takes its datasheet's underside the same way
 (`underside_mm`). An enclosure's height limit over an area is a keep-out
 with `max_height_mm`.
+
+### 3.4c Regions the user gives (only then)
+
+Groups place a board, not regions (`references/placement-lessons.md`), so
+draw no region of your own. When the USER gives one -- "these parts go
+inside this shield can", "only the power stage may sit outside the
+enclosure", "keep this corner for the antenna" -- declare it in the intent,
+in the vocabulary of `docs/floorplan-intent.md`:
+
+- **Parts held to an area:** a `blocks[]` entry with `name`, `refs` (the
+  parts; globs work), `zone` (`[x0, y0, x1, y1]`, board mm), `tolerance_mm`,
+  and `exclusive: true` when no other part may enter it (the inside of a
+  can). List `refs`: a block's `group` names a KiCad group or schematic
+  sheet the board derives (`render_placement.py --list-groups` lists them),
+  not a group of `groups.json`, and a groups-file name there resolves to
+  nothing (`block_unresolved`).
+- **An area only some parts may enter** (a keep-in for everyone else): a
+  `keepouts[]` entry whose `allow` names the parts that may. A pattern that
+  matches no part is a WARN, and the part it meant is pushed out.
+- **Write them after the last `--emit-intent`**, which writes a new file;
+  add them again if you emit again.
+- **Make an overfull zone an error:** declare `legality_budget`
+  (`{"overlap_area": 0.0, "oob_count": 0}`). Without it, a zone too small
+  for its members is only a WARN.
+- **Check the plan before placing**, on the pile (no pose is needed):
+
+  ```bash
+  python3 -X utf8 py_tools/check_floorplan.py wk/<run>/fixed.kicad_pcb --intent wk/<run>/intent.json --plan-only
+  ```
+
+  Exit 4 is a plan ERROR no placement can meet (a member with no pose in its
+  zone clear of another block's exclusive zone, a locked member outside its
+  zone, an overfull zone): fix the plan, not the seeds. `place_simple` runs
+  the same check before it seeds and refuses its ERRORs.
+- **Look at the plan:**
+
+  ```bash
+  python3 -X utf8 py_tools/render_placement.py wk/<run>/fixed.kicad_pcb --intent wk/<run>/intent.json \
+      --view X0,Y0,X1,Y1 -o wk/<run>/plan.png
+  ```
+
+  It draws each zone with its members' names and each keep-out. On a pile
+  the frame crops to the pile, so give `--view` the intent's
+  `envelope.rect`.
 
 ### 3.5 Datasheet layouts (your judgement)
 
@@ -1134,6 +1253,9 @@ Routing Completes): run them once, here, not again inside the routing.
    - **the result first:** a table of the mode's DONE conditions with measured
      values, the `blocking_by` breakdown, and vias / copper_mm / segments;
    - **the groups and every judgement call** in them, with its reason;
+   - **the user's placement instructions** (§2): each one, how it was
+     written for the placer, and where it differed from a prior, which was
+     followed;
    - **covers and declared heights** (§3.4b): each row and its source, and
      any value declared conservatively because it could not be established;
    - **which stop rule fired**, and every remaining blocker BY NAME with its
