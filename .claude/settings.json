@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch"
+      "WebFetch",
+      "Bash(bash tests/stress/run_place_board.sh:*)"
     ]
   }
 }
