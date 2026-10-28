@@ -142,7 +142,7 @@ KEY_SETS = {
         # a chip's datasheet layout, seated and carried by place_simple.
         'templates',
         # #1443: a body a connector carries, and declared part heights.
-        'covers', 'heights'},
+        'covers', 'heights', 'links', 'chains'},
     '_ENVELOPE_KEYS': {'rect', 'tolerance_mm'},
     '_DEFAULTS_KEYS': {'zone_tolerance_mm'},
     '_BLOCK_KEYS': {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
@@ -208,6 +208,9 @@ KEY_SETS = {
                          'context', 'accept_courtyard_overlap'} | FREE,
     # #1253: one rule per row, in route.py's own syntax.
     '_KEEP_AWAY_KEYS': {'rule', 'source', 'context'} | FREE,
+    # #1477: two sets of parts within max_mm; a chain of such links.
+    '_LINK_KEYS': {'name', 'a', 'b', 'max_mm', 'context'} | FREE,
+    '_CHAIN_KEYS': {'name', 'stages', 'max_mm', 'context'} | FREE,
     # #1211: `place_pose replicate`'s own flags, plus the grade's tolerance.
     '_REPLICATE_KEYS': {'from', 'to', 'anchor', 'allow_net_mismatch', 'only',
                         'skip', 'search_mm', 'tolerance_mm',
@@ -266,6 +269,8 @@ def test_the_key_sets_are_exactly_what_is_documented():
         '_ARRAY_KEYS': 'arrays[]',
         '_FIXED_POSE_KEYS': 'fixed_poses[]',
         '_KEEP_AWAY_KEYS': 'keep_away[]',
+        '_LINK_KEYS': 'links[]',
+        '_CHAIN_KEYS': 'chains[]',
         '_REPLICATE_KEYS': 'replicate[]',
         '_COVER_KEYS': 'covers[]',
         '_COVER_STANDOFF_KEYS': 'covers[].standoffs[]',
@@ -382,6 +387,11 @@ def test_an_intent_using_every_known_key_loads():
         # #1253. One rule per row, in route.py's own syntax.
         'keep_away': [{'rule': 'SW:FB,class=Analog:0.5', 'note': 'n',
                        'source': 'brief', 'context': {'why': 'w'}}],
+        # #1477. A link and a chain of them.
+        'links': [{'name': 'l', 'a': ['U3'], 'b': ['C*'], 'max_mm': 8,
+                   'why': 'w', 'context': {'why': 'w'}}],
+        'chains': [{'name': 'c', 'stages': [['J1'], ['U3'], ['U1']],
+                    'max_mm': [5, 10], 'why': 'w', 'context': {'why': 'w'}}],
         # #1211. `only` and `skip` are exclusive, so the second row carries
         # `skip`.
         'replicate': [{'from': 'CH1', 'to': ['CH2', 'CH3'], 'anchor': 'J1',
@@ -425,6 +435,7 @@ def test_an_intent_using_every_known_key_loads():
     seen |= set(raw['proximity'][0])
     seen |= set(raw['arrays'][0]) | set(raw['fixed_poses'][0])
     seen |= set(raw['keep_away'][0])
+    seen |= set(raw['links'][0]) | set(raw['chains'][0])
     for r in raw['replicate']:
         seen |= set(r)
     seen |= set(raw['dispositions'])
@@ -734,6 +745,9 @@ def test_severity_keys_are_checked_against_the_rule_names():
                                         # #1253: a keep-away side matching
                                         # no net
                                         'keep_away_unresolved',
+                                        # #1477: a link side matching no
+                                        # part
+                                        'link_unresolved',
                                         # #1211: a copy the board cannot
                                         # resolve
                                         'replicate_unresolved',

@@ -206,7 +206,12 @@ EDGE_BAND_SANITY_MM = 5.0
 #: stand. Compiled at load into four keep-outs (`fence_keepouts`), so it
 #: changes what the placer may put where and what the grade reports; an
 #: older build refuses the key by name.
-READER_VERSION = 16
+#: 17 (#1477): `links[]` and `chains[]` -- two sets of parts within MAX mm
+#: of each other, courtyard to courtyard, without merging their groups;
+#: a chain is links between consecutive stages. Graded by `link` (WARN by
+#: default, promotable) and priced by `place_simple`, so the rule above
+#: mandates the bump; an older build refuses both keys by name.
+READER_VERSION = 17
 #: The reader version that first reads `templates[]`.
 TEMPLATES_READER = 13
 #: The reader version that first reads a template row's `kind` and
@@ -217,6 +222,8 @@ TEMPLATE_KIND_READER = 14
 COVERS_READER = 15
 #: The reader version that first reads `blocks[].fence_mm` (#1475).
 FENCE_READER = 16
+#: The reader version that first reads `links[]` and `chains[]` (#1477).
+LINKS_READER = 17
 #: #1475. The keep-outs a block's `fence_mm` compiles to are named
 #: `fence:<block>:<N|S|W|E>`; an intent may not name its own keep-out so.
 FENCE_KEEPOUT_PREFIX = 'fence:'
@@ -268,6 +275,7 @@ _TOP_LEVEL_KEYS = {
     'health', 'severity', 'context', 'overlap_waivers', 'min_reader',
     'assembly', 'proximity', 'dispositions', 'arrays', 'fixed_poses',
     'keep_away', 'replicate', 'templates', 'covers', 'heights',
+    'links', 'chains',
 }
 #: #959 (#997). WRITTEN answers to "why is this not graded", one map per kind
 #: of question: a rule the plan leaves dark, a budget key the emitter withheld,
@@ -450,6 +458,12 @@ def derived_claim(claim) -> bool:
 #: brief refuses by name: this is a relation between two NET groups at a
 #: functional distance, not a copper clearance between two parts.
 _KEEP_AWAY_KEYS = {'rule', 'source', 'context'} | _FREE_TEXT_KEYS
+#: #1477. Two sets of parts (`a`, `b`: reference globs) whose nearest
+#: courtyards are within `max_mm` of each other; a chain, consecutive
+#: `stages` (each a list of reference globs) linked so, at one `max_mm` or
+#: one per link.
+_LINK_KEYS = {'name', 'a', 'b', 'max_mm', 'context'} | _FREE_TEXT_KEYS
+_CHAIN_KEYS = {'name', 'stages', 'max_mm', 'context'} | _FREE_TEXT_KEYS
 #: #1211. One declared channel copy: `from` and `to` name sheet INSTANCES
 #: (a sheet name or a path, as `place_pose replicate` takes them); the rest
 #: are that verb's own flags, so a declaration and a command line read
@@ -617,9 +631,14 @@ class Intent:
     fixed_poses: Tuple[Dict[str, object], ...] = ()
     #: #1253. Declared keep-aways, `[{rule, source?, note?, context?}]`, one
     #: rule each. NEVER emitted: which nets are noisy and which sensitive is
-    #: a design fact the board does not hold. Graded by `keep_away`; the
-    #: placer does not read it.
+    #: a design fact the board does not hold. Graded by `keep_away` and
+    #: priced by `place_simple` (#1476).
     keep_away: Tuple[Dict[str, object], ...] = ()
+    #: #1477. Declared links, `[{name, a, b, max_mm, source, why?}]` (`a`, `b`
+    #: reference globs), each `chains[]` stage pair one more. NEVER emitted:
+    #: how close two parts of a design must sit is a design decision. Graded
+    #: by `link`; priced by `place_simple` past `max_mm`, groups unmerged.
+    links: Tuple[Dict[str, object], ...] = ()
     #: #1211. Declared channel copies, `[{from, to[], anchor?, ...}]`. NEVER
     #: emitted: which instance is the template is a design decision. Copied
     #: by `place_pose replicate --intent`; graded by `replicate`, which the
@@ -1050,6 +1069,68 @@ def _keep_away_claims(raw: Dict) -> List[Dict]:
                               f"[{seen[spec]}]")
         seen[spec] = i
         out.append(dict(k))
+    return out
+
+
+def _link_claims(raw: Dict) -> List[Dict]:
+    """Validate `links[]` and `chains[]` (#1477), AT LOAD, for
+    `_proximity_claims`'s reason, into one list of links: each chain's
+    consecutive stages become links named `<chain>:<k>` (stage k to k+1),
+    `source` naming the row each came from."""
+    out: List[Dict] = []
+    seen: Dict[str, str] = {}
+
+    def refs(v, where):
+        t = _str_tuple(v, where)
+        if not t:
+            raise IntentError(f"{where}: expected a non-empty list of "
+                              f"reference globs")
+        return t
+
+    def add(name, a, b, m, src, row):
+        if name in seen:
+            raise IntentError(f"{src}: the link name {name!r} repeats "
+                              f"{seen[name]}")
+        seen[name] = src
+        out.append({'name': name, 'a': a, 'b': b, 'max_mm': m, 'source': src,
+                    'why': free_text(row), 'context': row.get('context') or {}})
+
+    for key, keys in (('links', _LINK_KEYS), ('chains', _CHAIN_KEYS)):
+        got = raw.get(key)
+        if got is None:
+            continue
+        if not isinstance(got, list):
+            raise IntentError(f"{key}: expected a list of rows, got "
+                              f"{type(got).__name__}")
+        for i, row in enumerate(got):
+            where = f"{key}[{i}]"
+            if not isinstance(row, dict):
+                raise IntentError(f"{where}: expected an object")
+            _reject_unknown(row, keys, where)
+            _entry_context(row, where)
+            _free_text_strings(row, where)
+            name = str(row.get('name') or f"{key[:-1]}{i}")
+            if key == 'links':
+                add(name, refs(row.get('a'), f"{where}.a"),
+                    refs(row.get('b'), f"{where}.b"),
+                    _number(row.get('max_mm'), f"{where}.max_mm", lo=0.0),
+                    where, row)
+                continue
+            stages = row.get('stages')
+            if not isinstance(stages, list) or len(stages) < 2:
+                raise IntentError(f"{where}.stages: expected a list of two "
+                                  f"or more stages, each a list of "
+                                  f"reference globs")
+            stages = [refs(st, f"{where}.stages[{k}]")
+                      for k, st in enumerate(stages)]
+            m = row.get('max_mm')
+            ms = (list(m) if isinstance(m, list) else [m] * (len(stages) - 1))
+            if len(ms) != len(stages) - 1:
+                raise IntentError(f"{where}.max_mm: one number, or one per "
+                                  f"link ({len(stages) - 1}), got {len(ms)}")
+            for k in range(len(stages) - 1):
+                add(f"{name}:{k}", stages[k], stages[k + 1],
+                    _number(ms[k], f"{where}.max_mm", lo=0.0), where, row)
     return out
 
 
@@ -2008,6 +2089,7 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         arrays=tuple(arrays),
         fixed_poses=tuple(fixed_poses),
         keep_away=tuple(_keep_away_claims(raw)),
+        links=tuple(_link_claims(raw)),
         replicate=tuple(_replicate_claims(raw)),
         templates=tuple(_template_claims(raw)),
         covers=tuple(_cover_claims(raw)),
@@ -7205,6 +7287,45 @@ def rule_keep_away(ctx) -> Iterator[Violation]:
                 expected={'gap_mm': gap_mm})
 
 
+def rule_link(ctx) -> Iterator[Violation]:
+    """Two declared sets of parts within MAX mm of each other (#1477): the
+    gap between their nearest courtyards, Manhattan and 0 once they touch,
+    on the courtyard place_simple seats each part on (`zone_parts`) -- the
+    gap `place_simple`'s `within` term prices (`simple.rect_gap`), so the
+    placer and the grade read one number. A side matching no part is
+    `link_unresolved`. WARN by default."""
+    from .simple import rect_gap as manhattan_gap
+    parts = _ctx_zone_parts(ctx)
+    names = sorted(parts)
+    for ln in ctx.intent.links:
+        sides = [sorted({r for r in names for pat in ln[k]
+                         if fnmatch.fnmatchcase(r, pat)}) for k in ('a', 'b')]
+        if not sides[0] or not sides[1]:
+            empty = [k for k, sd in zip(('a', 'b'), sides) if not sd]
+            yield Violation(
+                rule='link_unresolved',
+                severity=ctx.intent.severity_of('link_unresolved', WARN),
+                message=(f"link {ln['name']!r} ({ln['source']}): side "
+                         f"{' and '.join(empty)} matches no part on this "
+                         f"board, so nothing is measured"),
+                measured={'link': ln['name'], 'empty_sides': empty},
+                expected={'max_mm': ln['max_mm']})
+            continue
+        gap, pair = min((manhattan_gap(parts[a].rect, parts[b].rect), (a, b))
+                        for a in sides[0] for b in sides[1])
+        if gap > ln['max_mm'] + legality.EPS:
+            yield Violation(
+                rule='link', severity=ctx.intent.severity_of('link', WARN),
+                ref=pair[0],
+                message=(f"link {ln['name']!r} ({ln['source']}): its nearest "
+                         f"parts {pair[0]} and {pair[1]} are {gap:.2f}mm "
+                         f"apart, courtyard to courtyard (Manhattan), past "
+                         f"its {ln['max_mm']:g}mm"),
+                measured={'link': ln['name'], 'gap_mm': round(gap, 4),
+                          'pair': list(pair)},
+                expected={'max_mm': ln['max_mm']})
+
+
 def rule_replicate(ctx) -> Iterator[Violation]:
     """Each declared copy target laid out as a translated copy of its
     source instance (#1211) -- how far it is from that, never how it got
@@ -7666,6 +7787,7 @@ RULES = (
     ('decap_pin_distance', rule_decap_pin_distance),
     ('proximity', rule_proximity),
     ('keep_away', rule_keep_away),
+    ('link', rule_link),
     ('must_lock', rule_must_lock),
     ('legality', rule_legality),
     ('pins_to_edge', rule_pins_to_edge),
@@ -7700,6 +7822,9 @@ _NON_RULE_SEVERITIES = frozenset({
     # no net on THIS board is a different claim from a distance. WARN by
     # default, like the rule it stands in for.
     'keep_away_unresolved',
+    # #1477, beside `link` for the same reason: a side matching no part is
+    # a different claim from a distance. WARN by default, like the rule.
+    'link_unresolved',
     # #1211, beside `replicate`: a declaration the board cannot resolve (an
     # unknown sheet, instances not wired alike) is a different claim from a
     # distance. WARN by default, like the rule it stands in for.
@@ -7790,6 +7915,7 @@ _SKIP_REASON = {
     'decap_pin_distance': 'the intent declares no decaps.max_pin_distance_mm',
     'proximity': 'the intent declares no proximity claims',
     'keep_away': 'the intent declares no keep_away rules',
+    'link': 'the intent declares no links or chains',
     'must_lock': 'the intent declares no must_lock patterns',
     'legality': 'the intent declares no legality_budget',
     # The rule's exclusion list IS the declaration: without it every
@@ -7960,6 +8086,8 @@ def _wants(intent: Intent, rule: str) -> bool:
         return bool(intent.proximity)
     if rule == 'keep_away':
         return bool(intent.keep_away)
+    if rule == 'link':
+        return bool(intent.links)
     if rule == 'must_lock':
         return bool(intent.must_lock)
     if rule == 'legality':
@@ -8001,6 +8129,7 @@ _ARMING_KEY = {
     'decap_pin_distance': 'decaps.max_pin_distance_mm',
     'proximity': 'proximity[]',
     'keep_away': 'keep_away[]',
+    'link': 'links[] or chains[]',
     'must_lock': 'must_lock[]',
     'legality': 'legality_budget',
     'pins_to_edge': 'edge_connectors[]',
@@ -8018,7 +8147,7 @@ _ARMING_KEY = {
 #: table cannot drift from the rules without failing.
 _RULE_DEFAULT_SEVERITY = dict({name: ERROR for name, _ in RULES},
                               assembly_side=WARN, decap_ungraded=WARN,
-                              pins_to_edge=WARN, keep_away=WARN,
+                              pins_to_edge=WARN, keep_away=WARN, link=WARN,
                               replicate=WARN, template=WARN, cover=WARN)
 
 #: A rule whose severity the intent's map cannot change, because the rule
@@ -8046,6 +8175,9 @@ _POLICY_RULES = {
     # #1253. Which nets are noisy and which sensitive is a design fact.
     'keep_away': ('a design relation between two net groups; nothing on the '
                   'board says which nets are noisy and which are sensitive'),
+    # #1477. How close two parts of a design must sit is a design decision.
+    'link': ('a design relation between two sets of parts; nothing on the '
+             'board says how close they must sit'),
     # #1211. The board says which instances are siblings; that one of them
     # is the TEMPLATE the others copy is a design decision.
     'replicate': ('a design decision about which sheet instance is the '

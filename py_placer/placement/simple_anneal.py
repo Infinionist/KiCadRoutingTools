@@ -1130,7 +1130,7 @@ def _anchors(model, movable: List[str], rng, inner) -> Tuple[List[List[str]], np
                 pin(i, x, y, w0 * jit())
     for h in model.hints:
         ga = {of[r] for r in h.get('a') or () if r in of}
-        if h['kind'] == 'near':
+        if h['kind'] in ('near', 'within'):     # a link pulls as a near does
             gb = {of[r] for r in h.get('b') or () if r in of}
             for i in ga:
                 for j in gb - {i}:

@@ -150,10 +150,14 @@ def face_targets(intent, blocks, doc, pcb):
     return floorplan.declared_sides(claims)
 
 
-def hints(doc, state, movable, args):
+def hints(doc, state, movable, args, intent=None):
     """The groups file's `near`, `apart` and `edge` hints as cost-model
     terms, each over every member the board has (fixed members included);
-    a hint whose members are all fixed is a constant and is left out."""
+    a hint whose members are all fixed is a constant and is left out. And
+    the intent's `links[]` / `chains[]` (#1477), each a `within` term on its
+    two sets of parts: nothing within its `max_mm`, `LINK_WEIGHT` per mm
+    past it, the two groups never merged."""
+    from placement.simple import LINK_WEIGHT
     members = {g['name']: [r for r in g['refs'] if r in state.parts] for g in doc['groups']}
     mov = set(movable)
     out, seen = [], set()
@@ -173,6 +177,15 @@ def hints(doc, state, movable, args):
                 seen.add(pair)
                 out.append({'key': f"{kind}:{pair[1]}:{pair[2]}", 'kind': kind, 'a': a,
                             'b': b, 'edge': None, 'weight': w})
+    import fnmatch
+    names = sorted(state.parts)
+    for ln in (intent.links if intent is not None else ()):
+        a, b = ([r for r in names if any(fnmatch.fnmatchcase(r, p) for p in ln[k])]
+                for k in ('a', 'b'))
+        if a and b and any(r in mov for r in a + b):
+            out.append({'key': f"link:{ln['name']}", 'kind': 'within', 'a': a, 'b': b,
+                        'edge': None, 'weight': LINK_WEIGHT,
+                        'max_mm': float(ln['max_mm']), 'link': ln['name']})
     return out
 
 
@@ -299,7 +312,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
                   ground_weight=args.ground_weight, pad_weight=args.pad_weight,
                   crossing_weight=args.crossing_weight, claim_weight=args.claim_weight,
                   decap_weight=args.decap_weight, group_weight=args.group_weight,
-                  hints=hints(doc, state, movable, args),
+                  hints=hints(doc, state, movable, args, intent),
                   halo_coef=args.halo_coef, halo_weight=args.halo_weight,
                   claim_limits=limits, claim_limit_weight=args.claim_limit_weight,
                   templates=tmpls, template_weight=args.template_weight,
@@ -1268,6 +1281,15 @@ def main(argv=None):
               f"saturated value (weight x {APART_MM:g} mm wherever they still "
               f"touch) and steered nothing; separate them with a zone or keep-out, "
               f"or drop the hint")
+    # the intent's links (#1477): each one's gap, and the ones past their
+    # max_mm, which the grade reports at warn
+    links = []
+    for h in model.hints:
+        if h['kind'] == 'within':
+            gap = model._hint_full(h)[0]
+            links.append({'link': h['link'], 'gap_mm': round(gap, 3), 'max_mm': h['max_mm']})
+            if gap > h['max_mm'] + 1e-9:
+                print(f"  link {h['link']}: {gap:.2f} mm, past its {h['max_mm']:g} mm")
     placements = [{'reference': r, 'new_x': round(state.parts[r].x, 4),
                    'new_y': round(state.parts[r].y, 4),
                    'new_rotation': state.parts[r].rot % 360.0}
@@ -1301,6 +1323,7 @@ def main(argv=None):
               'floorplan': fp, 'assembly': asm, 'bga_field': bga_field,
               'decap_residual': resid, 'decap_repair': mended,
               'unseated': model.edge_unseated, 'notes': notes, 'fold': model.fold,
+              'links': links,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'hints_saturated': saturated, 'template_keepout': tk, 'pad_overhang': wide,
               'template_off': off, 'faces': face_report,
@@ -1310,7 +1333,7 @@ def main(argv=None):
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal', 'tight',
                                            'refused', 'oversubscribed', 'claim_arity', 'floorplan',
-                                           'assembly', 'bga_field', 'template_off', 'decap_residual', 'hints_saturated', 'estimate_fallback', 'faces', 'fold', 'seconds')}))
+                                           'assembly', 'bga_field', 'template_off', 'decap_residual', 'hints_saturated', 'estimate_fallback', 'faces', 'fold', 'links', 'seconds')}))
     return 4 if illegal or refused or model.edge_oversubscribed else 0
 
 

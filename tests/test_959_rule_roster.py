@@ -73,6 +73,8 @@ ARM_WITH = {
                                  'max_mm': 2.0}]},
     # #1253: a declared keep-away arms its grade.
     'keep_away': {'keep_away': [{'rule': 'SW:FB:0.5'}]},
+    # #1477: a declared link arms its grade.
+    'link': {'links': [{'a': ['U1'], 'b': ['C1'], 'max_mm': 5.0}]},
     'must_lock': {'must_lock': ['U1']},
     'legality': {'legality_budget': {'oob_count': 0}},
     'pins_to_edge': {'edge_connectors': [{'ref': 'J1', 'edge': 'west'}]},

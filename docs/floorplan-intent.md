@@ -139,7 +139,7 @@ suspect, suspect_reason, why
 
 | object | keys |
 |---|---|
-| top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `keep_away`, `replicate`, `templates`, `covers`, `heights`, `dispositions`, `arrays`, `fixed_poses`, `context` |
+| top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `keep_away`, `links`, `chains`, `replicate`, `templates`, `covers`, `heights`, `dispositions`, `arrays`, `fixed_poses`, `context` |
 | `envelope` | `rect`, `tolerance_mm` |
 | `defaults` | `zone_tolerance_mm` |
 | `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `fence_mm` (a band that wide round `zone` no part may use, members included; see "`fence_mm`" below; needs `min_reader` 16), `why` (or `note` / `reason`), `context`. `rigid` is refused by name: its only reader, the retired quench engine, is gone, and `place_simple` moves each group of the groups file together |
@@ -152,6 +152,8 @@ suspect, suspect_reason, why
 | `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `body_edge_mm` (the least distance in mm a component body may sit from the board edge, which arms check_assembly's `body_edge_band` gate; needs `min_reader` 9), `why` (or `note` / `reason`), `context` |
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `why` (or `note` / `reason`), `context`, and the compiler-written `source` |
 | `keep_away[]` | `rule` (ONE rule in route.py's `--keep-away` syntax, `AGGRESSOR:VICTIM:GAP`), `why` (or `note` / `reason`), `context`, and the compiler-written `source` (see "`keep_away[]`" below; needs `min_reader` 10) |
+| `links[]` | `name`, `a`, `b` (each a list of reference globs), `max_mm`, `why` (or `note` / `reason`), `context` (see "`links[]` and `chains[]`" below; needs `min_reader` 17) |
+| `chains[]` | `name`, `stages` (two or more lists of reference globs, in order), `max_mm` (one number, or one per link), `why` (or `note` / `reason`), `context` (needs `min_reader` 17) |
 | `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why` (or `note` / `reason`), `context`, `source` (see "`replicate[]`" below; needs `min_reader` 11) |
 | `templates[]` | `anchor` (the chip), `members` (each `ref`, `at` [dx, dy] mm and `rot`, a quarter turn, in the chip's own frame; `pads` and `note` as the fit wrote them), `tolerance_mm`, `kind` (`switching stage` or `rf front end`), `ground_return_mm`, `source`, `why` (or `note` / `reason`), `context`, and the fit-written `fitted` (see "`templates[]`" below; needs `min_reader` 13, and 14 with `kind` or `ground_return_mm`) |
 | `covers[]` | `connector`, `side` (`F`/`B`), `axis_deg` (a quarter turn in the connector's frame), `width_mm`, `underside_mm`, `length_mm`, `offset_mm`, `standoffs`, `removable`, `source`, `why` (or `note` / `reason`), `context` (see "`covers[]` and `heights[]`" below; needs `min_reader` 15) |
@@ -183,11 +185,11 @@ written the way the neighbouring row spelled it cost the run its intent.
 its block declares and turns one with candidates only within them, and
 by the grade's `array_conflict`. `place_simple` does not read them.
 
-`severity` keys are checked too. The settable names are the eighteen rules —
+`severity` keys are checked too. The settable names are the twenty rules —
 `envelope`, `zone_containment`, `zone_side`, `assembly_side`, `zone_exclusive`, `keepout`,
 `edge_connector`, `decap_distance`, `decap_ungraded`, `decap_pin_distance`,
-`proximity`, `keep_away`, `must_lock`, `legality`, `pins_to_edge`,
-`array_formation`, `replicate`, `template` — plus the ten
+`proximity`, `keep_away`, `link`, `must_lock`, `legality`, `pins_to_edge`,
+`array_formation`, `replicate`, `template`, `cover` — plus the ten
 findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_zone_overlap`,
 `block_unresolved`, `intent_zone_in_keepout`, `keepout_allow_unresolved`,
 `array_unresolved`, `array_conflict`, `fixed_pose_unresolved`,
@@ -206,10 +208,11 @@ the sixteen `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
 `plan_fixed_overlap_budget`, `plan_template_keepout`), `edge_connector_side` (settable to `warn`
 only -- `error` is refused, because the rule is advisory by design),
 `edge_oversubscribed` (raised by check_floorplan's grade and by
-`--plan-only`), plus seven more raised BESIDE a rule's own name —
+`--plan-only`), plus nine more raised BESIDE a rule's own name —
 `decap_pin_distance_inferred` and `decap_pin_uncovered`,
-`proximity_unresolved`, `keep_away_unresolved`, `replicate_unresolved`,
-`template_unresolved` and `template_ground_return`.
+`proximity_unresolved`, `keep_away_unresolved`, `link_unresolved`,
+`replicate_unresolved`, `template_unresolved`, `template_ground_return` and
+`cover_unresolved`.
 One measurement can support several claims, and
 an author must be able to set their severities apart: a pin inferred from a net
 name and a pin the pad declares are not the same evidence, and a proximity
@@ -219,7 +222,8 @@ without demoting the second.
 
 Every name defaults to **error** except these, which default to **warn**:
 `assembly_side`, `decap_ungraded`, `decap_pin_distance_inferred`,
-`decap_pin_uncovered`, `keep_away` and `keep_away_unresolved`, `replicate`
+`decap_pin_uncovered`, `keep_away` and `keep_away_unresolved`, `link` and
+`link_unresolved`, `replicate`
 and `replicate_unresolved`, `template`, `template_unresolved` and
 `template_ground_return`,
 `keepout_allow_unresolved`,
@@ -271,7 +275,7 @@ claim").
 intent file at once — far too blunt for "this build learned a new field".
 
 So field-level compatibility is a second number. `READER_VERSION` (currently
-`16`) is what this build can act on, and an intent sets `min_reader` when a
+`17`) is what this build can act on, and an intent sets `min_reader` when a
 claim must not be silently ignored:
 
 ```jsonc
@@ -318,6 +322,7 @@ Each `min_reader` level and the keys it covers:
 | 14 | `templates[].kind`, `templates[].ground_return_mm` |
 | 15 | `covers[]`, `heights[]`, `keepouts[].max_height_mm` |
 | 16 | `blocks[].fence_mm` |
+| 17 | `links[]`, `chains[]` |
 
 The emitter and the design-brief compiler stamp the level their output needs.
 
@@ -898,6 +903,8 @@ status from this list:
 | `proximity_unresolved` | a proximity claim names a ref, or a pad number, this board does not have. A separate NAME so a DNP-variant board can demote it without demoting the distance claim | same |
 | `keep_away` | a pad of one DECLARED net group sits closer than GAP to a pad of the other, on two different parts. One finding per part pair, at its closest pads, naming each pad's side. **warn** by default; `severity` may promote it | `legality.pad_rect` + `rect_gap` (plan view), sides resolved by the router's `keep_away.resolve_rule_sides` |
 | `keep_away_unresolved` | a keep-away rule has a side that matches no net on this board (**warn** by default) | same |
+| `link` | a declared link's two sets of parts are further apart than its `max_mm`: the gap between their nearest courtyards, Manhattan, 0 once they touch. One finding per link, naming the nearest pair. **warn** by default; `severity` may promote it | `simple.rect_gap` on the courtyard each part is seated on (`zone_parts`), the gap `place_simple` prices |
+| `link_unresolved` | a link has a side that matches no part on this board (**warn** by default) | same |
 | `replicate` | a declared copy target is not laid out as a translated copy of its source instance: a part further than `tolerance_mm` (default 0.05) from the best translation, or rotated, or on the other side. One finding per target, naming the worst parts. **warn** by default; `severity` may promote it | `replicate.measure_declared`: parts matched by schematic symbol as `place_pose replicate` matches them, offsets fitted by their median |
 | `replicate_unresolved` | a declaration the board cannot resolve -- an unknown or ambiguous sheet, instances not wired alike, a waiver naming no pad -- with `place_pose replicate`'s own reason (**warn** by default) | same |
 | `must_lock` | a declared-critical part is not locked in the file | `parser.extract_locked_refs` |
@@ -949,6 +956,7 @@ reading.
 | `replicate` | yes | — | `place_pose replicate --intent` applies the declaration; an anneal after it may move a copied part, and the grade then reports it |
 | `template` | yes | **seated, carried and priced**: each member starts at its template pose round its chip, moves rigidly with every move of the chip, and its mean pad distance from that pose costs `--template-weight` (default 100) per mm; a member's `jump` goes back to its pose, and a member joins the chip's group and is not priced as a decap | the final legality step can still nudge a member to its nearest legal pose; the grade then reports the drift |
 | `keep_away` | yes | **priced** whenever the intent declares a row (#1476): each part pair's shortfall below GAP, pad edge to pad edge as the grade measures it (the rule's own sides, `_keep_away_gaps` on `legality.pad_rect` rects, two pads of one net or one part never measured), costs `KEEP_AWAY_WEIGHT` (500) per mm -- a declared separation, so it outweighs the wire a breach saves | a soft term, so a crowded board can still end a seed inside a gap, which the grade then reports; the routers price it again once there are tracks |
+| `link` | yes | **priced**: a `within` term on the link's two sets of parts, nothing while their nearest courtyards are within `max_mm`, `LINK_WEIGHT` (50) per mm past it; the groups the parts are in are never merged, unlike a `proximity` row across groups; the anchored start pulls the two sets together as a groups-file `near` does. `place_simple` prints each link past its `max_mm`, and `links` in its `--json` holds every link's gap | a soft term, so a seed that cannot meet `max_mm` ends past it, which the grade then reports |
 | `pins_to_edge` | yes | — | always-WARN advice for a reviewer |
 | `array_formation` | yes | — | graded only. A group in the groups file keeps its parts together, not in a row |
 
@@ -1109,6 +1117,32 @@ router reads and what it declares), and JSON_SUMMARY counts them as
 `keep_away_unpriced`. A rule compiled from a `--brief` that is not the file
 beside the board is caught the same way, at `--emit-intent` too. No
 placement tool reads the key either (see "Which rules the placer can see").
+
+### `links[]` and `chains[]`: two sets of parts within a distance, groups unmerged
+
+```jsonc
+"links":  [{ "name": "filter_at_entry", "a": ["J6"], "b": ["FL1", "C40", "C41"], "max_mm": 8 }],
+"chains": [{ "name": "rail_5v", "stages": [["FL1", "C40"], ["U39", "C50", "C51"], ["U20"]],
+             "max_mm": [6, 10] }]
+```
+
+A link holds two sets of parts (reference globs) within `max_mm` of each
+other: the gap between their nearest courtyards, Manhattan, 0 once they
+touch. It is what a `proximity` row across two groups cannot say without
+moving its subject into the partner's group (`fold`, #1467), and what a
+groups-file `near` cannot bound: a `near` pulls until the groups touch, and
+several of them vote (#1471). A chain is links between consecutive stages,
+named `<chain>:0`, `<chain>:1`, ...; `max_mm` is one number for every link or
+one per link -- "filter, then regulator, then load", each within its distance
+of the next.
+
+`link` grades each one at **warn** (a side matching no part is
+`link_unresolved`). `place_simple` prices the same gap as a `within` term:
+nothing inside `max_mm`, `LINK_WEIGHT` (50) per mm past it -- strong enough
+to hold a declared distance (at the `near` weight, 2, it was noise), and it
+stops pulling once the parts are close enough, so a regulator linked to its
+filter and its loads may sit anywhere that keeps both links, and its wiring
+decides where.
 
 ### `replicate[]`: sibling sheet instances laid out alike
 

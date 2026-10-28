@@ -55,7 +55,9 @@ this cost by simulated annealing; `place_simple.py` is the CLI.
            through-hole pad counting twice (it blocks both layers)
          + the groups file's hints, each weighted: `near`, the gap between
            two groups' nearest courtyards; `apart`, how far that gap falls
-           short of APART_MM; `edge`, how far a group is from its board edge
+           short of APART_MM; `edge`, how far a group is from its board edge;
+           and the intent's `links[]` / `chains[]` (`within`, #1477), how far
+           that gap between the link's two sets of parts is past its `max_mm`
          + decap_limit_weight x mm past the intent's decap limits, where it
            grades them at error (`set_limits`): each cap's distance to the
            nearest chip on its rail, each supply pin's gap to its nearest
@@ -117,6 +119,12 @@ HALO_SMALL_PADS = 4
 #: (the claim-limit weight) 2 seeds ended inside the gap, at 100 one, at
 #: 500 none, the mean wire within the seeds' spread of the unpriced run.
 KEEP_AWAY_WEIGHT = 500.0
+#: cost per mm an intent link's two sets of parts are past its `max_mm`
+#: (#1477). Measured on a 21-part board, one link "within 1 mm", 6 seeds: at
+#: 2 (the `near` weight) no seed met it and one ended further away than
+#: with no link at all; at 50 and at 500 all six met it, the mean wire within
+#: the seeds' spread of the unlinked run.
+LINK_WEIGHT = 50.0
 #: cells per side of the congestion grid's blocks: a move visits only the
 #: blocks where a cell can overflow before or after it (`_cong_price`)
 CONG_BLOCK = 8
@@ -1008,7 +1016,9 @@ class Model:
         """A groups-file hint, weighted. `near`: the gap between the two
         groups' nearest courtyards (nothing once they touch). `apart`: how
         far that gap falls short of APART_MM. `edge`: how far the group's
-        nearest courtyard is from its board edge, less the edge margin."""
+        nearest courtyard is from its board edge, less the edge margin.
+        `within` (an intent link, #1477): how far that gap is past the
+        link's `max_mm`."""
         return self._hint_value(h, self._hint_full(h)[0])
 
     def _hint_value(self, h, gap):
@@ -1016,6 +1026,8 @@ class Model:
             return h['weight'] * max(0.0, gap)
         if h['kind'] == 'near':
             return h['weight'] * gap
+        if h['kind'] == 'within':
+            return h['weight'] * max(0.0, gap - h['max_mm'])
         return h['weight'] * max(0.0, APART_MM - gap)
 
     def _edge_side(self, h):
