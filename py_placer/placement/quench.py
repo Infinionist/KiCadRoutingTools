@@ -1157,7 +1157,8 @@ class QuenchState:
                  # default, so a state that grades what the board draws --
                  # INCLUDING the one `floorplan.grade` builds -- keeps doing
                  # so; `place_simple` and the renderer that draws its model
-                 # ask for it.
+                 # ask for it. A floorplan ZONE reads the estimate from any
+                 # state (`floorplan.zone_parts`, #1466).
                  estimate_courtyards: bool = False,
                  # ...except these refs, which keep the basis the board
                  # draws (place_simple's fallback for a part the estimates
@@ -1296,10 +1297,17 @@ class QuenchState:
                   f"{', '.join(self.outline_locked)} -- moving one would"
                   f" resize the board. Edit the part and the outline"
                   f" together in KiCad if it really must move.")
-        warn_missing_courtyards(no_courtyard, 'placement')
-        if self.courtyard_estimates:
-            from placement.body import format_estimates
-            print(format_estimates(self.courtyard_estimates, 'placement'))
+        # #1466: one disclosure, of what PLACEMENT seats each courtyard-less
+        # part on. A state that does not estimate (a pose tool's, the lock
+        # advisor's) still names the estimates the placer will use, so the
+        # first thing a user reads is not "pad box" for a part placement
+        # seats on its body.
+        estimates = self.courtyard_estimates
+        if no_courtyard and not estimate_courtyards:
+            from placement.body import estimated_courtyards
+            estimates = estimated_courtyards(pcb_data, pcb_file)
+        warn_missing_courtyards(list(no_courtyard) + list(
+            self.courtyard_estimates), 'placement', estimates)
 
         # #701 intent keep-outs, resolved ONCE per state rather than once per
         # candidate pose. Neither an `allow` fnmatch against a reference nor

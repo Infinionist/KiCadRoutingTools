@@ -4371,6 +4371,71 @@ def open_zone_rect(zone_rect, open_sides):
     return tuple(z)
 
 
+def zone_parts(state, pcb_data, pcb_file: str):
+    """`{ref: part}`: `state.parts` on the basis a ZONE measures a part on
+    (#1466). A part that draws no courtyard is the part place_simple seats --
+    on its ESTIMATED courtyard, from the map the placer's own state reads
+    (`body.courtyard_sides_with_estimates`) -- at the pose `state` gives it;
+    every other part is `state`'s own. A state that already estimates (the
+    placer's) is returned as it is.
+
+    Zones only: the zone rules, the plan check's zone sums and the emitter's
+    zone extents ask it. The legality budget, the outline and the edge rules
+    keep reading the state, so a courtyard-less connector flush with the
+    edge is not newly an off-board part. The estimated parts are built once
+    per state and follow its poses."""
+    parts = getattr(state, 'parts', None) or {}
+    if getattr(state, 'courtyard_estimates', None):
+        return parts
+    cache = getattr(state, '_zone_parts', None)
+    if cache is None:
+        from .body import courtyard_sides_with_estimates
+        from .quench import _Part
+        cache = {}
+        try:
+            sides, est = courtyard_sides_with_estimates(
+                pcb_data, pcb_file,
+                drawn=getattr(state, '_drawn_courtyards', None))
+        except (OSError, ValueError):
+            sides, est = {}, {}
+        fps = getattr(pcb_data, 'footprints', None) or {}
+        for ref in est:
+            if ref in parts and ref in fps:
+                cache[ref] = _Part(ref, fps[ref], sides,
+                                   getattr(parts[ref], 'locked', False))
+        try:
+            state._zone_parts = cache
+        except AttributeError:
+            pass
+    if not cache:
+        return parts
+    out = dict(parts)
+    for ref, p in cache.items():
+        sp = parts[ref]
+        rot = sp.rot % 360
+        p.ensure_rotation(rot)
+        p.x, p.y, p.rot = sp.x, sp.y, rot
+        out[ref] = p
+    return out
+
+
+def _ctx_zone_parts(ctx):
+    """`ctx.parts` (`GradedPart`s) on the zone basis (`zone_parts`)."""
+    got = getattr(ctx, '_zone_graded', None)
+    if got is None:
+        st = ctx.state
+        zp = zone_parts(st, ctx.pcb, ctx.pcb_file)
+        got = dict(ctx.parts)
+        if zp is not getattr(st, 'parts', None):
+            for ref, p in zp.items():
+                if ref in got and p is not st.parts.get(ref):
+                    got[ref] = legality.GradedPart(
+                        ref=ref, side=p.side, rect=p.rect(),
+                        tht_rect=p.tht_rect(), has_tht=p.has_tht)
+        ctx._zone_graded = got
+    return got
+
+
 def zone_is_anchor(zone_rect, part, tol: float) -> bool:
     """Is this zone a spec-COORDINATE rather than a region? (#799)
 
@@ -4971,12 +5036,16 @@ def _member_pad_rect(ctx, ref):
 
 def rule_zone_containment(ctx) -> Iterator[Violation]:
     claimed = claimed_edges(ctx.intent)
+    # #1466: a courtyard-less member is held to its zone by the estimated
+    # courtyard place_simple seats it on, not by its smaller pad box
+    zparts = (_ctx_zone_parts(ctx)
+              if any(z.rect is not None for z in ctx.intent.blocks) else {})
     for z in ctx.intent.blocks:
         if z.rect is None:
             continue
         tol = ctx.intent.zone_tolerance(z)
         for ref in ctx.blocks.get(z.name, ()):
-            part = ctx.parts.get(ref)
+            part = zparts.get(ref)
             if part is None:
                 continue
             # #1174: an edge-claim member's declared edge, where the zone
@@ -5119,6 +5188,10 @@ def rule_zone_exclusive(ctx) -> Iterator[Violation]:
     """An exclusive zone is real estate reserved for its block, so a stranger
     inside it is the finding. This is what makes "keep this area clear for the
     RF section" checkable rather than aspirational."""
+    # #1466: on the zone basis, as `rule_zone_containment` measures members
+    zparts = (_ctx_zone_parts(ctx)
+              if any(z.rect is not None and z.exclusive
+                     for z in ctx.intent.blocks) else {})
     for z in ctx.intent.blocks:
         if z.rect is None or not z.exclusive:
             continue
@@ -5135,9 +5208,9 @@ def rule_zone_exclusive(ctx) -> Iterator[Violation]:
         # had deliberately declined to bind and therefore could not repair.
         # The seat gate (`quench.exclusive_spec`) skips the same zones, so the
         # two agree at every severity.
-        if not (members & set(ctx.parts)):
+        if not (members & set(zparts)):
             continue
-        for ref, part in sorted(ctx.parts.items()):
+        for ref, part in sorted(zparts.items()):
             if ref in members:
                 continue
             if z.side and part.side != z.side:
@@ -8538,7 +8611,7 @@ def exclusive_unsatisfiable(intent: Intent, blocks, pcb_data,
 
     THE GRADE'S GEOMETRY, from the grade's own placement state: the rect
     `rule_zone_containment` and `rule_zone_exclusive` test (courtyard, else
-    pad bbox), never `legality.part_local_bounds`' occupancy, which adds the
+    the estimate place_simple seats the part on, `zone_parts`), never `legality.part_local_bounds`' occupancy, which adds the
     drawn .Fab body -- measured differing by more than 0.05 mm on 29 corpus
     parts (ulx3s U9 by 7 mm), so a satisfied board failed its own grade
     (Phase-4 verifier). A part the state does not carry is graded by neither
@@ -8555,6 +8628,7 @@ def exclusive_unsatisfiable(intent: Intent, blocks, pcb_data,
     if state is None:
         import pose_score
         state = pose_score.make_state(pcb_data, pcb_file)
+    zparts = zone_parts(state, pcb_data, pcb_file)
     for zb in intent.blocks:
         if zb.rect is None:
             continue
@@ -8571,13 +8645,13 @@ def exclusive_unsatisfiable(intent: Intent, blocks, pcb_data,
             # so it can make nothing unsatisfiable either (round-2 verifier:
             # a zone exclusive to a courtyard-less logo refused a plan the
             # grade passed).
-            if not (owners & set(state.parts)):
+            if not (owners & set(zparts)):
                 continue
             for ref in blocks.get(zb.name, ()):
                 if ref in owners:
                     continue
                 fp = (pcb_data.footprints or {}).get(ref)
-                sp = state.parts.get(ref)
+                sp = zparts.get(ref)
                 if fp is None or sp is None:
                     continue
                 if za.side and sp.side != za.side:
@@ -8865,7 +8939,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
          the ERROR fires only when the locked pairs ALONE exceed that budget,
          which no arrangement of the other parts can undo.
       5. `plan_zone_overfull` / `_crowded`: per FACE, the members' areas,
-         locked ones included (courtyard, else pad bbox; a through-hole
+         locked ones included (courtyard, else the estimated one
+         place_simple seats the part on, `zone_parts`; a through-hole
          member's drilled footprint, clipped to its courtyard, charged to the
          far face) against the zone's area.
          Fitting area A into a zone of area Z forces at least A - Z of
@@ -8939,13 +9014,17 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     #     loader refuses a fixed pose on any `edge_connectors` ref
     #     (`_fixed_pose_entries`), so no member graded here has one.
     _fx = {str(f['ref']): f for f in intent.fixed_poses}
+    # #1466: every zone below measures a courtyard-less member on the
+    # estimated courtyard place_simple seats it on (`zone_parts`)
+    _zparts = (zone_parts(state, pcb_data, pcb_file)
+               if any(z.rect is not None for z in intent.blocks) else {})
     for z in intent.blocks:
         if z.rect is None:
             continue
         tol = intent.zone_tolerance(z)
         for ref in blocks.get(z.name, ()):
             f = _fx.get(ref)
-            part = state.parts.get(ref)
+            part = _zparts.get(ref)
             if f is None or part is None:
                 continue
             rot = f.get('rot')
@@ -9098,7 +9177,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     for z in intent.blocks:
         if z.rect is None:
             continue
-        members = [r for r in blocks.get(z.name, ()) if r in state.parts]
+        members = [r for r in blocks.get(z.name, ()) if r in _zparts]
         if any(frozenset((a_, b_)) in waived
                for a_ in members for b_ in members if a_ < b_):
             continue
@@ -9116,7 +9195,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
         _outline = _budget_outline_areas(ctx, members)
         counted = []
         for r in members:
-            part = state.parts[r]
+            part = _zparts[r]
             b0 = part.grade_by_rot[0.0]
             w, h = b0[2] - b0[0], b0[3] - b0[1]
             if _anchor_reachable(z, part, tol, _claims.get(r)):
@@ -10072,11 +10151,17 @@ def emit_intent(pcb_data, pcb_file: str, *,
     # that leaves the outline, which the emitted intent would then flag against
     # itself.
     cand = {}
+    _zp = None
     for key in sorted(derived):
         members = [r for r in derived[key] if r in parts]
         if len(members) < 2:
             continue
-        rects = [parts[r].rect for r in members]
+        # #1466: on the basis the zone is graded on (`zone_parts`), or a
+        # zone drawn round a courtyard-less member's pad box fails its own
+        # grade
+        if _zp is None:
+            _zp = zone_parts(state, pcb_data, pcb_file)
+        rects = [_zp[r].rect() for r in members]
         cand[key] = (members, (
             max(bounds[0], min(r[0] for r in rects) - zone_pad_mm),
             max(bounds[1], min(r[1] for r in rects) - zone_pad_mm),

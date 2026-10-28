@@ -1315,8 +1315,12 @@ consequences are disclosed rather than hidden:
   refusal resting on one would be unsound. When the rects alone still refuse,
   the refusal stands; only when dropping the discs would have found a pose is
   the answer undecided. Total disc coverage is caught exactly.
-- **a part with no courtyard is modelled by its pad bbox**, which is smaller, so
-  the check under-reports rather than over-reports on such a part.
+- **a part with no courtyard is modelled by its estimated courtyard**, the one
+  `place_simple` seats it on (its .Fab body, else silk, else pads, united with
+  its pads; `body.estimated_courtyards`, #1300). The zone rules, the
+  `--plan-only` zone sums and the emitter's zone extents read the same
+  estimate (`floorplan.zone_parts`, #1466), so they measure the part the
+  placer moves. A drawn courtyard replaces the estimate.
 
 ### `oob_area` cannot be budgeted, and says so
 
