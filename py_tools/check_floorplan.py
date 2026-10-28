@@ -173,6 +173,14 @@ def build_parser():
                         'per-zone / per-edge / board area budgets, and the '
                         'rule roster. Needs no placed board; exits 4 on an '
                         'ERROR, which is a plan no arrangement can satisfy')
+    p.add_argument('--suggest-channels', action='store_true',
+                   help='print proposed copies of one channel drawn inside '
+                        'ONE sheet (#1480) as JSON and exit: chips of one '
+                        'footprint and value, each with the parts on its own '
+                        'nets, matched by footprint, value and chip pin, '
+                        'checked by place_pose replicate\'s own net rule. '
+                        'Suggestions only: an accepted one\'s `row` is the '
+                        'paste-ready replicate[] entry')
     p.add_argument('--suggest-arrays', action='store_true',
                    help='print the pose-blind array DETECTOR suggestions '
                         '(#1051) as JSON and exit: rows of identical parts '
@@ -408,7 +416,8 @@ def _plan_only(args, intent, pcb, sources, brief_fragment, brief_path,
 
 
 #: The dests `--suggest-arrays` reads; any other flag set is refused by name.
-_SUGGEST_ARRAYS_OWN = ('help', 'board', 'suggest_arrays', 'json', 'quiet')
+_SUGGEST_ARRAYS_OWN = ('help', 'board', 'suggest_arrays', 'suggest_channels',
+                       'json', 'quiet')
 
 
 def _suggest_arrays(args) -> int:
@@ -451,6 +460,37 @@ def _suggest_arrays(args) -> int:
     return 0
 
 
+def _suggest_channels(args) -> int:
+    """`--suggest-channels` (#1480): copies of one channel inside one sheet,
+    with their correspondence, as `--suggest-arrays` prints rows."""
+    import contextlib
+    from placement import replicate as rep
+    with contextlib.redirect_stdout(sys.stderr):
+        pcb = parse_kicad_pcb(args.board)
+        declined = []
+        cands = rep.suggest_channels(pcb, declined=declined)
+    doc = {'board': args.board, 'pose_blind': True, 'count': len(cands),
+           'suggestions': cands, 'declined': declined}
+    text = json.dumps(doc, indent=1, sort_keys=True)
+    if not args.json:
+        print(text)
+        return 0
+    try:
+        with open(args.json, 'w', encoding='utf-8') as fh:
+            fh.write(text + '\n')
+    except OSError as exc:
+        print(f"ERROR: --json {args.json}: {exc}", file=sys.stderr)
+        return 2
+    if not args.quiet:
+        print(f"{len(cands)} channel suggestion(s) on {args.board} -- "
+              f"pose-blind, SUGGESTIONS: an accepted one's `row` is the "
+              f"replicate[] entry to paste (evidence in {args.json})")
+        for c in cands:
+            print(f"  {c['value'] or c['chip']}: "
+                  + ' | '.join(','.join(ch) for ch in c['channels']))
+    return 0
+
+
 def _bare_json_stdout(argv) -> bool:
     """True when this invocation writes a bare JSON document to stdout,
     where a `CMD:` banner line would be a JSONDecodeError at char 0."""
@@ -465,16 +505,20 @@ def _bare_json_stdout(argv) -> bool:
             a = build_parser().parse_args(argv)
     except SystemExit:
         return False
-    return bool(a.suggest_arrays and not a.json)
+    return bool((a.suggest_arrays or a.suggest_channels) and not a.json)
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
     parser_error = build_parser().error
 
-    if args.suggest_arrays:
+    if args.suggest_arrays or args.suggest_channels:
+        mode = '--suggest-arrays' if args.suggest_arrays else '--suggest-channels'
+        if args.suggest_arrays and args.suggest_channels:
+            parser_error('--suggest-arrays and --suggest-channels are two '
+                         'reports; ask for one')
         if args.intent or args.emit_intent:
-            parser_error('--suggest-arrays runs alone: it suggests, and an '
+            parser_error(f'{mode} runs alone: it suggests, and an '
                          'intent is where a reader writes what it accepted')
         # Every other flag the mode would silently IGNORE is refused by
         # name: a `--brief` (even a missing file), `--plan-only` or
@@ -490,7 +534,7 @@ def main(argv=None):
             if getattr(args, act.dest, default) != default:
                 ignored.append(act.option_strings[-1])
         if ignored:
-            parser_error(f"--suggest-arrays does not use "
+            parser_error(f"{mode} does not use "
                          f"{', '.join(sorted(set(ignored)))}: it reads only "
                          f"the board's parts and nets (--json and --quiet "
                          f"are its options)")
@@ -500,10 +544,10 @@ def main(argv=None):
                 os.path.dirname(os.path.abspath(args.json))):
             parser_error(f"--json {args.json}: its directory does not "
                          f"exist")
-        return _suggest_arrays(args)
+        return _suggest_channels(args) if args.suggest_channels else _suggest_arrays(args)
     if not args.intent and not args.emit_intent:
-        parser_error('one of --intent, --emit-intent or --suggest-arrays is '
-                     'required')
+        parser_error('one of --intent, --emit-intent, --suggest-arrays or '
+                     '--suggest-channels is required')
     if not os.path.exists(args.board):
         parser_error(f"{args.board}: no such file")
 

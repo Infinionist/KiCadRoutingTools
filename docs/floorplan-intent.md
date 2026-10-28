@@ -155,7 +155,7 @@ suspect, suspect_reason, why
 | `links[]` | `name`, `a`, `b` (each a list of reference globs), `max_mm`, `why` (or `note` / `reason`), `context` (see "`links[]` and `chains[]`" below; needs `min_reader` 17) |
 | `chains[]` | `name`, `stages` (two or more lists of reference globs, in order), `max_mm` (one number, or one per link), `why` (or `note` / `reason`), `context` (needs `min_reader` 17) |
 | `rails[]` | `nets` (net-name globs, as `--nets` takes them), `why` (or `note` / `reason`), `context` (see "`rails[]`" below; needs `min_reader` 18) |
-| `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why` (or `note` / `reason`), `context`, `source` (see "`replicate[]`" below; needs `min_reader` 11) |
+| `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), or instead `channels` (copies inside one sheet: two or more lists of refs, the first the source, matched index for index; needs `min_reader` 19), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why` (or `note` / `reason`), `context`, `source` (see "`replicate[]`" below; needs `min_reader` 11) |
 | `templates[]` | `anchor` (the chip), `members` (each `ref`, `at` [dx, dy] mm and `rot`, a quarter turn, in the chip's own frame; `pads` and `note` as the fit wrote them), `tolerance_mm`, `kind` (`switching stage` or `rf front end`), `ground_return_mm`, `source`, `why` (or `note` / `reason`), `context`, and the fit-written `fitted` (see "`templates[]`" below; needs `min_reader` 13, and 14 with `kind` or `ground_return_mm`) |
 | `covers[]` | `connector`, `side` (`F`/`B`), `axis_deg` (a quarter turn in the connector's frame), `width_mm`, `underside_mm`, `length_mm`, `offset_mm`, `standoffs`, `removable`, `source`, `why` (or `note` / `reason`), `context` (see "`covers[]` and `heights[]`" below; needs `min_reader` 15) |
 | `covers[].standoffs[]` | `ref`, `length_mm`, `rot` |
@@ -276,7 +276,7 @@ claim").
 intent file at once — far too blunt for "this build learned a new field".
 
 So field-level compatibility is a second number. `READER_VERSION` (currently
-`18`) is what this build can act on, and an intent sets `min_reader` when a
+`19`) is what this build can act on, and an intent sets `min_reader` when a
 claim must not be silently ignored:
 
 ```jsonc
@@ -325,6 +325,7 @@ Each `min_reader` level and the keys it covers:
 | 16 | `blocks[].fence_mm` |
 | 17 | `links[]`, `chains[]` |
 | 18 | `rails[]` |
+| 19 | `replicate[].channels` |
 
 The emitter and the design-brief compiler stamp the level their output needs.
 
@@ -1194,6 +1195,27 @@ target named twice (two copies onto one instance would each undo the other),
 `from` among its own `to`, `only` with `skip`, and a waiver that is not
 `REF.PAD`. Whether the sheets exist and are wired alike is the board's
 question, answered when the row is used.
+
+Channels drawn as copies INSIDE one sheet (three line drivers, an I/Q pair)
+share no instance path, so nothing pairs them by sheet. Name them by their
+parts instead (#1480):
+
+```jsonc
+"replicate": [{ "channels": [["U202", "C205", "C206", "C207", "C204"],
+                             ["U203", "C210", "C211", "C214", "C209"],
+                             ["U204", "C218", "C220", "C221", "C217"]] }]
+```
+
+The first channel is the source, each other one a copy, the parts at one
+position corresponding; every channel lists the same number of parts, and a
+part is in one channel only. Every check is the sheet form's -- the same
+footprints and pads, the net rule, one translation, the anchor, the waivers,
+`only` / `skip` -- and the rows are named `channel:<first ref>` in every
+report. `place_pose replicate --channel U202,C205,... --channel U203,...`
+is the same on the command line, and `check_floorplan.py BOARD
+--suggest-channels` proposes them: for chips of one footprint and value in
+one sheet, the parts on each chip's own nets, matched by footprint, value and
+chip pin, each proposal checked by the net rule, its `row` ready to paste.
 
 Two things read it:
 

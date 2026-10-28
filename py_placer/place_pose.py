@@ -9,6 +9,7 @@
     place_pose.py BOARD OUT unlock U1
     place_pose.py BOARD OUT set U1 129.9 98.3 --rot 270 rotate CON2 180 lock U1
     place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3   # #1211
+    place_pose.py BOARD OUT replicate --channel U1,C1,C2 --channel U2,C3,C4  # #1480
 
 Every verb writes through `placement.writer.write_placed_output` -- the same
 writer `place_simple` uses -- and carries the sibling `.kicad_pro` /
@@ -107,6 +108,8 @@ exact points given -- so --near / --snap need a call with ONE pose op):
   lock REF [REF ...]
   unlock REF [REF ...]       the only way to move a KiCad-locked part
   replicate --from SHEET --to SHEET [--to SHEET] [--anchor REF] [--offset DX DY]
+  replicate --channel REF,REF,... --channel REF,REF,... [...]   channels inside one
+                           sheet named by their parts, matched index for index
             [--allow-net-mismatch REF.PAD ...] [--only REFS | --skip REFS]
             [--search MM [--search-step MM]]
             copy one placed instance of a hierarchical sheet onto its
@@ -313,6 +316,14 @@ def _verb_parsers(sub=None):
     q.add_argument('--to', dest='to_sheets', action='append', default=[],
                    metavar='SHEET',
                    help='an instance to arrange like it; repeat for several')
+    q.add_argument('--channel', dest='channels', action='append', default=[],
+                   metavar='REF,REF,...',
+                   help='a channel named by its parts, in order, instead of '
+                        '--from/--to (#1480): the first --channel is the '
+                        'source, each other one a copy of it, the parts at '
+                        'one position corresponding; for channels drawn '
+                        'inside one sheet. check_floorplan.py '
+                        '--suggest-channels proposes them')
     q.add_argument('--anchor', default=None, metavar='REF',
                    help='the part that keeps its place in each target; '
                         'default: the source part with the most pads')
@@ -414,7 +425,15 @@ def parse_segments(segments, parsers, error):
         elif verb == 'unlock':
             unlocks.extend(a.refs)
         elif verb == 'replicate':
-            if a.from_sheet is None and not a.to_sheets:
+            chans = [[r for r in tok.split(',') if r] for tok in a.channels]
+            if chans and (a.from_sheet is not None or a.to_sheets):
+                error("`replicate` was given --channel and --from/--to: name "
+                      "the copies by their parts (--channel) or by their "
+                      "sheets (--from/--to), not both")
+            if chans and len(chans) < 2:
+                error("`replicate --channel` needs two or more channels: the "
+                      "first is the source, each other one a copy of it")
+            if a.from_sheet is None and not a.to_sheets and not chans:
                 # #1211: the intent's `replicate[]` declarations, expanded in
                 # main() once the intent is read. The declaration carries the
                 # anchor, waivers, selection and search, so a flag here would
@@ -433,16 +452,16 @@ def parse_segments(segments, parsers, error):
                           "--from and --to" % ', '.join(given))
                 ops.append({'kind': 'replicate', 'declared': True})
                 continue
-            if a.from_sheet is None or not a.to_sheets:
+            if not chans and (a.from_sheet is None or not a.to_sheets):
                 error("`replicate` needs both --from and --to (or neither, "
                       "to apply the --intent file's replicate[] "
                       "declarations)")
-            if a.offset is not None and len(a.to_sheets) > 1:
+            if a.offset is not None and max(len(a.to_sheets), len(chans) - 1) > 1:
                 error("`replicate --offset` puts ONE copy at the source poses "
                       "+ (DX, DY), and this one names %d --to sheets, which "
                       "would all land on that spot. Issue one replicate per "
                       "target, or drop --offset to keep each target's anchor "
-                      "in place" % len(a.to_sheets))
+                      "in place" % max(len(a.to_sheets), len(chans) - 1))
             if a.offset is not None and a.anchor is not None:
                 error("`replicate` was given both --offset and --anchor: "
                       "--offset fixes the translation, --anchor chooses the "
@@ -463,6 +482,7 @@ def parse_segments(segments, parsers, error):
                       "which this call does not ask for")
             ops.append({'kind': 'replicate', 'from': a.from_sheet,
                         'to': list(a.to_sheets), 'anchor': a.anchor,
+                        'channels': chans or None,
                         'offset': a.offset,
                         'allow_net_mismatch': list(a.allow_net_mismatch),
                         'only': only, 'skip': skip,

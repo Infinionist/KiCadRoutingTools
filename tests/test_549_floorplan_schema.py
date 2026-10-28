@@ -214,8 +214,8 @@ KEY_SETS = {
     # #1478: supply nets priced as rails whatever their fan-out.
     '_RAILS_KEYS': {'nets', 'context'} | FREE,
     # #1211: `place_pose replicate`'s own flags, plus the grade's tolerance.
-    '_REPLICATE_KEYS': {'from', 'to', 'anchor', 'allow_net_mismatch', 'only',
-                        'skip', 'search_mm', 'tolerance_mm',
+    '_REPLICATE_KEYS': {'from', 'to', 'channels', 'anchor', 'allow_net_mismatch',
+                        'only', 'skip', 'search_mm', 'tolerance_mm',
                         'source', 'context'} | FREE,
 }
 
@@ -403,7 +403,9 @@ def test_an_intent_using_every_known_key_loads():
                        'allow_net_mismatch': ['U19.2'], 'only': ['U1'],
                        'search_mm': 2.0, 'tolerance_mm': 0.1, 'why': 'w',
                        'note': 'n', 'source': 's', 'context': {'why': 'w'}},
-                      {'from': 'CH1', 'to': ['CH4'], 'skip': ['R1']}],
+                      {'from': 'CH1', 'to': ['CH4'], 'skip': ['R1']},
+                      # #1480: copies inside one sheet, named by their parts
+                      {'channels': [['U5', 'C5'], ['U6', 'C6']]}],
         # A chip's datasheet layout: each member's pose in the chip's frame.
         'templates': [{'anchor': 'U1', 'source': 's', 'note': 'n', 'why': 'w',
                        'tolerance_mm': 0.3, 'context': {'why': 'w'},

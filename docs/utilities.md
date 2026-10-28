@@ -474,6 +474,7 @@ python3 py_placer/place_pose.py BOARD OUT face U1 W USB1
 python3 py_placer/place_pose.py BOARD OUT lock U1 CON1
 python3 py_placer/place_pose.py BOARD OUT set U1 129.9 98.3 rotate CON2 180 lock U1
 python3 py_placer/place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3 [--anchor REF | --offset DX DY] [--allow-net-mismatch REF.PAD ...] [--only REFS | --skip REFS] [--search MM]
+python3 py_placer/place_pose.py BOARD OUT replicate --channel U1,C1,C2 --channel U2,C3,C4   # copies inside one sheet (#1480)
 python3 py_placer/place_pose.py BOARD OUT --intent intent.json replicate   # the intent's replicate[]
 ```
 

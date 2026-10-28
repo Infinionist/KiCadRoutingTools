@@ -447,7 +447,8 @@ def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
                 pcb_data, op['from'], op['to'],
                 anchor=op.get('anchor'), offset=op.get('offset'),
                 allow_net_mismatch=op.get('allow_net_mismatch') or (),
-                only=op.get('only') or (), skip=op.get('skip') or ())
+                only=op.get('only') or (), skip=op.get('skip') or (),
+                channels=op.get('channels'))
             for r in report['source_refs']:
                 sources.setdefault(r, report['from']['as_given'])
             if reports is not None:

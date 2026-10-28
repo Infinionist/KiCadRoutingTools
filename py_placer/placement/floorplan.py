@@ -214,7 +214,11 @@ EDGE_BAND_SANITY_MM = 5.0
 #: 18 (#1478): `rails[]` -- supply nets priced by `place_simple` as rails
 #: (`--rail-weight`) whatever their fan-out. It changes what the placer
 #: pulls where; an older build refuses the key by name.
-READER_VERSION = 18
+#: 19 (#1480): `replicate[].channels` -- copies inside one sheet named by
+#: their parts, matched index for index. Graded by `replicate` and applied
+#: by `place_pose replicate --intent`; an older build refuses the key by
+#: name.
+READER_VERSION = 19
 #: The reader version that first reads `templates[]`.
 TEMPLATES_READER = 13
 #: The reader version that first reads a template row's `kind` and
@@ -229,6 +233,8 @@ FENCE_READER = 16
 LINKS_READER = 17
 #: The reader version that first reads `rails[]` (#1478).
 RAILS_READER = 18
+#: The reader version that first reads `replicate[].channels` (#1480).
+CHANNELS_READER = 19
 #: #1475. The keep-outs a block's `fence_mm` compiles to are named
 #: `fence:<block>:<N|S|W|E>`; an intent may not name its own keep-out so.
 FENCE_KEEPOUT_PREFIX = 'fence:'
@@ -477,8 +483,8 @@ _RAILS_KEYS = {'nets', 'context'} | _FREE_TEXT_KEYS
 #: are that verb's own flags, so a declaration and a command line read
 #: alike. `tolerance_mm` is the grade's: how far a target part may sit from
 #: the source arrangement before it is reported.
-_REPLICATE_KEYS = {'from', 'to', 'anchor', 'allow_net_mismatch', 'only',
-                   'skip', 'search_mm', 'tolerance_mm', 'source',
+_REPLICATE_KEYS = {'from', 'to', 'channels', 'anchor', 'allow_net_mismatch',
+                   'only', 'skip', 'search_mm', 'tolerance_mm', 'source',
                    'context'} | _FREE_TEXT_KEYS
 #: The default `replicate[].tolerance_mm`: the writer's coordinates are
 #: exact to 1e-6 mm, so a copy the tools made reads 0; this is room for a
@@ -1207,6 +1213,28 @@ def _replicate_claims(raw: Dict) -> List[Dict]:
                               f"`to` (sheet names or paths)")
         _reject_unknown(r, _REPLICATE_KEYS, where)
         _entry_context(r, where)
+        r = dict(r)
+        if 'channels' in r:
+            # #1480: channels named by their parts, the first the source,
+            # matched index for index -- for copies inside one sheet. Given
+            # `from` / `to` labels, so every report names them alike.
+            if 'from' in r or 'to' in r:
+                raise IntentError(f"{where}: `channels` names the copies by "
+                                  f"their parts, `from`/`to` by their sheets; "
+                                  f"declare one")
+            ch = r['channels']
+            if not isinstance(ch, list) or len(ch) < 2:
+                raise IntentError(f"{where}.channels: expected two or more "
+                                  f"channels, each a list of references")
+            ch = [_strs(c, f"{where}.channels[{k}]") for k, c in enumerate(ch)]
+            if len({len(c) for c in ch}) != 1:
+                raise IntentError(f"{where}.channels: every channel lists its "
+                                  f"parts in the same order, so they must be "
+                                  f"the same length")
+            from .replicate import CHANNEL_PREFIX
+            r['channels'] = ch
+            r['from'] = CHANNEL_PREFIX + ch[0][0]
+            r['to'] = [CHANNEL_PREFIX + c[0] for c in ch[1:]]
         src = r.get('from')
         if not isinstance(src, str) or not norm_name(src):
             raise IntentError(f"{where}.from: expected a sheet name or path, "

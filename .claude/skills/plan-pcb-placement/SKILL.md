@@ -1170,6 +1170,9 @@ Routing Completes): run them once, here, not again inside the routing.
 - **Repeated sheet instances (channel strips, one buffer per bank): arrange
   ONE, then copy it**:
   `python3 -X utf8 py_placer/place_pose.py <in> <out> replicate --from CH1 --to CH2 --to CH3 --anchor J1`
+  (copies drawn inside ONE sheet: `check_floorplan.py <board> --suggest-channels`
+  proposes them, and `replicate --channel U1,C1,C2 --channel U2,C3,C4` copies
+  the first onto the others)
   (#1211). It matches parts by schematic symbol and refuses unless the
   instances are wired alike, naming the pads (`--allow-net-mismatch REF.PAD`
   waives one by design). Lock the copies before placing the rest.
