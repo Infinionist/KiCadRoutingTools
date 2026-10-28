@@ -3045,9 +3045,17 @@ class QuenchState:
         `CONTAINMENT_FRAC`, the checker's predicate; marker and container
         parts are exempt, as in the checker's gate. The body-less set is the
         checker's own (`_bodyless_refs`); the covering body is read from .Fab
-        only, which is still the checker's gate, since a pair whose body
-        came from silk never gates. Rect broad phase first, so a board with
-        no body-less part pays a set lookup."""
+        only. A silk-drawn body gates in the checker one way, as a CLOSED
+        silk loop round another part's pad copper (#1401), and this test
+        does not price it: the seat already keeps every part off a
+        neighbour's seat rect, which holds the whole loop for a part that
+        draws no courtyard (its estimated courtyard is its silk united with
+        its pads), and a container's loop never gates (`container_class`,
+        exempt in the checker). Only a loop reaching past a DRAWN courtyard
+        is left: 6 of the 93 closed silk loops on the tracked boards do
+        (#1465), the largest by a 0.15 mm2 sliver, which holds no part's
+        pads. Rect broad phase first, so a board with no body-less part pays
+        a set lookup."""
         bodyless = self._bodyless_refs()
         if not bodyless:
             return False

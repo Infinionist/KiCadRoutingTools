@@ -354,9 +354,12 @@ def main():
               f"rename them if they are meant to be distinct parts -- two "
               f"parts answering to one name cannot be told apart on a BOM, on "
               f"a pick-and-place file, or by `--lock`.")
+    # #1465: the closed-silk pairs are counted here too, so a NOT BUILDABLE
+    # they decide is not read under a headline of zeros.
     print(f"  blocking {g['blocking']}  advisory {g['advisory']}"
           f"  waived {g['waived']}  contained {g['contained']}"
           f"  courtyard_blocking {g['courtyard_blocking']}"
+          f"  silk_enclosed {len(g.get('silk_enclosed_pairs') or ())}"
           + (f"  new-vs-baseline {len(new_advisory)}"
              if new_advisory is not None else ""))
     if g.get('heights') and g['heights'] != 'no heights':
@@ -557,11 +560,14 @@ def main():
           f"draw a body the containment channel can judge"
           + (f" ({_judged})" if _judged else ""))
     if _mix.get('silk'):
-        print(f"    A silk body is the LAST resort and never gates: a "
-              f"library may draw an assembly outline there rather than the "
-              f"part (esp_prog's SOT89 draws corner brackets 5.2mm apart "
-              f"around a 4.5mm part). Such pairs are reported, with their "
-              f"source, and excluded from the blocking channels.")
+        print(f"    A silk body is the LAST resort and does not gate as a "
+              f"body: a library may draw an assembly outline there rather "
+              f"than the part (corner brackets drawn wider than the part "
+              f"they mark). Such pairs are reported, with their source, and "
+              f"excluded from the blocking channels -- except a part whose "
+              f"pad copper lies wholly inside a CLOSED silk loop, which "
+              f"gates where a member moved (INSIDE A CLOSED SILK BODY, "
+              f"below; #1401).")
     _fr = g.get('fab_rejected_refs') or []
     from placement.body import FAB_MIN_PAD_AREA_FRAC as _FAB_FRAC
     if _fr:
