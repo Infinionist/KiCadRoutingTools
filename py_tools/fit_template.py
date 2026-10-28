@@ -96,7 +96,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.out or a.write_intent:
         from placement import run_record          # the placement record (#1486)
-        run_record.record('fit_template', argv)
+        run_record.record('fit_template', argv, boards=[a.board])
     if bool(a.intent) != bool(a.write_intent):
         ap.error('--intent and --write-intent go together')
     if not a.pins and not a.sketch:

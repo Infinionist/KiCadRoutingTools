@@ -9,6 +9,7 @@ once per seed. Unset, nothing is recorded.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -50,7 +51,12 @@ def main():
         groups = os.path.join(td, 'groups.json')
         json.dump({'schema': 1, 'groups': [{'name': 'all', 'refs': ['U1', 'U2', 'C1', 'C2']}]},
                   open(groups, 'w'))
-        r = run(os.path.join(ROOT, 'py_placer', 'place_simple.py'), pile,
+        # the agent places a plain copy of the pile, which no step records
+        fixed = os.path.join(td, 'fixed.kicad_pcb')
+        with open(fixed[:-len('.kicad_pcb')] + '.kicad_pro', 'w') as fh:
+            fh.write('{"board": {"design_settings": {}}}')
+        shutil.copy(pile, fixed)
+        r = run(os.path.join(ROOT, 'py_placer', 'place_simple.py'), fixed,
                 os.path.join(td, 's{seed}.kicad_pcb'), '--groups', groups, '--intent', intent,
                 '--seeds', '0-1', '--jobs', '1')
         ok('the run placed', os.path.exists(os.path.join(td, 's1.kicad_pcb')), r.stderr[-300:])
@@ -67,6 +73,10 @@ def main():
         run_record.restore_inputs(rec, ps, lambda p: os.path.join(dst, os.path.basename(p)))
         ok('a replay restores it exactly',
            open(os.path.join(dst, 'intent.json')).read() == edited)
+        ok('the board it placed, and its project, restored as it read them',
+           all(open(os.path.join(dst, 'fixed' + ext)).read()
+               == open(fixed[:-len('.kicad_pcb')] + ext).read()
+               for ext in ('.kicad_pcb', '.kicad_pro')))
         env.pop('PLACEMENT_MANIFEST')
         os.remove(man)
         run(os.path.join(ROOT, 'py_tools', 'check_floorplan.py'), pile, '--allow-unplaced',

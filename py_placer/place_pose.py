@@ -512,7 +512,7 @@ def main(argv=None):
     args, rest = p.parse_known_args(argv)
     if not args.dry_run:
         from placement import run_record          # the placement record (#1486)
-        run_record.record('place_pose', argv)
+        run_record.record('place_pose', argv, boards=[args.input_file])
     # BEFORE the split, or the verb this swallowed makes the NEXT token look
     # like the error ("'C3' comes before any verb"), which sends the caller
     # looking at the wrong end of their command line.

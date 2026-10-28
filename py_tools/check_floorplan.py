@@ -513,7 +513,7 @@ def main(argv=None):
     parser_error = build_parser().error
     if args.emit_intent:
         from placement import run_record          # the placement record (#1486)
-        run_record.record('check_floorplan', argv)
+        run_record.record('check_floorplan', argv, boards=[args.board])
 
     if args.suggest_arrays or args.suggest_channels:
         mode = '--suggest-arrays' if args.suggest_arrays else '--suggest-channels'

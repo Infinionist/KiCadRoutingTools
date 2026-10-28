@@ -992,7 +992,7 @@ def main(argv=None):
     if not a.plan_checked and not a.preview:
         # the placement record (#1486): the run, not its seed children
         from placement import run_record
-        run_record.record('place_simple', argv)
+        run_record.record('place_simple', argv, boards=[a.board])
     if a.draft_zones and not a.preview:
         print("place_simple: --draft-zones is a --preview output", file=sys.stderr)
         return 2
