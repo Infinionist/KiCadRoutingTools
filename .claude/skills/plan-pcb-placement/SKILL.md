@@ -73,7 +73,10 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   beside them and the designer's layout notes). It finds the schematic beside
   the board (`<board>.kicad_sch`); if its `## Schematic` section says none was
   found and the project has one elsewhere, run it again with
-  `--schematic <root .kicad_sch>`.
+  `--schematic <root .kicad_sch>`. A part that draws no courtyard is placed
+  on an estimated one (its .Fab body, else silk, else pads, with its pads;
+  the NOTE names each part's basis), so do not synthesize courtyards: a drawn
+  courtyard is authoritative and replaces the estimate.
 - **Read `references/part-roles.md` before you judge what a part is.** A
   prefix, a footprint name or pins named IN/OUT mislead: an RF amplifier
   reads as a regulator, a crystal's load cap as a decap.

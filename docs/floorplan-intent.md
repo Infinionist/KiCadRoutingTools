@@ -195,11 +195,13 @@ findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_z
 `mechanical_drift` (raised only when a `mechanical.json` is read, and
 settable to `error` only -- `warn` is refused, since the pose is a recorded
 fact),
-the fourteen `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
+the sixteen `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
 `block_glob_literal`, `plan_fixed_outside_zone`,
 `plan_fixed_in_exclusive_zone`, `plan_fixed_pose_conflict`,
 `plan_zone_overfull`,
-`plan_zone_crowded`, `plan_edge_overfull`, `plan_edge_crowded`,
+`plan_zone_crowded`, `plan_zone_member_oversized`, `plan_zone_utilisation`
+(settable to `warn` only -- `error` is refused, because it is a heuristic),
+`plan_edge_overfull`, `plan_edge_crowded`,
 `plan_board_overfull`, `plan_board_crowded`, `plan_fixed_overlap`,
 `plan_fixed_overlap_budget`, `plan_template_keepout`), `edge_connector_side` (settable to `warn`
 only -- `error` is refused, because the rule is advisory by design),
@@ -730,6 +732,14 @@ without listing the board first. `group` is accepted and matched against **both*
 the raw `derive_groups` key and its `short_name` form (what `--list-groups`
 prints, and therefore what anyone would copy), but reference globs are what a
 human or a model can actually write.
+
+`group` names a group the BOARD defines (a KiCad group or a schematic sheet),
+never a group of a groups file. One that does not resolve is one
+`block_unresolved` error saying so, naming the board's groups
+(`render_placement.py BOARD --list-groups` lists them) and telling you to put
+the parts in `refs`. `place_simple` refuses such an intent before any seed and,
+when the name is a group of its `--groups` file, prints that group's refs as a
+`"refs": [...]` line to paste (#1469).
 
 ### A block that resolves to nothing is an error
 
@@ -1333,8 +1343,12 @@ consequences are disclosed rather than hidden:
   refusal resting on one would be unsound. When the rects alone still refuse,
   the refusal stands; only when dropping the discs would have found a pose is
   the answer undecided. Total disc coverage is caught exactly.
-- **a part with no courtyard is modelled by its pad bbox**, which is smaller, so
-  the check under-reports rather than over-reports on such a part.
+- **a part with no courtyard is modelled by its estimated courtyard**, the one
+  `place_simple` seats it on (its .Fab body, else silk, else pads, united with
+  its pads; `body.estimated_courtyards`, #1300). The zone rules, the
+  `--plan-only` zone sums and the emitter's zone extents read the same
+  estimate (`floorplan.zone_parts`, #1466), so they measure the part the
+  placer moves. A drawn courtyard replaces the estimate.
 
 ### `oob_area` cannot be budgeted, and says so
 
@@ -1376,6 +1390,8 @@ plan. The WARN is the same quantity with a margin.
 | `plan_fixed_outside_zone` | a FILE-locked member is already outside its zone; or (WARN) a `fixed_poses[]` entry's declared pose is outside its own block's zone | |
 | `plan_fixed_in_exclusive_zone` | a FILE-locked non-member is already inside an exclusive zone, or a `fixed_poses[]` non-member's declared pose is; the zone's own `zone_exclusive` severity unless this one is set. A container is no stranger | |
 | `plan_zone_overfull` / `_crowded` | per face, the members' areas exceed the zone by more than the declared `legality_budget.overlap_area`. Fitting area A into zone Z forces at least A - Z of courtyard overlap; the ERROR sums the members' graded OUTLINES and far-side clusters (the geometry the budget is measured on), the WARN their rects. `measured.zones[]` carries both (`members_outline_area_mm2`, `members_area_mm2`) | the WARN applies without a budget, on a project that waives courtyard overlap, or past a crowding margin |
+| `plan_zone_member_oversized` | | a member larger than its zone at a rotation it may take: the grade holds only its CENTRE in the zone (an anchor), so it is named, and the zone area it still covers -- at least half its extent, or the whole zone, on each axis -- is charged to the zone's WARN sums (`measured.zones[].anchor_members`). Not to the ERROR's outline sum, which a rect bound would overstate |
+| `plan_zone_utilisation` | never | the members' courtyards cover `options.ZONE_FIT_UTILISATION` (50%) of the zone or more, and no bound above fired. A heuristic, labelled so: zones of 0603-class parts at 57-77% failed to seat every member and zones at 41-50% seated them all, but area is necessary, not sufficient -- a zone over the ratio can fit and one under it can fail |
 | `plan_edge_overfull` / `_crowded` | one edge-claimed part's pad extent, at its best 90-degree turn, is longer than its edge | summed extents are a WARN, because flanges overhang corners |
 | `plan_board_overfull` / `_crowded` | the parts' graded outlines, per face (the face the intent declares for a part, below), force more overlap against `options.grow_board`'s usable area (clearance 0) than the budget allows, with `oob_count` declared 0; `measured.outline_area_per_face_mm2`, and the rect reading as `forced_overlap_rect_mm2` | |
 | `plan_fixed_overlap_budget` / `plan_fixed_overlap` | the FILE-locked pairs alone exceed the overlap budget | each such pair is a WARN |
@@ -1401,6 +1417,9 @@ Nothing bounds its overlap, so no area bound is sound.
 
 **Callers.**
 - `check_floorplan --plan-only` reports every plan ERROR.
+- `place_simple` runs the check once before any seed (in the parent of a
+  `--seeds` run): it prints the WARNs once and refuses an ERROR at exit 2,
+  writing nothing (#1468).
 - `place_pose --intent` refuses, at exit 4, a single pose that leaves a moved
   part further outside its block's zone than it was, when that
   `zone_containment` finding is an ERROR.

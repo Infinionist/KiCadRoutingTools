@@ -1765,6 +1765,11 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
             "be raised to error -- nothing in the placement stack moves a "
             "part between faces (#836), so an error would be a red mark no "
             "run could clear")
+    if severity.get('plan_zone_utilisation') == ERROR:
+        raise IntentError(
+            "severity: plan_zone_utilisation is a heuristic and cannot be "
+            "raised to error -- area is necessary, not sufficient, so a zone "
+            "past the ratio can still fit (#1468)")
     if severity.get('mechanical_drift') == WARN:
         # #959: the pose is a recorded fact, so a turn (or a pad-less ref's
         # drift) stays an ERROR whatever the plan says, and a move is a WARN
@@ -3218,6 +3223,12 @@ def resolve_blocks(intent: Intent, pcb_data, group_sources: Sequence[str] = ()
     matched against the raw derive_groups key AND its `short_name` form, because
     `short_name` is what `--list-groups` prints and therefore what anyone would
     copy into an intent file.
+
+    A `group` that does not resolve is ONE finding (#1469): it says that the
+    key takes the board's own groups only (KiCad groups, schematic sheets),
+    never a groups-file name, that the parts go in `refs`, and which tool
+    lists the board's groups. "Matched no footprint" is for a block whose
+    `refs` alone match nothing.
     """
     refs_all = sorted(pcb_data.footprints)
     derived: Dict[str, List[str]] = {}
@@ -3231,6 +3242,7 @@ def resolve_blocks(intent: Intent, pcb_data, group_sources: Sequence[str] = ()
     problems: List[Violation] = []
     for z in intent.blocks:
         members = set()
+        unresolved_group = False
         for pattern in z.refs:
             members.update([r for r in refs_all if fnmatch.fnmatchcase(r, pattern)])
         if z.group:
@@ -3241,17 +3253,23 @@ def resolve_blocks(intent: Intent, pcb_data, group_sources: Sequence[str] = ()
                 problems.append(Violation(
                     rule='block_unresolved', block=z.name,
                     severity=intent.severity_of('block_unresolved'),
-                    message=(f"block {z.name!r}: group {z.group!r} does not "
-                             f"exist on this board. Available: "
+                    message=(f"block {z.name!r}: group {z.group!r} is not a "
+                             f"group of this board. blocks[].group takes only "
+                             f"the groups the board itself defines -- its "
+                             f"KiCad groups and schematic sheets (here: "
                              f"{', '.join(sorted(by_short)[:6]) or 'none'}"
-                             f"{' ...' if len(by_short) > 6 else ''}. Derive "
-                             f"them with --group-by and --list-groups first"),
+                             f"{' ...' if len(by_short) > 6 else ''}; "
+                             f"`render_placement.py BOARD --list-groups` "
+                             f"lists them) -- never a name from a groups "
+                             f"file. To zone a groups-file group, list its "
+                             f"parts in the block's `refs`"),
                     measured={'group': z.group,
                               'available': sorted(by_short)[:12]}))
+                unresolved_group = True
             else:
                 members.update(found)
         out[z.name] = sorted(members)
-        if not members:
+        if not members and not unresolved_group:
             problems.append(Violation(
                 rule='block_unresolved', block=z.name,
                 severity=intent.severity_of('block_unresolved'),
@@ -4371,6 +4389,71 @@ def open_zone_rect(zone_rect, open_sides):
     return tuple(z)
 
 
+def zone_parts(state, pcb_data, pcb_file: str):
+    """`{ref: part}`: `state.parts` on the basis a ZONE measures a part on
+    (#1466). A part that draws no courtyard is the part place_simple seats --
+    on its ESTIMATED courtyard, from the map the placer's own state reads
+    (`body.courtyard_sides_with_estimates`) -- at the pose `state` gives it;
+    every other part is `state`'s own. A state that already estimates (the
+    placer's) is returned as it is.
+
+    Zones only: the zone rules, the plan check's zone sums and the emitter's
+    zone extents ask it. The legality budget, the outline and the edge rules
+    keep reading the state, so a courtyard-less connector flush with the
+    edge is not newly an off-board part. The estimated parts are built once
+    per state and follow its poses."""
+    parts = getattr(state, 'parts', None) or {}
+    if getattr(state, 'courtyard_estimates', None):
+        return parts
+    cache = getattr(state, '_zone_parts', None)
+    if cache is None:
+        from .body import courtyard_sides_with_estimates
+        from .quench import _Part
+        cache = {}
+        try:
+            sides, est = courtyard_sides_with_estimates(
+                pcb_data, pcb_file,
+                drawn=getattr(state, '_drawn_courtyards', None))
+        except (OSError, ValueError):
+            sides, est = {}, {}
+        fps = getattr(pcb_data, 'footprints', None) or {}
+        for ref in est:
+            if ref in parts and ref in fps:
+                cache[ref] = _Part(ref, fps[ref], sides,
+                                   getattr(parts[ref], 'locked', False))
+        try:
+            state._zone_parts = cache
+        except AttributeError:
+            pass
+    if not cache:
+        return parts
+    out = dict(parts)
+    for ref, p in cache.items():
+        sp = parts[ref]
+        rot = sp.rot % 360
+        p.ensure_rotation(rot)
+        p.x, p.y, p.rot = sp.x, sp.y, rot
+        out[ref] = p
+    return out
+
+
+def _ctx_zone_parts(ctx):
+    """`ctx.parts` (`GradedPart`s) on the zone basis (`zone_parts`)."""
+    got = getattr(ctx, '_zone_graded', None)
+    if got is None:
+        st = ctx.state
+        zp = zone_parts(st, ctx.pcb, ctx.pcb_file)
+        got = dict(ctx.parts)
+        if zp is not getattr(st, 'parts', None):
+            for ref, p in zp.items():
+                if ref in got and p is not st.parts.get(ref):
+                    got[ref] = legality.GradedPart(
+                        ref=ref, side=p.side, rect=p.rect(),
+                        tht_rect=p.tht_rect(), has_tht=p.has_tht)
+        ctx._zone_graded = got
+    return got
+
+
 def zone_is_anchor(zone_rect, part, tol: float) -> bool:
     """Is this zone a spec-COORDINATE rather than a region? (#799)
 
@@ -4416,6 +4499,42 @@ def _anchor_reachable(zone, part, tol: float, claim=None) -> bool:
             zone.rect, rotate_local_bounds(*part.grade_by_rot[0.0], r % 360),
             tol)
         for r in rots)
+
+
+def _anchor_min_inside(zone_rect, part, claim, clearance: float
+                       ) -> Tuple[float, float]:
+    """`(area, area_with_clearance)`: the least of `zone_rect` (inflated by
+    its tolerance) a member graded as an ANCHOR there (`_anchor_reachable`)
+    still covers (#1468), over the rotations it may take -- the same ones
+    `_anchor_reachable` reads. Its centre is held inside, so on each axis it
+    covers at least half its extent, or the whole zone: the minimum, with the
+    centre on a corner, is `min(Z, e / 2)` per axis. At a rotation where the
+    part fits the zone it covers its whole box. The clearance figure grows
+    each axis by `clearance`, capped at the zone, as the WARN sum does."""
+    from .legality import rotate_local_bounds
+    zw = max(0.0, zone_rect[2] - zone_rect[0])
+    zh = max(0.0, zone_rect[3] - zone_rect[1])
+    rot, cands = claim if claim else (None, None)
+    if getattr(part, 'locked', False) or (rot is None and not cands):
+        # the part's own lattice: a quarter turn is the seed's to give
+        rots = [part.rot] + ([] if getattr(part, 'locked', False)
+                             else [part.rot + 90.0])
+    elif rot is not None:
+        rots = [rot]
+    else:
+        rots = list(cands)
+    best = None
+    for r in rots:
+        b = rotate_local_bounds(*part.grade_by_rot[0.0], r % 360)
+        w, h = b[2] - b[0], b[3] - b[1]
+        if zone_fits_courtyard(zone_rect, b, 0.0):
+            ox, oy = w, h
+        else:
+            ox, oy = min(zw, w / 2.0), min(zh, h / 2.0)
+        got = (ox * oy, min(zw, ox + clearance) * min(zh, oy + clearance))
+        if best is None or got[0] < best[0]:
+            best = got
+    return best
 
 
 def zone_origin_box(zone_rect, bounds, tol: float):
@@ -4971,12 +5090,16 @@ def _member_pad_rect(ctx, ref):
 
 def rule_zone_containment(ctx) -> Iterator[Violation]:
     claimed = claimed_edges(ctx.intent)
+    # #1466: a courtyard-less member is held to its zone by the estimated
+    # courtyard place_simple seats it on, not by its smaller pad box
+    zparts = (_ctx_zone_parts(ctx)
+              if any(z.rect is not None for z in ctx.intent.blocks) else {})
     for z in ctx.intent.blocks:
         if z.rect is None:
             continue
         tol = ctx.intent.zone_tolerance(z)
         for ref in ctx.blocks.get(z.name, ()):
-            part = ctx.parts.get(ref)
+            part = zparts.get(ref)
             if part is None:
                 continue
             # #1174: an edge-claim member's declared edge, where the zone
@@ -5126,6 +5249,10 @@ def rule_zone_exclusive(ctx) -> Iterator[Violation]:
     Graded here, a locked enclosure over a reserved region failed every seed
     and no placement could fix it."""
     cont = set(getattr(ctx.state, 'container_refs', ()) or ())
+    # #1466: on the zone basis, as `rule_zone_containment` measures members
+    zparts = (_ctx_zone_parts(ctx)
+              if any(z.rect is not None and z.exclusive
+                     for z in ctx.intent.blocks) else {})
     for z in ctx.intent.blocks:
         if z.rect is None or not z.exclusive:
             continue
@@ -5142,9 +5269,9 @@ def rule_zone_exclusive(ctx) -> Iterator[Violation]:
         # had deliberately declined to bind and therefore could not repair.
         # The seat gate (`quench.exclusive_spec`) skips the same zones, so the
         # two agree at every severity.
-        if not (members & set(ctx.parts)):
+        if not (members & set(zparts)):
             continue
-        for ref, part in sorted(ctx.parts.items()):
+        for ref, part in sorted(zparts.items()):
             if ref in members or ref in cont:
                 continue
             if z.side and part.side != z.side:
@@ -7543,6 +7670,12 @@ _NON_RULE_SEVERITIES = frozenset({
     # #1463: a FIXED stranger (a file lock, or a declared pose) already
     # inside an exclusive zone, which every seed then carries.
     'plan_fixed_in_exclusive_zone',
+    # #1468, beside the zone bounds: a member larger than its zone (graded
+    # on its centre, charged the area it still covers), WARN unless set; and
+    # the zone utilisation heuristic, settable only DOWN like
+    # `edge_connector_side` -- area is not a bound, so an error would refuse
+    # a plan that can fit.
+    'plan_zone_member_oversized', 'plan_zone_utilisation',
     # #1054: two exact declarations that the fixed-pose check's own
     # courtyard/pad/hole geometry says cannot both be seated.
     'plan_fixed_pose_conflict',
@@ -8548,7 +8681,7 @@ def exclusive_unsatisfiable(intent: Intent, blocks, pcb_data,
 
     THE GRADE'S GEOMETRY, from the grade's own placement state: the rect
     `rule_zone_containment` and `rule_zone_exclusive` test (courtyard, else
-    pad bbox), never `legality.part_local_bounds`' occupancy, which adds the
+    the estimate place_simple seats the part on, `zone_parts`), never `legality.part_local_bounds`' occupancy, which adds the
     drawn .Fab body -- measured differing by more than 0.05 mm on 29 corpus
     parts (ulx3s U9 by 7 mm), so a satisfied board failed its own grade
     (Phase-4 verifier). A part the state does not carry is graded by neither
@@ -8565,6 +8698,7 @@ def exclusive_unsatisfiable(intent: Intent, blocks, pcb_data,
     if state is None:
         import pose_score
         state = pose_score.make_state(pcb_data, pcb_file)
+    zparts = zone_parts(state, pcb_data, pcb_file)
     for zb in intent.blocks:
         if zb.rect is None:
             continue
@@ -8581,14 +8715,14 @@ def exclusive_unsatisfiable(intent: Intent, blocks, pcb_data,
             # so it can make nothing unsatisfiable either (round-2 verifier:
             # a zone exclusive to a courtyard-less logo refused a plan the
             # grade passed).
-            if not (owners & set(state.parts)):
+            if not (owners & set(zparts)):
                 continue
             for ref in blocks.get(zb.name, ()):
                 # A container is no stranger (#1463), as in the grade.
                 if ref in owners or ref in state.container_refs:
                     continue
                 fp = (pcb_data.footprints or {}).get(ref)
-                sp = state.parts.get(ref)
+                sp = zparts.get(ref)
                 if fp is None or sp is None:
                     continue
                 if za.side and sp.side != za.side:
@@ -8901,7 +9035,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
          the ERROR fires only when the locked pairs ALONE exceed that budget,
          which no arrangement of the other parts can undo.
       5. `plan_zone_overfull` / `_crowded`: per FACE, the members' areas,
-         locked ones included (courtyard, else pad bbox; a through-hole
+         locked ones included (courtyard, else the estimated one
+         place_simple seats the part on, `zone_parts`; a through-hole
          member's drilled footprint, clipped to its courtyard, charged to the
          far face) against the zone's area.
          Fitting area A into a zone of area Z forces at least A - Z of
@@ -8912,12 +9047,13 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
          With no budget declared, or a project that waives courtyard overlap
          (the grade then prices none), nothing bounds the overlap, and it is
          the WARN (the placer's legality gate never admits an overlap, so it
-         may leave members illegal). An anchor-graded member
-         (`zone_is_anchor`) is not
-         charged.
-         Anchor-graded members and zones holding a waived pair are not
-         charged; a locked member is, because the grade counts its overlap
-         too.
+         may leave members illegal).
+         Zones holding a waived pair are not charged; a locked member is,
+         because the grade counts its overlap too. An anchor-graded member
+         is named (`plan_zone_member_oversized`, #1468) and charged, to the
+         WARN sums only, the zone area its held centre still makes it cover
+         (`_anchor_min_inside`). Below the bounds, `plan_zone_utilisation`
+         (WARN only) is the heuristic past `options.ZONE_FIT_UTILISATION`.
       6. `plan_edge_overfull` / `_crowded`: one edge-claimed part whose PAD
          extent in its own frame, at its best 90-degree rotation, is longer
          than the edge (ERROR); the claimed parts' summed extents against the
@@ -8975,13 +9111,17 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     #     loader refuses a fixed pose on any `edge_connectors` ref
     #     (`_fixed_pose_entries`), so no member graded here has one.
     _fx = {str(f['ref']): f for f in intent.fixed_poses}
+    # #1466: every zone below measures a courtyard-less member on the
+    # estimated courtyard place_simple seats it on (`zone_parts`)
+    _zparts = (zone_parts(state, pcb_data, pcb_file)
+               if any(z.rect is not None for z in intent.blocks) else {})
     for z in intent.blocks:
         if z.rect is None:
             continue
         tol = intent.zone_tolerance(z)
         for ref in blocks.get(z.name, ()):
             f = _fx.get(ref)
-            part = state.parts.get(ref)
+            part = _zparts.get(ref)
             if f is None or part is None:
                 continue
             r, rot = _fixed_pose_grade_rect(part, f)
@@ -9057,7 +9197,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
         if not (members & set(ctx.parts)):
             continue                    # #797: the grade binds nobody here
         for ref, f in sorted(_fx.items()):
-            part = state.parts.get(ref)
+            part = _zparts.get(ref)
             if part is None or ref in members or ref in _cont:
                 continue
             side = f.get('side')
@@ -9172,7 +9312,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     for z in intent.blocks:
         if z.rect is None:
             continue
-        members = [r for r in blocks.get(z.name, ()) if r in state.parts]
+        members = [r for r in blocks.get(z.name, ()) if r in _zparts]
         if any(frozenset((a_, b_)) in waived
                for a_ in members for b_ in members if a_ < b_):
             continue
@@ -9189,8 +9329,9 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
         per_face_x = {'F': 0.0, 'B': 0.0}
         _outline = _budget_outline_areas(ctx, members)
         counted = []
+        anchored = []
         for r in members:
-            part = state.parts[r]
+            part = _zparts[r]
             b0 = part.grade_by_rot[0.0]
             w, h = b0[2] - b0[0], b0[3] - b0[1]
             if _anchor_reachable(z, part, tol, _claims.get(r)):
@@ -9201,6 +9342,37 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 # the block DECLARES (`rotation` / `rotation_candidates`),
                 # where a fit at one angle does not forbid the anchor at
                 # another (b6a63ad8 verifier).
+                # #1468: not silently. Its CENTRE is held to the zone, so it
+                # still covers at least the zone area `_anchor_min_inside`
+                # bounds, charged to the WARN sums -- never to the ERROR's,
+                # whose currency is the graded outline this rect bound
+                # would overstate.
+                planned_side = planned_sides.get(r, part.side)
+                inside, inside_c = _anchor_min_inside(
+                    zr, part, _claims.get(r), clr_used)
+                per_face[planned_side] = (
+                    per_face.get(planned_side, 0.0) + inside)
+                per_face_c[planned_side] = (
+                    per_face_c.get(planned_side, 0.0) + inside_c)
+                anchored.append(r)
+                out.append(Violation(
+                    rule='plan_zone_member_oversized',
+                    severity=intent.severity_of('plan_zone_member_oversized',
+                                                WARN),
+                    ref=r, block=z.name,
+                    message=(f"{r} ({w:.2f} x {h:.2f}mm by courtyard) does "
+                             f"not fit zone {z.name!r} ({zr[2] - zr[0]:.2f} x "
+                             f"{zr[3] - zr[1]:.2f}mm with its {tol:g}mm "
+                             f"tolerance) at a rotation it may take, so the "
+                             f"grade holds only its CENTRE in the zone and "
+                             f"the rest may sit outside. It still covers at "
+                             f"least {inside:.2f}mm2 of the zone, charged to "
+                             f"the zone's sum. If the zone is meant to hold "
+                             f"the whole part, make it larger"),
+                    measured={'courtyard_mm': [round(w, 4), round(h, 4)],
+                              'charged_mm2': round(inside, 4)},
+                    expected={'zone_mm': [round(zr[2] - zr[0], 4),
+                                          round(zr[3] - zr[1], 4)]}))
                 continue
             if zone_open_sides(z.rect, ctx.outline_bounds,
                                _claimed5.get(r)):
@@ -9245,7 +9417,10 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                           'members_outline_area_mm2': round(need_x, 3),
                           'zone_area_mm2': round(zarea, 3),
                           'overlap_budget_mm2': overlap_budget,
-                          'members': counted})
+                          'members': counted,
+                          # #1468: charged only the part their centre
+                          # holds inside the zone
+                          'anchor_members': anchored})
         excess = need - zarea
         # The forced overlap the BUDGET sees (Bonferroni on the outlines and
         # far-side clusters it measures).
@@ -9277,7 +9452,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 severity=intent.severity_of('plan_zone_crowded', WARN),
                 block=z.name,
                 message=(f"zone {z.name!r} is {zarea:.2f}mm2 and its "
-                         f"{len(counted)} member(s) on {worst}.Cu "
+                         f"{len(counted) + len(anchored)} member(s) on "
+                         f"{worst}.Cu "
                          f"need {need:.2f}mm2 by courtyard: they fit only by "
                          f"overlapping ({excess:.2f}mm2 at least), which the "
                          f"placer's legality gate never admits -- it may "
@@ -9300,6 +9476,29 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 measured={'members_area_with_clearance_mm2':
                           round(per_face_c[face_c], 4), 'face': face_c},
                 expected={'zone_area_mm2': round(zarea, 4)}))
+        elif zarea > legality.EPS \
+                and need >= _opts.ZONE_FIT_UTILISATION * zarea:
+            # #1468: the advisory below the bounds. Zones well short of full
+            # failed to seat every member (60% and 77% courtyard fill, every
+            # seed), and nothing above said so. A HEURISTIC, never an error:
+            # area is necessary, not sufficient, so a zone under the ratio can
+            # still fail and one over it can fit.
+            out.append(Violation(
+                rule='plan_zone_utilisation', severity=WARN, block=z.name,
+                message=(f"zone {z.name!r} is {need / zarea:.0%} covered by "
+                         f"its {len(counted) + len(anchored)} member(s)' "
+                         f"courtyards on {worst}.Cu ({need:.2f} of "
+                         f"{zarea:.2f}mm2) -- past the "
+                         f"{_opts.ZONE_FIT_UTILISATION:.0%} where zones have "
+                         f"been measured failing to seat every member. A "
+                         f"heuristic, not a bound: area is necessary, not "
+                         f"sufficient, so the zone may still fit, and one "
+                         f"under it may not. Give the zone room, or place "
+                         f"one seed before many"),
+                measured={'utilisation': round(need / zarea, 4),
+                          'members_area_mm2': round(need, 4), 'face': worst},
+                expected={'utilisation':
+                          f'< {_opts.ZONE_FIT_UTILISATION}'}))
     measured['zones'] = zone_rows
 
     # 6. edge length -- a single part's PAD extent vs the edge (ERROR); the
@@ -10146,11 +10345,17 @@ def emit_intent(pcb_data, pcb_file: str, *,
     # that leaves the outline, which the emitted intent would then flag against
     # itself.
     cand = {}
+    _zp = None
     for key in sorted(derived):
         members = [r for r in derived[key] if r in parts]
         if len(members) < 2:
             continue
-        rects = [parts[r].rect for r in members]
+        # #1466: on the basis the zone is graded on (`zone_parts`), or a
+        # zone drawn round a courtyard-less member's pad box fails its own
+        # grade
+        if _zp is None:
+            _zp = zone_parts(state, pcb_data, pcb_file)
+        rects = [_zp[r].rect() for r in members]
         cand[key] = (members, (
             max(bounds[0], min(r[0] for r in rects) - zone_pad_mm),
             max(bounds[1], min(r[1] for r in rects) - zone_pad_mm),
