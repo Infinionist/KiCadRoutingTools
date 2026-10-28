@@ -707,6 +707,11 @@ def test_severity_keys_are_checked_against_the_rule_names():
                                         'plan_edge_crowded',
                                         'plan_board_overfull',
                                         'plan_board_crowded',
+                                        # #1468: a member larger than its
+                                        # zone; the zone-fill heuristic
+                                        # (settable to warn only)
+                                        'plan_zone_member_oversized',
+                                        'plan_zone_utilisation',
                                         'plan_fixed_pose_conflict',
                                         'plan_fixed_overlap',
                                         'plan_fixed_overlap_budget',

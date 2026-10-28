@@ -1765,6 +1765,11 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
             "be raised to error -- nothing in the placement stack moves a "
             "part between faces (#836), so an error would be a red mark no "
             "run could clear")
+    if severity.get('plan_zone_utilisation') == ERROR:
+        raise IntentError(
+            "severity: plan_zone_utilisation is a heuristic and cannot be "
+            "raised to error -- area is necessary, not sufficient, so a zone "
+            "past the ratio can still fit (#1468)")
     if severity.get('mechanical_drift') == WARN:
         # #959: the pose is a recorded fact, so a turn (or a pad-less ref's
         # drift) stays an ERROR whatever the plan says, and a move is a WARN
@@ -4481,6 +4486,42 @@ def _anchor_reachable(zone, part, tol: float, claim=None) -> bool:
             zone.rect, rotate_local_bounds(*part.grade_by_rot[0.0], r % 360),
             tol)
         for r in rots)
+
+
+def _anchor_min_inside(zone_rect, part, claim, clearance: float
+                       ) -> Tuple[float, float]:
+    """`(area, area_with_clearance)`: the least of `zone_rect` (inflated by
+    its tolerance) a member graded as an ANCHOR there (`_anchor_reachable`)
+    still covers (#1468), over the rotations it may take -- the same ones
+    `_anchor_reachable` reads. Its centre is held inside, so on each axis it
+    covers at least half its extent, or the whole zone: the minimum, with the
+    centre on a corner, is `min(Z, e / 2)` per axis. At a rotation where the
+    part fits the zone it covers its whole box. The clearance figure grows
+    each axis by `clearance`, capped at the zone, as the WARN sum does."""
+    from .legality import rotate_local_bounds
+    zw = max(0.0, zone_rect[2] - zone_rect[0])
+    zh = max(0.0, zone_rect[3] - zone_rect[1])
+    rot, cands = claim if claim else (None, None)
+    if getattr(part, 'locked', False) or (rot is None and not cands):
+        # the part's own lattice: a quarter turn is the seed's to give
+        rots = [part.rot] + ([] if getattr(part, 'locked', False)
+                             else [part.rot + 90.0])
+    elif rot is not None:
+        rots = [rot]
+    else:
+        rots = list(cands)
+    best = None
+    for r in rots:
+        b = rotate_local_bounds(*part.grade_by_rot[0.0], r % 360)
+        w, h = b[2] - b[0], b[3] - b[1]
+        if zone_fits_courtyard(zone_rect, b, 0.0):
+            ox, oy = w, h
+        else:
+            ox, oy = min(zw, w / 2.0), min(zh, h / 2.0)
+        got = (ox * oy, min(zw, ox + clearance) * min(zh, oy + clearance))
+        if best is None or got[0] < best[0]:
+            best = got
+    return best
 
 
 def zone_origin_box(zone_rect, bounds, tol: float):
@@ -7606,6 +7647,12 @@ _NON_RULE_SEVERITIES = frozenset({
     'plan_fixed_outside_zone', 'plan_zone_overfull', 'plan_zone_crowded',
     'plan_edge_overfull', 'plan_edge_crowded', 'plan_board_overfull',
     'plan_board_crowded',
+    # #1468, beside the zone bounds: a member larger than its zone (graded
+    # on its centre, charged the area it still covers), WARN unless set; and
+    # the zone utilisation heuristic, settable only DOWN like
+    # `edge_connector_side` -- area is not a bound, so an error would refuse
+    # a plan that can fit.
+    'plan_zone_member_oversized', 'plan_zone_utilisation',
     # #1054: two exact declarations that the fixed-pose check's own
     # courtyard/pad/hole geometry says cannot both be seated.
     'plan_fixed_pose_conflict',
@@ -8951,12 +8998,13 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
          With no budget declared, or a project that waives courtyard overlap
          (the grade then prices none), nothing bounds the overlap, and it is
          the WARN (the placer's legality gate never admits an overlap, so it
-         may leave members illegal). An anchor-graded member
-         (`zone_is_anchor`) is not
-         charged.
-         Anchor-graded members and zones holding a waived pair are not
-         charged; a locked member is, because the grade counts its overlap
-         too.
+         may leave members illegal).
+         Zones holding a waived pair are not charged; a locked member is,
+         because the grade counts its overlap too. An anchor-graded member
+         is named (`plan_zone_member_oversized`, #1468) and charged, to the
+         WARN sums only, the zone area its held centre still makes it cover
+         (`_anchor_min_inside`). Below the bounds, `plan_zone_utilisation`
+         (WARN only) is the heuristic past `options.ZONE_FIT_UTILISATION`.
       6. `plan_edge_overfull` / `_crowded`: one edge-claimed part whose PAD
          extent in its own frame, at its best 90-degree rotation, is longer
          than the edge (ERROR); the claimed parts' summed extents against the
@@ -9194,6 +9242,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
         per_face_x = {'F': 0.0, 'B': 0.0}
         _outline = _budget_outline_areas(ctx, members)
         counted = []
+        anchored = []
         for r in members:
             part = _zparts[r]
             b0 = part.grade_by_rot[0.0]
@@ -9206,6 +9255,37 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 # the block DECLARES (`rotation` / `rotation_candidates`),
                 # where a fit at one angle does not forbid the anchor at
                 # another (b6a63ad8 verifier).
+                # #1468: not silently. Its CENTRE is held to the zone, so it
+                # still covers at least the zone area `_anchor_min_inside`
+                # bounds, charged to the WARN sums -- never to the ERROR's,
+                # whose currency is the graded outline this rect bound
+                # would overstate.
+                planned_side = planned_sides.get(r, part.side)
+                inside, inside_c = _anchor_min_inside(
+                    zr, part, _claims.get(r), clr_used)
+                per_face[planned_side] = (
+                    per_face.get(planned_side, 0.0) + inside)
+                per_face_c[planned_side] = (
+                    per_face_c.get(planned_side, 0.0) + inside_c)
+                anchored.append(r)
+                out.append(Violation(
+                    rule='plan_zone_member_oversized',
+                    severity=intent.severity_of('plan_zone_member_oversized',
+                                                WARN),
+                    ref=r, block=z.name,
+                    message=(f"{r} ({w:.2f} x {h:.2f}mm by courtyard) does "
+                             f"not fit zone {z.name!r} ({zr[2] - zr[0]:.2f} x "
+                             f"{zr[3] - zr[1]:.2f}mm with its {tol:g}mm "
+                             f"tolerance) at a rotation it may take, so the "
+                             f"grade holds only its CENTRE in the zone and "
+                             f"the rest may sit outside. It still covers at "
+                             f"least {inside:.2f}mm2 of the zone, charged to "
+                             f"the zone's sum. If the zone is meant to hold "
+                             f"the whole part, make it larger"),
+                    measured={'courtyard_mm': [round(w, 4), round(h, 4)],
+                              'charged_mm2': round(inside, 4)},
+                    expected={'zone_mm': [round(zr[2] - zr[0], 4),
+                                          round(zr[3] - zr[1], 4)]}))
                 continue
             if zone_open_sides(z.rect, ctx.outline_bounds,
                                _claimed5.get(r)):
@@ -9250,7 +9330,10 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                           'members_outline_area_mm2': round(need_x, 3),
                           'zone_area_mm2': round(zarea, 3),
                           'overlap_budget_mm2': overlap_budget,
-                          'members': counted})
+                          'members': counted,
+                          # #1468: charged only the part their centre
+                          # holds inside the zone
+                          'anchor_members': anchored})
         excess = need - zarea
         # The forced overlap the BUDGET sees (Bonferroni on the outlines and
         # far-side clusters it measures).
@@ -9282,7 +9365,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 severity=intent.severity_of('plan_zone_crowded', WARN),
                 block=z.name,
                 message=(f"zone {z.name!r} is {zarea:.2f}mm2 and its "
-                         f"{len(counted)} member(s) on {worst}.Cu "
+                         f"{len(counted) + len(anchored)} member(s) on "
+                         f"{worst}.Cu "
                          f"need {need:.2f}mm2 by courtyard: they fit only by "
                          f"overlapping ({excess:.2f}mm2 at least), which the "
                          f"placer's legality gate never admits -- it may "
@@ -9305,6 +9389,29 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 measured={'members_area_with_clearance_mm2':
                           round(per_face_c[face_c], 4), 'face': face_c},
                 expected={'zone_area_mm2': round(zarea, 4)}))
+        elif zarea > legality.EPS \
+                and need >= _opts.ZONE_FIT_UTILISATION * zarea:
+            # #1468: the advisory below the bounds. Zones well short of full
+            # failed to seat every member (60% and 77% courtyard fill, every
+            # seed), and nothing above said so. A HEURISTIC, never an error:
+            # area is necessary, not sufficient, so a zone under the ratio can
+            # still fail and one over it can fit.
+            out.append(Violation(
+                rule='plan_zone_utilisation', severity=WARN, block=z.name,
+                message=(f"zone {z.name!r} is {need / zarea:.0%} covered by "
+                         f"its {len(counted) + len(anchored)} member(s)' "
+                         f"courtyards on {worst}.Cu ({need:.2f} of "
+                         f"{zarea:.2f}mm2) -- past the "
+                         f"{_opts.ZONE_FIT_UTILISATION:.0%} where zones have "
+                         f"been measured failing to seat every member. A "
+                         f"heuristic, not a bound: area is necessary, not "
+                         f"sufficient, so the zone may still fit, and one "
+                         f"under it may not. Give the zone room, or place "
+                         f"one seed before many"),
+                measured={'utilisation': round(need / zarea, 4),
+                          'members_area_mm2': round(need, 4), 'face': worst},
+                expected={'utilisation':
+                          f'< {_opts.ZONE_FIT_UTILISATION}'}))
     measured['zones'] = zone_rows
 
     # 6. edge length -- a single part's PAD extent vs the edge (ERROR); the

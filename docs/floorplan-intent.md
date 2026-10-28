@@ -195,10 +195,12 @@ findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_z
 `mechanical_drift` (raised only when a `mechanical.json` is read, and
 settable to `error` only -- `warn` is refused, since the pose is a recorded
 fact),
-the thirteen `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
+the fifteen `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
 `block_glob_literal`, `plan_fixed_outside_zone`, `plan_fixed_pose_conflict`,
 `plan_zone_overfull`,
-`plan_zone_crowded`, `plan_edge_overfull`, `plan_edge_crowded`,
+`plan_zone_crowded`, `plan_zone_member_oversized`, `plan_zone_utilisation`
+(settable to `warn` only -- `error` is refused, because it is a heuristic),
+`plan_edge_overfull`, `plan_edge_crowded`,
 `plan_board_overfull`, `plan_board_crowded`, `plan_fixed_overlap`,
 `plan_fixed_overlap_budget`, `plan_template_keepout`), `edge_connector_side` (settable to `warn`
 only -- `error` is refused, because the rule is advisory by design),
@@ -1361,6 +1363,8 @@ plan. The WARN is the same quantity with a margin.
 | `block_glob_literal` | a real reference used as a glob over-matches a block into a second, disjoint zone | a stray over-match with no such conflict is a WARN; one the same list also names (an intended over-match) is no finding |
 | `plan_fixed_outside_zone` | a FILE-locked member is already outside its zone; or (WARN) a `fixed_poses[]` entry's declared pose is outside its own block's zone | |
 | `plan_zone_overfull` / `_crowded` | per face, the members' areas exceed the zone by more than the declared `legality_budget.overlap_area`. Fitting area A into zone Z forces at least A - Z of courtyard overlap; the ERROR sums the members' graded OUTLINES and far-side clusters (the geometry the budget is measured on), the WARN their rects. `measured.zones[]` carries both (`members_outline_area_mm2`, `members_area_mm2`) | the WARN applies without a budget, on a project that waives courtyard overlap, or past a crowding margin |
+| `plan_zone_member_oversized` | | a member larger than its zone at a rotation it may take: the grade holds only its CENTRE in the zone (an anchor), so it is named, and the zone area it still covers -- at least half its extent, or the whole zone, on each axis -- is charged to the zone's WARN sums (`measured.zones[].anchor_members`). Not to the ERROR's outline sum, which a rect bound would overstate |
+| `plan_zone_utilisation` | never | the members' courtyards cover `options.ZONE_FIT_UTILISATION` (50%) of the zone or more, and no bound above fired. A heuristic, labelled so: zones of 0603-class parts at 57-77% failed to seat every member and zones at 41-50% seated them all, but area is necessary, not sufficient -- a zone over the ratio can fit and one under it can fail |
 | `plan_edge_overfull` / `_crowded` | one edge-claimed part's pad extent, at its best 90-degree turn, is longer than its edge | summed extents are a WARN, because flanges overhang corners |
 | `plan_board_overfull` / `_crowded` | the parts' graded outlines, per face (the face the intent declares for a part, below), force more overlap against `options.grow_board`'s usable area (clearance 0) than the budget allows, with `oob_count` declared 0; `measured.outline_area_per_face_mm2`, and the rect reading as `forced_overlap_rect_mm2` | |
 | `plan_fixed_overlap_budget` / `plan_fixed_overlap` | the FILE-locked pairs alone exceed the overlap budget | each such pair is a WARN |
@@ -1386,6 +1390,9 @@ Nothing bounds its overlap, so no area bound is sound.
 
 **Callers.**
 - `check_floorplan --plan-only` reports every plan ERROR.
+- `place_simple` runs the check once before any seed (in the parent of a
+  `--seeds` run): it prints the WARNs once and refuses an ERROR at exit 2,
+  writing nothing (#1468).
 - `place_pose --intent` refuses, at exit 4, a single pose that leaves a moved
   part further outside its block's zone than it was, when that
   `zone_containment` finding is an ERROR.

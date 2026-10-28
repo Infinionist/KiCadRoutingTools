@@ -71,7 +71,13 @@ the same way.
    pads but a limit is WARNED, being priced over legs the grade does not read
    (`claim_arity`).
 
-Exit codes: 0 placed, 2 unreadable input, a part in two groups, or a face the
+Before any seed, the intent's plan is checked once (`floorplan.plan_check`,
+what `check_floorplan --plan-only` runs; in the parent of a `--seeds` run):
+its WARNs are printed once, and an ERROR -- a plan no arrangement can
+satisfy, an unresolved block among them -- refuses the run (#1468).
+
+Exit codes: 0 placed, 2 unreadable input, a part in two groups, a plan ERROR,
+or a face the
 board cannot take (two declarations disagree, or a KiCad-locked part is
 declared on the other face or at another pose), 4 placed with parts left
 illegal, or with a declared pose that is not legal (`refused`) or an edge
@@ -432,6 +438,41 @@ def _fp_text(fp):
     return f"{e} floorplan error(s) ({', '.join(fp.get('rules') or ())})" if e else ''
 
 
+def plan_refusal(board, intent_path):
+    """#1468: `floorplan.plan_check` once per run, before any seed is
+    placed -- in the parent of a `--seeds` run, never per seed. Its WARNs
+    are printed here, once; its ERRORs refuse the run, since each is a plan
+    no arrangement can satisfy (`plan_check`'s contract) and placing seeds
+    against one only spends their time to learn it. Returns 2, the code of
+    every input this script refuses before writing anything, or None to go
+    on."""
+    from placement import floorplan
+    from placement.groups import parse_sources
+    try:
+        intent = floorplan.load_intent(intent_path)
+        pcb = parse_kicad_pcb(board)
+        clearance, edge = floorplan.resolved_floors(board)
+        found, _measured = floorplan.plan_check(
+            intent, pcb, board, group_sources=parse_sources('auto'),
+            clearance=clearance, board_edge_clearance=edge)
+    except floorplan.UntrustworthyOutline:
+        return None         # the seeds' own state refuses such an outline
+    errors = [v for v in found if v.severity == floorplan.ERROR]
+    for v in found:
+        if v.severity != floorplan.ERROR:
+            print(f"  PLAN [warn] {v.rule}: {v.message}")
+    if not errors:
+        return None
+    for v in errors:
+        print(f"  PLAN [ERROR] {v.rule}: {v.message}", file=sys.stderr)
+    print(f"place_simple: the plan is refused before any seed is placed -- "
+          f"{len(errors)} plan error(s), each one no placement can satisfy. "
+          f"Fix the intent; "
+          f"`check_floorplan.py {board} --intent {intent_path} --plan-only` "
+          f"checks it without placing. Nothing was written.", file=sys.stderr)
+    return 2
+
+
 def _seed_list(spec):
     """'0-3' or '0,1,2,3' (or a mix: '0-2,7') -> [0, 1, 2, 3]."""
     out = []
@@ -466,7 +507,7 @@ def _many_seeds(ap, a):
               file=sys.stderr)
         return 2
     skip = {'help', 'board', 'out', 'seed', 'seeds', 'jobs', 'json',
-            'scattered', 'clustered', 'anchored', 'judge'}
+            'scattered', 'clustered', 'anchored', 'judge', 'plan_checked'}
     passed = []
     for act in ap._actions:
         if act.dest in skip or not act.option_strings:
@@ -486,7 +527,8 @@ def _many_seeds(ap, a):
             if p and os.path.dirname(p):
                 os.makedirs(os.path.dirname(p), exist_ok=True)
         cmd = ([sys.executable, '-X', 'utf8', os.path.abspath(__file__), a.board, out]
-               + passed + ['--seed', str(s)] + (['--json', js] if js else []))
+               + passed + ['--seed', str(s), '--plan-checked']
+               + (['--json', js] if js else []))
         runs.append((s, out, cmd))
     # #1443: measure the parts' heights once, here, so the seeds read the
     # cached measurement instead of each exporting the board at once
@@ -755,6 +797,10 @@ def build_parser():
                     help='with several seeds, how many run at once (default: one per '
                          'seed, at most 4)')
     ap.add_argument('--json', help='write the report here')
+    ap.add_argument('--plan-checked', action='store_true',
+                    help='skip the plan check made before any seed: the plan was '
+                         'checked already (a --seeds run checks it once and passes '
+                         'this to its seeds)')
     return ap
 
 
@@ -800,6 +846,14 @@ def main(argv=None):
         print(f"place_simple: --clustered-seeds {a.clustered_seeds!r} or --anchored-seeds "
               f"{a.anchored_seeds!r} is not a list like 0-3 or 0,1,2,3", file=sys.stderr)
         return 2
+    if not a.plan_checked:
+        try:
+            code = plan_refusal(a.board, a.intent)
+        except (OSError, ValueError) as ex:
+            print(f"place_simple: {ex}", file=sys.stderr)
+            return 2
+        if code:
+            return code
     if a.seeds:
         return _many_seeds(ap, a)
     t0 = time.time()
