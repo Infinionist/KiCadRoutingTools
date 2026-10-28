@@ -5,16 +5,23 @@ group's `flippable`, the agent's judgement). place_simple keeps every part on
 the face it has -- the front, on an unplaced board -- and moves a flippable
 part to the other face only where it is NEEDED: after the anneal, a part the
 front had no room for -- no legal pose, or past a decap or claim limit --
-goes to the back, or, when it may not, the flippable parts of its group do,
-and the board is annealed again (`needed_flips`). place_simple keeps that run
-only when it leaves fewer parts without room.
+goes to the back, or, when it may not, the flippable parts of its group
+nearest where it wants to be do -- enough of them to free its own area
+(#1482) -- and the board is annealed again (`needed_flips`). place_simple
+keeps that run only when it leaves fewer parts without room, and tries one
+more round when it kept one and parts still lack room (`FACE_ROUNDS`).
 
 A face the intent's `assembly.sides` does not populate is never chosen, and a
 part whose face something declares (the intent, a group's `side`) keeps it.
 """
 from __future__ import annotations
 
+import math
 from typing import Dict, Iterable, List, Set, Tuple
+
+#: How many times place_simple anneals again with needed flips (#1482): a
+#: second round only after a first that was kept and left parts without room.
+FACE_ROUNDS = 2
 
 def other(face: str) -> str:
     return 'B' if face == 'F' else 'F'
@@ -83,9 +90,16 @@ def needs(model, illegal: Iterable[str]) -> Dict[str, str]:
     return out
 
 
-def needed_flips(need: Dict[str, str], refs: Set[str], doc, done: Set[str]) -> Dict[str, str]:
-    """`{ref: why}`: each needy part when it is flippable, else the flippable
-    parts of its group, none already moved (`done`)."""
+def needed_flips(need: Dict[str, str], refs: Set[str], doc, done: Set[str],
+                 model=None) -> Dict[str, str]:
+    """`{ref: why}`: each needy part when it is flippable, else room for it:
+    the flippable parts of its group on its face within its own longer side
+    of where it wants to be (`simple.target`: its claimed partner's pins,
+    its decap site, its wiring), nearest first, until their courtyards add
+    up to its own -- not the whole group, whose far members free no room
+    where it needs it (#1482); none in reach, none flipped. None already
+    moved (`done`). Without a `model` (no poses to measure), the group's
+    every flippable part, as before."""
     group_of = {r: g for g in doc['groups'] for r in g['refs']}
     out = {}
     for r, why in sorted(need.items()):
@@ -93,7 +107,36 @@ def needed_flips(need: Dict[str, str], refs: Set[str], doc, done: Set[str]) -> D
             out.setdefault(r, f"{why}")
             continue
         g = group_of.get(r)
-        for m in sorted(refs & set(g['refs']) if g else ()):
-            if m not in done:
-                out.setdefault(m, f"room for {r} ({why}) in group {g['name']}")
+        cand = sorted(m for m in (refs & set(g['refs']) if g else ()) if m not in done)
+        if model is not None and cand:
+            cand = _nearest_room(model, r, cand)
+        for m in cand:
+            out.setdefault(m, f"room for {r} ({why}) in group {g['name']}")
+    return out
+
+
+def _nearest_room(model, ref: str, cand: List[str]) -> List[str]:
+    """The parts of `cand` on `ref`'s face within `ref`'s longer side of
+    where it wants to be, nearest first, until their courtyard areas reach
+    `ref`'s own."""
+    from placement.simple import target
+    st = model.state
+    me = st.parts[ref]
+    tx, ty = target(model, ref, set(st.parts))
+
+    def area(q):
+        return (q[2] - q[0]) * (q[3] - q[1])
+
+    def dist(q):
+        return math.hypot(max(q[0] - tx, 0.0, tx - q[2]), max(q[1] - ty, 0.0, ty - q[3]))
+    q = me.rect()
+    reach = max(q[2] - q[0], q[3] - q[1])
+    mine = [m for m in cand if st.parts[m].sides & me.sides
+            and dist(st.parts[m].rect()) <= reach]
+    out, got, need = [], 0.0, area(q)
+    for m in sorted(mine, key=lambda m: (dist(st.parts[m].rect()), m)):
+        if got >= need:
+            break
+        out.append(m)
+        got += area(st.parts[m].rect())
     return out

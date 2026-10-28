@@ -336,7 +336,9 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
 - **Faces:** give a group a `side` (`F`/`B`) only to put all its parts on that
   face; without one each part keeps its face.
 - **`flippable`: the group's parts that may stand on the back.** A part stays
-  on the front unless place_simple needs the room for it. List one only when
+  on the front unless place_simple needs the room for it. When a part that
+  is not flippable has no room, its group's flippable parts nearest where it
+  wants to be go to the back instead, only enough to free its area. List one only when
   the board is assembled on both faces: set the intent's `assembly.sides` to
   `"both"` (the emitter writes what the pile shows, `"F"`, which forbids
   every flip). On the 171 of 437 human boards that use both faces (share of

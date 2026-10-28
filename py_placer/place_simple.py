@@ -1252,7 +1252,7 @@ def main(argv=None):
     else:
         est = set(state.courtyard_estimates)
         worst = (RESTARTS + 1) * (1 + (2 if est else 0)
-                                  + (1 if flip_ok else 0))
+                                  + (faces.FACE_ROUNDS if flip_ok else 0))
         print(f"place_simple: {moves} moves per anneal, {RESTARTS + 1} anneal(s) per pass "
               f"until one is legal; up to {worst} anneal(s) in all (the #1300 courtyard "
               f"fallback{' and the face pass' if flip_ok else ''} included)")
@@ -1279,8 +1279,9 @@ def main(argv=None):
             if len(kept2[0]) < len(kept[0]):
                 state, model, kept, k, fallback = st2, mdl2, kept2, k2, sorted(skip)
     # a flippable part the front had no room for goes to the back, or makes
-    # room by sending its group's flippable parts there, and the board is
-    # annealed again: kept only when it leaves fewer parts without room (no
+    # room by sending the flippable parts of its group nearest where it wants
+    # to be there (#1482), and the board is annealed again, up to
+    # FACE_ROUNDS times: kept only when it leaves fewer parts without room (no
     # legal pose, then decap limits, then claim limits), never for cost
     # alone -- a part stays on its face unless the other face is needed
     from placement import decap_repair
@@ -1304,14 +1305,18 @@ def main(argv=None):
         kept = settle(state, model, kept)
     if flip_ok and movable:
         before = outcome(state, model, kept)
-        want = faces.needed_flips(faces.needs(model, set(kept[0]) - too_big),
-                                  flip_ok, doc, set())
-        if want:
-            face_report['needed'] = want
+        flipped = {}        # every flip the kept runs carry
+        for _round in range(faces.FACE_ROUNDS):
+            want = faces.needed_flips(faces.needs(model, set(kept[0]) - too_big),
+                                      flip_ok, doc, set(flipped), model)
+            if not want:
+                break
+            face_report['needed'].update(want)
             print("  NOTE: no room on their face, annealing again with them on the other: "
                   + ', '.join(f"{r} ({why})" for r, why in sorted(want.items())))
             tmp = tmp or tempfile.mkdtemp(prefix='place_simple_')
-            src2 = _face_board(face_src, face_pcb, want, tmp, 'needed', a.board)
+            src2 = _face_board(face_src, face_pcb, {**flipped, **want}, tmp,
+                               f'needed{_round}', a.board)
             pcb2 = parse_kicad_pcb(src2)
             blocks2, _problems = floorplan.resolve_blocks(intent, pcb2, sources)
             st2, mdl2, _m2, _n2 = build(pcb2, src2, doc, base, a, intent, blocks2, set(fixed))
@@ -1319,16 +1324,18 @@ def main(argv=None):
             kept2 = settle(st2, mdl2, kept2)
             after = outcome(st2, mdl2, kept2)
             better = after[:3] < before[:3]
-            face_report['needed_kept'] = better
+            face_report['needed_kept'] = bool(face_report['needed_kept']) or better
             print(f"  NOTE: with them flipped: {after[0]} part(s) without a legal pose, "
                   f"{after[1]} decap limit(s), {after[2]} claim limit(s) broken, cost "
                   f"{after[3]:.1f}, against {before[0]}, {before[1]}, {before[2]}, "
                   f"{before[3]:.1f}; {'kept' if better else 'not kept: no part gained room'}")
-            if better:
-                state, model, kept, k, src, pcb = st2, mdl2, kept2, k2, src2, pcb2
-                blocks, fallback = blocks2, []
-            else:
+            if not better:
                 outcome(state, model, kept)
+                break
+            state, model, kept, k, src, pcb = st2, mdl2, kept2, k2, src2, pcb2
+            blocks, fallback = blocks2, []
+            flipped.update(want)
+            before = after
     settled(pcb, state, model, movable)
     _ill, poses, res = kept
     for r, pose in poses.items():
