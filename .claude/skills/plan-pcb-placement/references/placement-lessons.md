@@ -388,7 +388,9 @@ six others.
     pin in 87-91%. Both are on the regulator's face in 96%. With IN and OUT apart, the
     caps flank it in 59%; with them on one side, they sit side by side in 60%.
 - **Do not pull a regulator onto its load.** Place it by its input, between the power
-  entry and its loads, and let the decaps carry locality.
+  entry and its loads, and let the decaps carry locality. A point-of-load regulator
+  that feeds one chip joins that chip's group, but not the chip: SKILL.md §3.3 ("Where
+  a regulator goes") is the one rule.
   - *Humans:* a single-load LDO's output pin is 12 mm from its load, and a single-load
     buck's inductor 20 mm, while decaps sit 1-2 mm from their pins.
 
@@ -821,7 +823,8 @@ score a placement down for breaking them.
   debounce caps at the button. 28-41% within 3 mm; 6-7 mm is normal.
 - **Where a USB connector sits along its edge.** Centred 42%, near a corner 14%.
 - **Crystals away from the edge, and an empty strip between crystal and chip.**
-- **Regulators at their loads.** A 10-20 mm output rail is normal.
+- **A regulator against its load.** A 10-20 mm output rail is normal, a point-of-load
+  LDO's included (Linear regulators).
 - **Extra keep-away between the feedback divider and the switch node**, or extra room
   around power parts for wide copper.
 - **Entry protection, fiducials, mounting holes.** 5% of power inputs have a fuse or TVS,

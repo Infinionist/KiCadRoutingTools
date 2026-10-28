@@ -42,15 +42,17 @@ it was, how to tell, and the board.
 
   A P-FET sitting between a power connector and the regulator is reverse-polarity
   protection or a load switch, not a signal transistor.
-- **Some regulators belong to their LOAD, not to the power group:**
+- **Some regulators belong to their LOAD's group, not to the power group:**
   - DDR termination (LP2996, VTT) goes with the DRAM;
   - a voltage reference (REF30xx, a TL431 used as a reference) goes with the ADC or
     comparator it feeds;
-  - a point-of-load LDO whose output feeds one chip or one analog section goes with
-    that chip.
+  - a point-of-load LDO whose output feeds one chip or one analog section goes in
+    that chip's group.
 
-  *Tell:* count the parts on its output net. One consumer means it belongs with that
-  consumer.
+  *Tell:* count the parts on its output net. One consumer means it belongs in that
+  consumer's group. It joins the group, not the chip; where each kind of regulator
+  sits, and what its group's `near` says, is the one rule in SKILL.md §3.3 ("Where
+  a regulator goes").
 - **Part-number substrings lie:**
   - DMP3013 (a P-MOSFET, on berkeley_obsidian) contains "MP3013", a buck family.
   - MAX17048 is a fuel gauge, while many MAX17xxx parts are bucks.

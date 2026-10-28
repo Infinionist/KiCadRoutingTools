@@ -87,6 +87,15 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   from it (next section). If the user states a mechanical fact (a
   connector's edge, a mounting-hole position), it is a requirement, and the
   verifier checks it.
+- **The user's placement intent outranks the priors.** The human-board
+  numbers in `references/placement-lessons.md` and the defaults in this
+  skill (where a regulator goes, which group a part joins) are what to do
+  when nobody says. When the user states where something goes ("each
+  regulator beside the parts it supplies", "filter, then regulator, then
+  loads"), follow the user, and write it so the placer can act on it (a
+  group, a `near`, a zone in §3.4c, a `proximity` row). In REPORT.md, name
+  each place where the user's intent and a prior differed and which you
+  followed.
 - **Ask for the EMC rows the board cannot state.** Run
   `python3 -X utf8 py_tools/board_context.py <board> --json -o <ctx.json>`
   and read `emc_roles.roles`: each converter, crystal, oscillator and ESD
@@ -285,8 +294,33 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
 - **Hints, each a soft term of the objective:** `near` (a list of groups to
   sit against), `apart` (groups to keep 3 mm from), `edge` (`N`/`S`/`E`/`W`,
   a group that belongs on a board side; a group holding an edge connector
-  needs none). **Do not send the power group to an edge**: on 437 human boards
-  the regulator sits by its power entry -- say `near` its entry's group.
+  needs none).
+- **`near` is a sum of pulls, never a "between".** Each entry is one
+  independent term: the gap between the two groups' nearest courtyards
+  (Manhattan, nothing once they touch) times `--near-weight` (default 2 per
+  mm), added to every other term; a pair both groups name counts once.
+  Several entries are a vote: `near: [filter, load_a, load_b, load_c]`
+  sends the group to the loads, which outnumber the filter, and with more
+  than two it goes where most of them are. To put a stage between its entry
+  and its loads, name only the entry: its output net already pulls it toward
+  the parts it feeds (at `--rail-weight` 0.3 per mm when that net is a rail
+  -- ground, or more than a quarter of the parts and more than six -- else
+  at a signal's full weight). For a stage that must stand in one area, the
+  user's region is a zone (§3.4c).
+- **Where a regulator goes** (the one rule; `references/part-roles.md` and
+  the lessons point here):
+  - **A regulator that makes a rail for several groups** is in the power
+    group, which sits by its power entry, between the entry and the loads:
+    on the human boards two conditioners in three sit nearer the entry than
+    the main IC does, and no nearer the outline than an average part. Say `near` its
+    entry's group, and only that; never its loads' groups (above), and never
+    an `edge`.
+  - **A regulator that feeds one consumer** joins that consumer's group: a
+    point-of-load LDO whose output feeds one chip or one analog section, DDR
+    termination (VTT) with its DRAM, a voltage reference with the ADC or
+    comparator it feeds. It joins the group, not the chip: humans keep a
+    single-load LDO's output pin about 12 mm from its load, so write no
+    `proximity` row pulling it onto the chip.
 - **Faces:** give a group a `side` (`F`/`B`) only to put all its parts on that
   face; without one each part keeps its face.
 - **`flippable`: the group's parts that may stand on the back.** A part stays
@@ -1219,6 +1253,9 @@ Routing Completes): run them once, here, not again inside the routing.
    - **the result first:** a table of the mode's DONE conditions with measured
      values, the `blocking_by` breakdown, and vias / copper_mm / segments;
    - **the groups and every judgement call** in them, with its reason;
+   - **the user's placement instructions** (§2): each one, how it was
+     written for the placer, and where it differed from a prior, which was
+     followed;
    - **covers and declared heights** (§3.4b): each row and its source, and
      any value declared conservatively because it could not be established;
    - **which stop rule fired**, and every remaining blocker BY NAME with its
