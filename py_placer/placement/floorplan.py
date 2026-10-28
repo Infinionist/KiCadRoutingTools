@@ -3223,6 +3223,12 @@ def resolve_blocks(intent: Intent, pcb_data, group_sources: Sequence[str] = ()
     matched against the raw derive_groups key AND its `short_name` form, because
     `short_name` is what `--list-groups` prints and therefore what anyone would
     copy into an intent file.
+
+    A `group` that does not resolve is ONE finding (#1469): it says that the
+    key takes the board's own groups only (KiCad groups, schematic sheets),
+    never a groups-file name, that the parts go in `refs`, and which tool
+    lists the board's groups. "Matched no footprint" is for a block whose
+    `refs` alone match nothing.
     """
     refs_all = sorted(pcb_data.footprints)
     derived: Dict[str, List[str]] = {}
@@ -3236,6 +3242,7 @@ def resolve_blocks(intent: Intent, pcb_data, group_sources: Sequence[str] = ()
     problems: List[Violation] = []
     for z in intent.blocks:
         members = set()
+        unresolved_group = False
         for pattern in z.refs:
             members.update([r for r in refs_all if fnmatch.fnmatchcase(r, pattern)])
         if z.group:
@@ -3246,17 +3253,23 @@ def resolve_blocks(intent: Intent, pcb_data, group_sources: Sequence[str] = ()
                 problems.append(Violation(
                     rule='block_unresolved', block=z.name,
                     severity=intent.severity_of('block_unresolved'),
-                    message=(f"block {z.name!r}: group {z.group!r} does not "
-                             f"exist on this board. Available: "
+                    message=(f"block {z.name!r}: group {z.group!r} is not a "
+                             f"group of this board. blocks[].group takes only "
+                             f"the groups the board itself defines -- its "
+                             f"KiCad groups and schematic sheets (here: "
                              f"{', '.join(sorted(by_short)[:6]) or 'none'}"
-                             f"{' ...' if len(by_short) > 6 else ''}. Derive "
-                             f"them with --group-by and --list-groups first"),
+                             f"{' ...' if len(by_short) > 6 else ''}; "
+                             f"`render_placement.py BOARD --list-groups` "
+                             f"lists them) -- never a name from a groups "
+                             f"file. To zone a groups-file group, list its "
+                             f"parts in the block's `refs`"),
                     measured={'group': z.group,
                               'available': sorted(by_short)[:12]}))
+                unresolved_group = True
             else:
                 members.update(found)
         out[z.name] = sorted(members)
-        if not members:
+        if not members and not unresolved_group:
             problems.append(Violation(
                 rule='block_unresolved', block=z.name,
                 severity=intent.severity_of('block_unresolved'),

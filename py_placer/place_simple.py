@@ -438,14 +438,19 @@ def _fp_text(fp):
     return f"{e} floorplan error(s) ({', '.join(fp.get('rules') or ())})" if e else ''
 
 
-def plan_refusal(board, intent_path):
+def plan_refusal(board, intent_path, groups_doc):
     """#1468: `floorplan.plan_check` once per run, before any seed is
     placed -- in the parent of a `--seeds` run, never per seed. Its WARNs
     are printed here, once; its ERRORs refuse the run, since each is a plan
     no arrangement can satisfy (`plan_check`'s contract) and placing seeds
     against one only spends their time to learn it. Returns 2, the code of
     every input this script refuses before writing anything, or None to go
-    on."""
+    on.
+
+    A `block_unresolved` block whose `group` names a group of the groups
+    file (`blocks[].group` takes the board's own groups only, #1469) is
+    answered with that group's refs, ready to paste into the block's
+    `refs`."""
     from placement import floorplan
     from placement.groups import parse_sources
     try:
@@ -463,8 +468,14 @@ def plan_refusal(board, intent_path):
             print(f"  PLAN [warn] {v.rule}: {v.message}")
     if not errors:
         return None
+    file_groups = {g['name']: g['refs'] for g in (groups_doc or {}).get('groups', ())}
     for v in errors:
         print(f"  PLAN [ERROR] {v.rule}: {v.message}", file=sys.stderr)
+        g = (v.measured or {}).get('group')
+        if v.rule == 'block_unresolved' and g in file_groups:
+            print(f"    {g!r} is a group of the groups file: write its parts as "
+                  f"the refs of block {v.block!r} -- \"refs\": "
+                  f"{json.dumps(list(file_groups[g]))}", file=sys.stderr)
     print(f"place_simple: the plan is refused before any seed is placed -- "
           f"{len(errors)} plan error(s), each one no placement can satisfy. "
           f"Fix the intent; "
@@ -848,7 +859,11 @@ def main(argv=None):
         return 2
     if not a.plan_checked:
         try:
-            code = plan_refusal(a.board, a.intent)
+            groups_doc = json.load(open(a.groups, encoding='utf-8'))
+        except (OSError, ValueError):
+            groups_doc = None   # load_groups below names what is wrong
+        try:
+            code = plan_refusal(a.board, a.intent, groups_doc)
         except (OSError, ValueError) as ex:
             print(f"place_simple: {ex}", file=sys.stderr)
             return 2

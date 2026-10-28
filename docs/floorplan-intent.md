@@ -732,6 +732,14 @@ the raw `derive_groups` key and its `short_name` form (what `--list-groups`
 prints, and therefore what anyone would copy), but reference globs are what a
 human or a model can actually write.
 
+`group` names a group the BOARD defines (a KiCad group or a schematic sheet),
+never a group of a groups file. One that does not resolve is one
+`block_unresolved` error saying so, naming the board's groups
+(`render_placement.py BOARD --list-groups` lists them) and telling you to put
+the parts in `refs`. `place_simple` refuses such an intent before any seed and,
+when the name is a group of its `--groups` file, prints that group's refs as a
+`"refs": [...]` line to paste (#1469).
+
 ### A block that resolves to nothing is an error
 
 Not an empty block. A typo'd `refs` matches nothing, every rule over it iterates
