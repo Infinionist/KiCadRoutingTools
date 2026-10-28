@@ -459,6 +459,7 @@ python3 py_router/route.py kicad_files/flat_hierarchy_routed.kicad_pcb --overwri
 # No agent: build the whole chain (planes, fanouts, decaps, diff pairs, route)
 # from the board's own rules and footprints, and run it; --dry-run prints the plan
 python3 py_router/autoplan.py kicad_files/input.kicad_pcb kicad_files/output.kicad_pcb
+python3 py_router/autoplan.py kicad_files/input.kicad_pcb kicad_files/output.kicad_pcb --dry-run
 ```
 
 ### Create Power/Ground Planes
