@@ -217,7 +217,7 @@ class Annealer:
         # and the legality skip it; a pin frame's drilled pins are priced
         # instead (`_pins`, #1307).
         self.containers = frozenset(r for r in self.names if r in st.container_refs)
-        self.frames = sorted(r for r in self.containers if r in st.pin_frame_refs)
+        self.frames = sorted(r for r in self.containers if r in st.frame_refs)
         bit = {}
         self.faces = {r: 0 if r in self.containers else
                       sum(1 << bit.setdefault(f, len(bit)) for f in set(st.parts[r].sides))
@@ -458,16 +458,19 @@ class Annealer:
         pin_hole_boxes`), on either face; and pad copper over its pads' copper
         grown by the clearance (`QuenchState.pin_copper_boxes`), on a face
         both have copper on, the pad clearance the legality pass after the
-        anneal enforces. Each (frame, part) pair with a part in `mine` once --
-        a frame in `mine` with every part, any other frame with the parts in
-        `mine`."""
+        anneal enforces; and courtyard over the islands of a container's own
+        drawn courtyard (`QuenchState.frame_court_boxes`), on its face, the
+        courtyard pair check_assembly grades. Each (frame, part) pair with a
+        part in `mine` once -- a frame in `mine` with every part, any other
+        frame with the parts in `mine`."""
         P, tot, mset = self.st.parts, 0.0, set(mine)
         for f in self.frames:
             holes = self.st.pin_hole_boxes(f)
             pads = self.st.pin_copper_boxes(f)
-            if not holes and not pads:
+            court = self.st.frame_court_boxes(f)
+            if not holes and not pads and not court:
                 continue
-            every = list(holes) + [q[:4] for q in pads]
+            every = list(holes) + [q[:4] for q in pads + court]
             H = (min(h[0] for h in every), min(h[1] for h in every),
                  max(h[2] for h in every), max(h[3] for h in every))
             for b in (self.names if f in mset else mine):
@@ -480,6 +483,13 @@ class Annealer:
                 for h in holes:
                     ox = min(c[2], h[2]) - max(c[0], h[0])
                     oy = min(c[3], h[3]) - max(c[1], h[1])
+                    if ox > 0 and oy > 0:
+                        tot += ox * oy
+                for q in court:
+                    if not (q[4] & pb.sides):
+                        continue
+                    ox = min(c[2], q[2]) - max(c[0], q[0])
+                    oy = min(c[3], q[3]) - max(c[1], q[1])
                     if ox > 0 and oy > 0:
                         tot += ox * oy
                 k = pb.padbox()

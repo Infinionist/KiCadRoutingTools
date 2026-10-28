@@ -585,7 +585,11 @@ gate, `place_pose` and the graders:
   courtyard makes such a part a body only when it covers at least half of
   its frame (`legality.FRAME_COURTYARD_COVER`): rings round an enclosure's
   posts, or a placeholder point, leave it a frame, and the placer names the
-  decision beside its container line.
+  decision beside its container line. Those islands are still courtyards:
+  check_assembly grades a part on one as a courtyard pair
+  (`frame_courtyard`, courtyards_overlap's severity), the seat refuses it
+  through the same census it asks about pins, and the anneal prices each
+  island's box as it prices a hole.
 - **Bodies.** A footprint without a courtyard is graded by its fab drawing,
   else its silk, else its pad box (`body.py`); the fallback is named in the
   output.
