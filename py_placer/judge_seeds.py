@@ -359,6 +359,8 @@ def main(argv=None):
                     help='seeds routed at once (default 1: a judging route takes up to about '
                          '1.3 GB on a small board and 5 GB on a 350-part one)')
     a = ap.parse_args(argv)
+    from placement import run_record              # the placement record (#1486)
+    run_record.record('judge_seeds', argv)
     if a.confirm is not None and a.confirm != 'close' and not (
             a.confirm.isdigit() and int(a.confirm) >= 1):
         print(f"judge_seeds: --confirm {a.confirm!r} is not `close` or a seed count of 1 or more",

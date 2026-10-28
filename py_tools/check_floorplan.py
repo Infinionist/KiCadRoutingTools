@@ -511,6 +511,9 @@ def _bare_json_stdout(argv) -> bool:
 def main(argv=None):
     args = build_parser().parse_args(argv)
     parser_error = build_parser().error
+    if args.emit_intent:
+        from placement import run_record          # the placement record (#1486)
+        run_record.record('check_floorplan', argv)
 
     if args.suggest_arrays or args.suggest_channels:
         mode = '--suggest-arrays' if args.suggest_arrays else '--suggest-channels'

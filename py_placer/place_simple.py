@@ -989,6 +989,10 @@ def _pass_counts(passes):
 def main(argv=None):
     ap = build_parser()
     a = ap.parse_args(argv)
+    if not a.plan_checked and not a.preview:
+        # the placement record (#1486): the run, not its seed children
+        from placement import run_record
+        run_record.record('place_simple', argv)
     if a.draft_zones and not a.preview:
         print("place_simple: --draft-zones is a --preview output", file=sys.stderr)
         return 2

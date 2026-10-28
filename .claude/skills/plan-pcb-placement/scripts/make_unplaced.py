@@ -381,6 +381,8 @@ def main(argv=None):
                          'bounding box, holding a moved part\'s pad) instead '
                          'of dropping them; they are reported')
     a = ap.parse_args(argv)
+    from placement import run_record              # the placement record (#1486)
+    run_record.record('make_unplaced', argv)
     return build(a.src, a.dst, a.keep_locked, a.keep_local_zones)
 
 

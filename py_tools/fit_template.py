@@ -94,6 +94,9 @@ def main(argv=None):
     ap.add_argument('--intent', help='an intent to add the row to (with --write-intent)')
     ap.add_argument('--write-intent', metavar='OUT', help='write INTENT plus the row here')
     a = ap.parse_args(argv)
+    if a.out or a.write_intent:
+        from placement import run_record          # the placement record (#1486)
+        run_record.record('fit_template', argv)
     if bool(a.intent) != bool(a.write_intent):
         ap.error('--intent and --write-intent go together')
     if not a.pins and not a.sketch:
