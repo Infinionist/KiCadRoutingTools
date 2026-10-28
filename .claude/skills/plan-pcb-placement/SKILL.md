@@ -105,6 +105,28 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   it from net names. A converter you give a datasheet template (§3.5) needs
   only the `keep_away` rows: the template places its support parts, so do
   not ask for their limits.
+- **Ask about the enclosure.** The board file cannot say whether it goes in
+  an enclosure, under a lid or a shield can, or has a height limit over an
+  area, so ask, in the same breath, and record each answer where a grade
+  reads it (`docs/design-brief.md` has each row):
+  - **a height limit over an area** (a lid, a can's roof, an enclosure wall
+    sloping over one corner): a keep-out with `max_height_mm` in the intent's
+    `keepouts[]` (the intent's `min_reader` 15 or more). A part whose height
+    is known and no more than that may stand in it; every other part is kept
+    out unless its `allow` names it;
+  - **a part's height nothing gives** (no 3D model), or the room under a
+    module drawn solid to the board: the brief's `heights[]` (`ref`,
+    `height_mm` or `underside_mm`, `source`), from its datasheet only;
+  - **an area no part may use** (a rib, a battery well, a boss's screw
+    head): the brief's `keepouts[]`, with `allow` naming a part that belongs
+    there;
+  - **a boss or mounting hole the enclosure fixes**: its pose, as a brief
+    `fixed[]` row with a `pose`, or placed and locked (§3.1);
+  - **parts that must sit inside a can, or outside the enclosure's reach**:
+    regions, §3.4c; a card or module over the board: a cover, §3.4b.
+
+  In REPORT.md, say what you asked and what was declared from each answer,
+  or that nobody was there to ask.
 - **Nothing is sacred except a KiCad lock.** `place_simple` re-places every
   part the board does not lock (`(locked yes)`) or the intent does not seat
   (`fixed_poses[]`). For a from-scratch experiment with everything off the
@@ -165,6 +187,17 @@ python3 -X utf8 py_tools/check_floorplan.py wk/<run>/fixed.kicad_pcb --emit-inte
 - `place_simple` reads the intent's `proximity` claims, keep-outs, zones,
   declared faces, `fixed_poses`, the edges of `edge_connectors[]` and the
   decap limits it grades at error.
+- **Answer every `OWED:` line** of the emit's rule roster. Each names a rule
+  the board says applies and nothing arms, with the key that arms it
+  (`OWED: zone_containment: ... Arm it with blocks[].zone ... or write why
+  it does not: dispositions.rules.zone_containment`). Arm it only from a
+  requirement (the user's, the brief's, a datasheet's): a region the user
+  gives (§3.4c), a decap limit, an edge. Otherwise write why it does not
+  apply, in one line, under the intent's `dispositions.rules.<rule>` (a
+  withheld budget key under `dispositions.withheld.<key>`), such as
+  `"zone_containment": "no region was given; groups place this board"`.
+  Never invent a limit to clear one. The roster prints again with every
+  `check_floorplan --intent`; list your answers in REPORT.md.
 - **Waive the locked parts' own overlaps**, right after the intent exists:
 
   ```bash
@@ -461,6 +494,50 @@ under it: declare its height in the brief's `heights[]` (`ref`,
 solid down to the board takes its datasheet's underside the same way
 (`underside_mm`). An enclosure's height limit over an area is a keep-out
 with `max_height_mm`.
+
+### 3.4c Regions the user gives (only then)
+
+Groups place a board, not regions (`references/placement-lessons.md`), so
+draw no region of your own. When the USER gives one -- "these parts go
+inside this shield can", "only the power stage may sit outside the
+enclosure", "keep this corner for the antenna" -- declare it in the intent,
+in the vocabulary of `docs/floorplan-intent.md`:
+
+- **Parts held to an area:** a `blocks[]` entry with `name`, `refs` (the
+  parts; globs work), `zone` (`[x0, y0, x1, y1]`, board mm), `tolerance_mm`,
+  and `exclusive: true` when no other part may enter it (the inside of a
+  can). List `refs`: a block's `group` names a KiCad group or schematic
+  sheet the board derives (`render_placement.py --list-groups` lists them),
+  not a group of `groups.json`, and a groups-file name there resolves to
+  nothing (`block_unresolved`).
+- **An area only some parts may enter** (a keep-in for everyone else): a
+  `keepouts[]` entry whose `allow` names the parts that may. A pattern that
+  matches no part is a WARN, and the part it meant is pushed out.
+- **Write them after the last `--emit-intent`**, which writes a new file;
+  add them again if you emit again.
+- **Make an overfull zone an error:** declare `legality_budget`
+  (`{"overlap_area": 0.0, "oob_count": 0}`). Without it, a zone too small
+  for its members is only a WARN.
+- **Check the plan before placing**, on the pile (no pose is needed):
+
+  ```bash
+  python3 -X utf8 py_tools/check_floorplan.py wk/<run>/fixed.kicad_pcb --intent wk/<run>/intent.json --plan-only
+  ```
+
+  Exit 4 is a plan ERROR no placement can meet (a member with no pose in its
+  zone clear of another block's exclusive zone, a locked member outside its
+  zone, an overfull zone): fix the plan, not the seeds. `place_simple` runs
+  the same check before it seeds and refuses its ERRORs.
+- **Look at the plan:**
+
+  ```bash
+  python3 -X utf8 py_tools/render_placement.py wk/<run>/fixed.kicad_pcb --intent wk/<run>/intent.json \
+      --view X0,Y0,X1,Y1 -o wk/<run>/plan.png
+  ```
+
+  It draws each zone with its members' names and each keep-out. On a pile
+  the frame crops to the pile, so give `--view` the intent's
+  `envelope.rect`.
 
 ### 3.5 Datasheet layouts (your judgement)
 
