@@ -1380,9 +1380,10 @@ class QuenchState:
         #
         # fa10 P1 (#1184, #1212): WHO is a container is the grader's own
         # decision (`legality.container_kinds`): a pin frame or a pad-less
-        # outline, never a big BODY and never a drawn courtyard. Area alone
-        # called One-Air-Max's 18650 holder a frame and the seed put DC1
-        # wholly inside it, while check_assembly gated the pair. A pin
+        # outline, never a big BODY and never a courtyard drawn over its
+        # frame (`FRAME_COURTYARD_COVER`). Area alone called One-Air-Max's
+        # 18650 holder a frame and the seed put DC1 wholly inside it, while
+        # check_assembly gated the pair. A pin
         # frame's PINS still bind: `_pin_conflict_at`, the grader's
         # `pin_hits`, refuses a part on one (KiCad's pth_inside_courtyard).
         #
@@ -1390,10 +1391,10 @@ class QuenchState:
         # no stranger to an exclusive zone either (#1463): its frame rect is
         # not a body there any more than in the courtyard channel.
         try:
-            _kinds = legality.container_kinds(
-                pcb_data, legality.part_local_bounds(pcb_data, pcb_file))
+            _lbs = legality.part_local_bounds(pcb_data, pcb_file)
+            _kinds = legality.container_kinds(pcb_data, _lbs)
         except Exception:                                    # noqa: BLE001
-            _kinds = {}
+            _lbs, _kinds = {}, {}
         self.container_kinds = {r: k for r, k in _kinds.items()
                                 if r in self.parts}
         self.container_refs = set(self.container_kinds)
@@ -1466,6 +1467,13 @@ class QuenchState:
                   f"body): " + ', '.join(
                       f"{r} ({k})"
                       for r, k in sorted(self.container_kinds.items())))
+        # #1465: what a drawn courtyard on a container-sized part decided,
+        # either way, so neither a placeholder that keeps the frame nor a
+        # real one that removes it is silent.
+        for _note in legality.container_courtyard_notes(
+                pcb_data, {r: lb for r, lb in _lbs.items()
+                           if r in self.parts}):
+            print(f"  {_note}")
 
         # --- pad + drill legality (gate currency; see placement/legality.py).
         # pose_of/seed_of read the live _Part records, so the context follows

@@ -9,7 +9,8 @@ the issue's own comment). Geometry can (`legality.container_kinds`):
 
   * 'pin_frame' -- >= FRAME_DRILLED_FRAC drilled pads, none in the interior;
   * 'outline'   -- no copper and no holes at all;
-  * never a part with a drawn courtyard, and never anything else.
+  * never a part whose drawn courtyard covers its frame (#1464: rings round
+    the pins, or a placeholder, leave it a frame), and never anything else.
 
 A container is then exempt LOCKED OR NOT, a body is not exempt LOCKED OR NOT,
 and the seeder and check_assembly read the one classifier.
@@ -186,6 +187,54 @@ class TheGuards(unittest.TestCase):
                ' 0.05) (type default)) (layer "F.CrtYd"))\n')
         with tempfile.TemporaryDirectory() as td:
             self.assertEqual(self._kinds(td, crt), {})
+
+    # #1464 / #1465: a courtyard that covers little of the frame is not the
+    # frame's keep-out, so it leaves the frame a frame.
+    def test_rings_round_the_pins_keep_it_a_frame(self):
+        crt = ''.join(
+            f'    (fp_circle (center {x} {y}) (end {x + 1.5} {y}) (stroke'
+            f' (width 0.05) (type default)) (fill no) (layer "F.CrtYd"))\n'
+            for x, y in ((-17, -13.5), (17, -13.5), (-17, 13.5), (17, 13.5)))
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(self._kinds(td, crt), {'FR': 'pin_frame'})
+
+    def test_a_placeholder_courtyard_keeps_it_a_frame(self):
+        crt = ('    (fp_rect (start -0.1 -0.1) (end 0.1 0.1) (stroke (width'
+               ' 0.05) (type default)) (fill no) (layer "F.CrtYd"))\n')
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(self._kinds(td, crt), {'FR': 'pin_frame'})
+
+    def test_the_decision_is_named(self):
+        """The line the placer, board_brief and check_floorplan print beside
+        the container line: what the drawn courtyard decided, either way."""
+        point = ('    (fp_rect (start -0.1 -0.1) (end 0.1 0.1) (stroke (width'
+                 ' 0.05) (type default)) (fill no) (layer "F.CrtYd"))\n')
+        full = ('    (fp_rect (start -20 -15) (end 20 15) (stroke (width'
+                ' 0.05) (type default)) (layer "F.CrtYd"))\n')
+        for crt, want in ((point, 'FR: drawn courtyard covers 0.0% of its '
+                                  'frame -- read as a frame (pin_frame), '
+                                  'not a body'),
+                          (full, 'FR: drawn courtyard covers 100.0% of its '
+                                 'frame -- read as a body')):
+            with tempfile.TemporaryDirectory() as td:
+                path = _frame_board(td, [])
+                with open(path, encoding='utf-8') as fh:
+                    text = fh.read()
+                text = text.replace('(net 1 "N1"))\n  )\n',
+                                    '(net 1 "N1"))\n' + crt + '  )\n', 1)
+                with open(path, 'w', encoding='utf-8') as fh:
+                    fh.write(text)
+                pcb = parse_kicad_pcb(path)
+                notes = legality.container_courtyard_notes(
+                    pcb, legality.part_local_bounds(pcb, path))
+            self.assertEqual(notes, [want])
+
+    def test_no_note_without_a_drawn_courtyard(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = _frame_board(td, [])
+            pcb = parse_kicad_pcb(path)
+            self.assertEqual(legality.container_courtyard_notes(
+                pcb, legality.part_local_bounds(pcb, path)), [])
 
 
 class PoseIndependence(unittest.TestCase):
