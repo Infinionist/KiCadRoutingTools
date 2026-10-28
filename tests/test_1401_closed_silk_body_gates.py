@@ -51,6 +51,10 @@ class TestClosedSilkBody(unittest.TestCase):
             self.assertIn('NOT BUILDABLE', out, out[-800:])
             self.assertIn('CONTAINED 100%', out)
             self.assertIn('GATES (moved: R1)', out)
+            # #1465: the headline counts the pair and the body-coverage text
+            # names the gate, so the report agrees with its own verdict
+            self.assertIn('silk_enclosed 1', out)
+            self.assertIn('wholly inside a CLOSED silk loop, which gates', out)
             # moved again but already inside on its baseline: the baseline's own
             moved2 = os.path.join(td, 'moved2.kicad_pcb')
             code, out = run(tool('place_pose.py'), moved, moved2,

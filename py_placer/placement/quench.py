@@ -121,7 +121,7 @@ class _TetherTerm(NamedTuple):
 # from the state that enforces it, so there is exactly ONE of it.
 # --------------------------------------------------------------------------
 
-def build_zone_spec(zones, parts, refs=None
+def build_zone_spec(zones, parts, refs=None, containers=()
                     ) -> Dict[str, Tuple[_IntentTerm, ...]]:
     """The pose-INVARIANT zone terms binding each ref: `{ref: (term, ...)}`.
 
@@ -133,6 +133,12 @@ def build_zone_spec(zones, parts, refs=None
 
     `refs` limits the walk to a subset -- the re-seat measures its scope, not
     the board. `None` means every part, which is what a `QuenchState` wants.
+
+    `containers` (`QuenchState.container_refs`) are no strangers to an
+    exclusive zone (#1463): a container's rect is a frame, which the
+    courtyard channel already does not grade as a body, so a locked
+    enclosure over a reserved region would otherwise fail every seed and
+    refuse its own declared pose.
 
     The KEEP-OUT half is deliberately NOT here: it is resolved live, per call,
     by `intent_spec` -- see that function for why freezing it breaks #701's
@@ -160,8 +166,8 @@ def build_zone_spec(zones, parts, refs=None
                     'zone_containment', _z['name'], tuple(_z['rect']),
                     _tol, _anchor, None,
                     tuple((_z.get('open_sides') or {}).get(_ref, ()))))
-            elif _z['exclusive'] and (not _z['side']
-                                      or _p.side == _z['side']):
+            elif _z['exclusive'] and _ref not in containers and (
+                    not _z['side'] or _p.side == _z['side']):
                 # `elif`, not `if`: `rule_zone_exclusive` skips members of the
                 # block that owns the zone. Membership and the side filter are
                 # both pose-invariant, so the set of rects a stranger must
@@ -174,7 +180,7 @@ def build_zone_spec(zones, parts, refs=None
     return spec
 
 
-def exclusive_spec(zones, parts, refs=None
+def exclusive_spec(zones, parts, refs=None, containers=()
                    ) -> Dict[str, Tuple[_IntentTerm, ...]]:
     """The `zone_exclusive` slice of `build_zone_spec`, and NOTHING else (#797).
 
@@ -221,7 +227,7 @@ def exclusive_spec(zones, parts, refs=None
     zones = tuple(z for z in (zones or ())
                   if not z.get('exclusive')
                   or any(r in parts for r in (z.get('refs') or ())))
-    full = build_zone_spec(zones, parts, refs)
+    full = build_zone_spec(zones, parts, refs, containers)
     out: Dict[str, Tuple[_IntentTerm, ...]] = {}
     for _ref, _terms in full.items():
         _keep = tuple(t for t in _terms if t.rule == 'zone_exclusive')
@@ -1362,6 +1368,39 @@ class QuenchState:
                 if _binding:
                     self.keepouts_for[_ref] = _binding
 
+        # Run-6 CONTAINER exemption: a courtyard covering most of the board
+        # is a FRAME (a module-outline footprint hosting the whole design),
+        # not a body -- measured on rp2350_fpga_eensy: U8's courtyard is
+        # 1.13x the board area and the courtyard-hard gate refused EVERY
+        # pose on the board (13 unrepairable, 0.00mm moved), while the next
+        # largest ratio anywhere in the 33-board corpus is 0.29 (a
+        # connector). Pairs with a container member skip the courtyard
+        # channels; the PAD layer (pads_ok) still applies in full -- the
+        # module's pads are real obstacles.
+        #
+        # fa10 P1 (#1184, #1212): WHO is a container is the grader's own
+        # decision (`legality.container_kinds`): a pin frame or a pad-less
+        # outline, never a big BODY and never a courtyard drawn over its
+        # frame (`FRAME_COURTYARD_COVER`). Area alone called One-Air-Max's
+        # 18650 holder a frame and the seed put DC1 wholly inside it, while
+        # check_assembly gated the pair. A pin
+        # frame's PINS still bind: `_pin_conflict_at`, the grader's
+        # `pin_hits`, refuses a part on one (KiCad's pth_inside_courtyard).
+        #
+        # Classified BEFORE the declared zones below, because a container is
+        # no stranger to an exclusive zone either (#1463): its frame rect is
+        # not a body there any more than in the courtyard channel.
+        try:
+            _lbs = legality.part_local_bounds(pcb_data, pcb_file)
+            _kinds = legality.container_kinds(pcb_data, _lbs)
+        except Exception:                                    # noqa: BLE001
+            _lbs, _kinds = {}, {}
+        self.container_kinds = {r: k for r, k in _kinds.items()
+                                if r in self.parts}
+        self.container_refs = set(self.container_kinds)
+        self.pin_frame_refs = {r for r, k in self.container_kinds.items()
+                               if k == 'pin_frame'}
+
         # --- #702 declared claims, resolved ONCE per state ------------------
         # The zone half is built by the free `build_zone_spec` (#698), the one
         # construction of which parts a block binds.
@@ -1372,7 +1411,7 @@ class QuenchState:
         # bool load and one branch.
         self.intent_zones = tuple(intent_zones or ())
         self._intent_spec: Dict[str, Tuple[_IntentTerm, ...]] = build_zone_spec(
-            self.intent_zones, self.parts)
+            self.intent_zones, self.parts, containers=self.container_refs)
         self._intent_active = bool(self._intent_spec or self.keepouts_for)
 
         # --- #797 declared EXCLUSIVE zones, for the SEAT predicate ----------
@@ -1395,39 +1434,12 @@ class QuenchState:
         # that emptiness, so the channel is inert unless asked for.
         self.exclusive_zones = tuple(exclusive_zones or ())
         self.exclusive_for: Dict[str, Tuple[_IntentTerm, ...]] = exclusive_spec(
-            self.exclusive_zones, self.parts)
+            self.exclusive_zones, self.parts, containers=self.container_refs)
         # ref -> the incumbent pose's term vector. Cleared beside
         # `_inc_violation` on every move, for the same reason. Never computed
         # on a compliant board: `intent_ok` returns on its absolute branch.
         self._inc_intent: Dict[str, Tuple[float, ...]] = {}
 
-        # Run-6 CONTAINER exemption: a courtyard covering most of the board
-        # is a FRAME (a module-outline footprint hosting the whole design),
-        # not a body -- measured on rp2350_fpga_eensy: U8's courtyard is
-        # 1.13x the board area and the courtyard-hard gate refused EVERY
-        # pose on the board (13 unrepairable, 0.00mm moved), while the next
-        # largest ratio anywhere in the 33-board corpus is 0.29 (a
-        # connector). Pairs with a container member skip the courtyard
-        # channels; the PAD layer (pads_ok) still applies in full -- the
-        # module's pads are real obstacles.
-        #
-        # fa10 P1 (#1184, #1212): WHO is a container is the grader's own
-        # decision (`legality.container_kinds`): a pin frame or a pad-less
-        # outline, never a big BODY and never a drawn courtyard. Area alone
-        # called One-Air-Max's 18650 holder a frame and the seed put DC1
-        # wholly inside it, while check_assembly gated the pair. A pin
-        # frame's PINS still bind: `_pin_conflict_at`, the grader's
-        # `pin_hits`, refuses a part on one (KiCad's pth_inside_courtyard).
-        try:
-            _kinds = legality.container_kinds(
-                pcb_data, legality.part_local_bounds(pcb_data, pcb_file))
-        except Exception:                                    # noqa: BLE001
-            _kinds = {}
-        self.container_kinds = {r: k for r, k in _kinds.items()
-                                if r in self.parts}
-        self.container_refs = set(self.container_kinds)
-        self.pin_frame_refs = {r for r, k in self.container_kinds.items()
-                               if k == 'pin_frame'}
         # #1443: what fits under what, read off the parts' 3D models. A
         # pair with a COVER in it (a part with room under it) whose heights
         # are both known is judged on the heights (`_height_pair`), its own
@@ -1460,6 +1472,13 @@ class QuenchState:
                   f"body): " + ', '.join(
                       f"{r} ({k})"
                       for r, k in sorted(self.container_kinds.items())))
+        # #1465: what a drawn courtyard on a container-sized part decided,
+        # either way, so neither a placeholder that keeps the frame nor a
+        # real one that removes it is silent.
+        for _note in legality.container_courtyard_notes(
+                pcb_data, {r: lb for r, lb in _lbs.items()
+                           if r in self.parts}):
+            print(f"  {_note}")
 
         # --- pad + drill legality (gate currency; see placement/legality.py).
         # pose_of/seed_of read the live _Part records, so the context follows
@@ -3031,9 +3050,17 @@ class QuenchState:
         `CONTAINMENT_FRAC`, the checker's predicate; marker and container
         parts are exempt, as in the checker's gate. The body-less set is the
         checker's own (`_bodyless_refs`); the covering body is read from .Fab
-        only, which is still the checker's gate, since a pair whose body
-        came from silk never gates. Rect broad phase first, so a board with
-        no body-less part pays a set lookup."""
+        only. A silk-drawn body gates in the checker one way, as a CLOSED
+        silk loop round another part's pad copper (#1401), and this test
+        does not price it: the seat already keeps every part off a
+        neighbour's seat rect, which holds the whole loop for a part that
+        draws no courtyard (its estimated courtyard is its silk united with
+        its pads), and a container's loop never gates (`container_class`,
+        exempt in the checker). Only a loop reaching past a DRAWN courtyard
+        is left: 6 of the 93 closed silk loops on the tracked boards do
+        (#1465), the largest by a 0.15 mm2 sliver, which holds no part's
+        pads. Rect broad phase first, so a board with no body-less part pays
+        a set lookup."""
         bodyless = self._bodyless_refs()
         if not bodyless:
             return False

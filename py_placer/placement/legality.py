@@ -56,7 +56,9 @@ BOARD_TOL = 1e-9
 # fa10 human boards: U8 'pin_frame', watchy REF** 'outline', nothing else.
 # An outline's courtyard pairs are waived `container_class`; a pin frame's
 # rect pairs are dropped and its HOLES graded (`pin_in_courtyard`); the pad
-# layer applies in full to both.
+# layer applies in full to both. Neither is a stranger to an exclusive zone
+# (#1463, `floorplan.rule_zone_exclusive` and the seat's
+# `quench.build_zone_spec`).
 CONTAINER_RATIO = 0.5
 
 BOTH_SIDES = frozenset(('F', 'B'))
@@ -746,11 +748,36 @@ def assembly_census(pcb_data) -> Dict:
 #:                   pad centre inside its box inset by FRAME_BAND_FRAC of the
 #:                   shorter side: a ring of pins, hollow inside.
 #:
-#: and never a part whose COURTYARD is drawn: that is the designer's keep-out,
-#: and KiCad grades it as one. The two thresholds rest on two parts (U8 at
-#: 1.0 drilled, BAT1 at 0.14) and are pinned as a change detector.
+#: and never a part whose COURTYARD covers its frame: that is the designer's
+#: keep-out, and KiCad grades it as one. The two thresholds rest on two parts
+#: (U8 at 1.0 drilled, BAT1 at 0.14) and are pinned as a change detector.
 FRAME_DRILLED_FRAC = 0.5
 FRAME_BAND_FRAC = 0.2
+
+#: #1464 / #1465: a drawn courtyard makes a container-sized part a BODY only
+#: when it covers the part's interior -- its area (the drawn islands, united)
+#: at least this fraction of the occupancy box the container test reads
+#: (`courtyard_cover`). Below it the courtyard keeps out something other than
+#: the frame, and the frame stays a frame. The cases it separates: a body's
+#: courtyard drawn round the body covers most of its box (1.0 for a
+#: rectangle, 0.79 for a circle); an enclosure's four rings round its posts cover 6.2% of its 55 x 45 mm frame, and a 0.2 mm placeholder square
+#: at its corner 0.002%. Half sits between the two. No container-sized part
+#: on the tracked corpus draws a courtyard at all, so the threshold changes
+#: no classification there.
+FRAME_COURTYARD_COVER = 0.5
+
+
+def courtyard_cover(court_shape, local) -> Optional[float]:
+    """The fraction of the LOCAL occupancy box `local` a drawn courtyard
+    `court_shape` (its outlines, united) covers, or None when no courtyard
+    shape was read. The measurement `FRAME_COURTYARD_COVER` judges."""
+    if court_shape is None or local is None:
+        return None
+    x0, y0, x1, y1 = local
+    area = (x1 - x0) * (y1 - y0)
+    if area <= 0:
+        return None
+    return min(1.0, float(court_shape.area) / area)
 
 
 def container_kinds(pcb_data, local_bounds) -> Dict[str, str]:
@@ -760,13 +787,47 @@ def container_kinds(pcb_data, local_bounds) -> Dict[str, str]:
     `FRAME_DRILLED_FRAC` for the rule and the measurements behind it."""
     return {ref: k for ref, lb in sorted(local_bounds.items())
             for k in (_container_kind(pcb_data, ref, lb.local, lb.source,
-                                      lb.synthetic),) if k}
+                                      lb.synthetic, lb.court_cover),) if k}
 
 
-def _container_kind(pcb_data, ref, local, source, synthetic):
+def container_courtyard_notes(pcb_data, local_bounds) -> List[str]:
+    """One line per container-sized part that DRAWS a courtyard, naming what
+    the courtyard decided (#1465): read as a frame because it covers little
+    of the frame (`FRAME_COURTYARD_COVER`), or as a body because it covers
+    it. Printed beside the container line, so a placeholder courtyard that
+    keeps a container -- or a real one that removes it -- is named before
+    anything is placed. Empty on a board with no such part."""
+    from placement.body import SOURCE_COURTYARD
+    bb = getattr(getattr(pcb_data, 'board_info', None), 'board_bounds', None)
+    if not bb:
+        return []
+    barea = max(1e-9, (bb[2] - bb[0]) * (bb[3] - bb[1]))
+    out = []
+    for ref, lb in sorted(local_bounds.items()):
+        if lb.source != SOURCE_COURTYARD or lb.court_cover is None:
+            continue
+        x0, y0, x1, y1 = lb.local
+        if (x1 - x0) * (y1 - y0) < CONTAINER_RATIO * barea:
+            continue
+        kind = _container_kind(pcb_data, ref, lb.local, lb.source,
+                               lb.synthetic, lb.court_cover)
+        out.append(f"{ref}: drawn courtyard covers {lb.court_cover:.1%} of "
+                   f"its frame -- "
+                   + (f"read as a frame ({kind}), not a body"
+                      if kind else
+                      "read as a body" if lb.court_cover
+                      >= FRAME_COURTYARD_COVER else
+                      "too little to make it a body, but it is no frame "
+                      "either (its pads are not a ring of pins)"))
+    return out
+
+
+def _container_kind(pcb_data, ref, local, source, synthetic,
+                    court_cover=None):
     """The one decision behind `container_kinds` and `container_refs`:
     'outline', 'pin_frame' or None for one part, from its LOCAL occupancy
-    box, its occupancy source and its pads."""
+    box, its occupancy source, the share of that box its drawn courtyard
+    covers (`courtyard_cover`) and its pads."""
     from placement.body import SOURCE_COURTYARD
     bb = getattr(getattr(pcb_data, 'board_info', None), 'board_bounds', None)
     if not bb or local is None:
@@ -775,7 +836,10 @@ def _container_kind(pcb_data, ref, local, source, synthetic):
     x0, y0, x1, y1 = local
     if (x1 - x0) * (y1 - y0) < CONTAINER_RATIO * barea:
         return None
-    if source == SOURCE_COURTYARD or synthetic:
+    if synthetic:
+        return None
+    if source == SOURCE_COURTYARD and (
+            court_cover is None or court_cover >= FRAME_COURTYARD_COVER):
         return None
     fp = (pcb_data.footprints or {}).get(ref)
     if fp is None:
@@ -808,7 +872,7 @@ def container_refs(pcb_data, graded=None, pcb_file: Optional[str] = None
     if graded is not None and all(g.local is not None for g in graded):
         return {g.ref for g in graded
                 if _container_kind(pcb_data, g.ref, g.local, g.source,
-                                   g.synthetic)}
+                                   g.synthetic, g.court_cover)}
     try:
         lbs = part_local_bounds(pcb_data, pcb_file)
     except Exception:                                        # noqa: BLE001
@@ -1423,6 +1487,8 @@ class GradedPart(NamedTuple):
     # consumer can ask a pose-independent question -- `container_refs` --
     # without reading the board again. None on a generator's own record.
     local: object = None
+    # #1464: `LocalBounds.court_cover`, for the same question.
+    court_cover: Optional[float] = None
 
     @property
     def sides(self) -> frozenset:
@@ -1911,6 +1977,11 @@ class LocalBounds(NamedTuple):
     # (`body.fab_cannot_be_body`). Appended LAST for the `_fields` reason
     # `source` records above.
     fab_rejected: bool = False
+    # #1464. The share of `local` the drawn courtyard covers
+    # (`courtyard_cover`), None when the courtyard rung did not answer: what
+    # decides whether a container-sized part with a courtyard is a frame
+    # (`FRAME_COURTYARD_COVER`). Appended last, as above.
+    court_cover: Optional[float] = None
 
 
 def part_local_bounds(pcb_data, pcb_file: Optional[str] = None
@@ -1999,7 +2070,10 @@ def _part_local_bounds_and_bodies(pcb_data, pcb_file: Optional[str] = None):
                                has_tht=has_tht, synthetic=synthetic,
                                from_courtyard=(source == SOURCE_COURTYARD),
                                source=source, silk_rejected=silk_rejected,
-                               fab_rejected=fab_rejected)
+                               fab_rejected=fab_rejected,
+                               court_cover=(courtyard_cover(
+                                   geom.court_shape_local, local)
+                                   if source == SOURCE_COURTYARD else None))
     return out, bodies
 
 
@@ -2066,7 +2140,8 @@ def graded_parts_from_file(pcb_data, pcb_file: Optional[str] = None
                               tht_rect=tht, has_tht=lb.has_tht,
                               synthetic=lb.synthetic, source=lb.source,
                               poly=occupancy_shape(fp, lb, bodies.get(ref)),
-                              local=tuple(lb.local)))
+                              local=tuple(lb.local),
+                              court_cover=lb.court_cover))
     return out
 
 
@@ -2784,7 +2859,8 @@ class CourtyardCensus:
                 poly = None
         gp = GradedPart(ref=ref, side=lb.side, rect=rect, tht_rect=tht,
                         has_tht=lb.has_tht, synthetic=lb.synthetic,
-                        source=lb.source, poly=poly, local=tuple(lb.local))
+                        source=lb.source, poly=poly, local=tuple(lb.local),
+                        court_cover=lb.court_cover)
         self._parts[key] = gp
         return gp
 

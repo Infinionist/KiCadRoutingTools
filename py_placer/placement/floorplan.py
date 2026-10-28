@@ -5118,7 +5118,14 @@ def rule_assembly_side(ctx) -> Iterator[Violation]:
 def rule_zone_exclusive(ctx) -> Iterator[Violation]:
     """An exclusive zone is real estate reserved for its block, so a stranger
     inside it is the finding. This is what makes "keep this area clear for the
-    RF section" checkable rather than aspirational."""
+    RF section" checkable rather than aspirational.
+
+    A CONTAINER is no stranger (#1463): its rect is a frame other parts sit
+    inside by design, which the courtyard channel and `_ctx_overlap_exact`
+    already exempt, and so does the seat gate (`quench.build_zone_spec`).
+    Graded here, a locked enclosure over a reserved region failed every seed
+    and no placement could fix it."""
+    cont = set(getattr(ctx.state, 'container_refs', ()) or ())
     for z in ctx.intent.blocks:
         if z.rect is None or not z.exclusive:
             continue
@@ -5138,7 +5145,7 @@ def rule_zone_exclusive(ctx) -> Iterator[Violation]:
         if not (members & set(ctx.parts)):
             continue
         for ref, part in sorted(ctx.parts.items()):
-            if ref in members:
+            if ref in members or ref in cont:
                 continue
             if z.side and part.side != z.side:
                 continue
@@ -7533,6 +7540,9 @@ _NON_RULE_SEVERITIES = frozenset({
     'plan_fixed_outside_zone', 'plan_zone_overfull', 'plan_zone_crowded',
     'plan_edge_overfull', 'plan_edge_crowded', 'plan_board_overfull',
     'plan_board_crowded',
+    # #1463: a FIXED stranger (a file lock, or a declared pose) already
+    # inside an exclusive zone, which every seed then carries.
+    'plan_fixed_in_exclusive_zone',
     # #1054: two exact declarations that the fixed-pose check's own
     # courtyard/pad/hole geometry says cannot both be seated.
     'plan_fixed_pose_conflict',
@@ -8574,7 +8584,8 @@ def exclusive_unsatisfiable(intent: Intent, blocks, pcb_data,
             if not (owners & set(state.parts)):
                 continue
             for ref in blocks.get(zb.name, ()):
-                if ref in owners:
+                # A container is no stranger (#1463), as in the grade.
+                if ref in owners or ref in state.container_refs:
                     continue
                 fp = (pcb_data.footprints or {}).get(ref)
                 sp = state.parts.get(ref)
@@ -8829,6 +8840,27 @@ def edge_oversubscribed_findings(intent: Intent, pcb_data, pcb_file: str, *,
     return out
 
 
+def _fixed_pose_grade_rect(part, f):
+    """`(rect, rot)`: the grade rect of quench part `part` at the DECLARED
+    pose of `fixed_poses[]` entry `f`, on its declared face. Stage 0 seats
+    the pose exactly, so this is where the part will be graded."""
+    rot = f.get('rot')
+    rot = (part.rot if rot is None or rot == 'unknown'
+           else float(rot) % 360.0)
+    fx_, fy_ = float(f['x']), float(f['y'])
+    side = f.get('side')
+    if side in ('F', 'B') and side != getattr(part, 'side', side):
+        # The DECLARED face: the part's courtyard mirrored the way the
+        # placement writer flips a footprint (local y -> -y, the caller's
+        # angle), then turned to the declared rotation -- not its outline on
+        # the face it is on now.
+        from .legality import rotate_local_bounds
+        b0 = part.grade_by_rot[0.0]
+        e = rotate_local_bounds(b0[0], -b0[3], b0[2], -b0[1], rot)
+        return (fx_ + e[0], fy_ + e[1], fx_ + e[2], fy_ + e[3]), rot
+    return part.grade_rect(fx_, fy_, rot), rot
+
+
 def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                group_sources: Sequence[str] = (),
                clearance: Optional[float] = None,
@@ -8857,6 +8889,10 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
       4c. `plan_fixed_pose_conflict` (ERROR): two declared exact poses whose
           courtyards, pads or holes conflict under the fixed-pose check's own
           geometry.
+      4d. `plan_fixed_in_exclusive_zone` (the zone's own severity unless
+          set, #1463): a FILE-locked non-member already inside an exclusive
+          zone, or a `fixed_poses[]` non-member declared inside one. Every
+          seed carries it; a container is no stranger.
       8. `plan_fixed_overlap` (WARN, per pair) / `plan_fixed_overlap_budget`
          (ERROR): two FILE-locked parts whose courtyards overlap on a shared
          face overlap in every placement. The grade counts courtyard overlap
@@ -8948,22 +8984,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
             part = state.parts.get(ref)
             if f is None or part is None:
                 continue
-            rot = f.get('rot')
-            rot = (part.rot if rot is None or rot == 'unknown'
-                   else float(rot) % 360.0)
-            fx_, fy_ = float(f['x']), float(f['y'])
-            side = f.get('side')
-            if side in ('F', 'B') and side != getattr(part, 'side', side):
-                # The DECLARED face: the part's courtyard mirrored the way
-                # the placement writer flips a footprint (local y -> -y, the
-                # caller's angle), then turned to the declared rotation --
-                # not its outline on the face it is on now.
-                from .legality import rotate_local_bounds
-                b0 = part.grade_by_rot[0.0]
-                e = rotate_local_bounds(b0[0], -b0[3], b0[2], -b0[1], rot)
-                r = (fx_ + e[0], fy_ + e[1], fx_ + e[2], fy_ + e[3])
-            else:
-                r = part.grade_rect(fx_, fy_, rot)
+            r, rot = _fixed_pose_grade_rect(part, f)
             if zone_fits_courtyard(z.rect, r, tol):
                 esc, _axis = _rect_escape(z.rect, r)
             else:
@@ -9008,6 +9029,59 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
             measured=conflict,
             expected={'conflicts': []}))
     measured['fixed_pose_conflicts'] = fixed_pose_conflicts
+
+    # 4d. #1463: a FIXED stranger already inside an exclusive zone -- a
+    #     FILE-locked non-member at its pose, or a `fixed_poses[]` non-member
+    #     at its declared one. The placer moves neither, so every seed
+    #     carries the grade's `zone_exclusive` finding; this names it before
+    #     the first is placed. A container is no stranger (the grade's own
+    #     exemption), and the grade's per-seed finding stays.
+    _cont = set(getattr(state, 'container_refs', ()) or ())
+    for v in rule_zone_exclusive(ctx):
+        if v.ref in ctx.locked and v.ref not in _fx:
+            out.append(Violation(
+                rule='plan_fixed_in_exclusive_zone',
+                severity=intent.severity.get('plan_fixed_in_exclusive_zone',
+                                             v.severity),
+                ref=v.ref, block=v.block,
+                message=(f"{v.ref} is LOCKED in the board and already inside "
+                         f"an exclusive zone: {v.message}. Nothing the "
+                         f"placer does will move it, so every seed carries "
+                         f"it -- make it a member of {v.block!r}, or move "
+                         f"the zone or the pose"),
+                measured=v.measured, expected=v.expected))
+    for z in intent.blocks:
+        if z.rect is None or not z.exclusive:
+            continue
+        members = set(blocks.get(z.name, ()))
+        if not (members & set(ctx.parts)):
+            continue                    # #797: the grade binds nobody here
+        for ref, f in sorted(_fx.items()):
+            part = state.parts.get(ref)
+            if part is None or ref in members or ref in _cont:
+                continue
+            side = f.get('side')
+            side = side if side in ('F', 'B') else getattr(part, 'side', None)
+            if z.side and side != z.side:
+                continue
+            r, rot = _fixed_pose_grade_rect(part, f)
+            area = legality.rect_overlap_area(r, z.rect)
+            if area <= legality.EPS:
+                continue
+            out.append(Violation(
+                rule='plan_fixed_in_exclusive_zone',
+                severity=intent.severity.get('plan_fixed_in_exclusive_zone',
+                                             ctx.sev('zone_exclusive')),
+                ref=ref, block=z.name,
+                message=(f"{ref}'s fixed pose ({float(f['x']):g}, "
+                         f"{float(f['y']):g}) intrudes {area:.2f}mm2 into "
+                         f"{z.name!r}'s exclusive zone, and {ref} is not a "
+                         f"member. The placer seats the pose exactly, so "
+                         f"every seed carries it -- make it a member, or "
+                         f"move the zone or the pose"),
+                measured={'overlap_area_mm2': round(area, 4),
+                          'pose': [float(f['x']), float(f['y']), rot]},
+                expected={'zone': list(z.rect), 'overlap_area_mm2': 0.0}))
 
     # 8. two FILE-locked parts overlapping -- in every placement there is.
     # #1162: on the reading the budget is graded in (check_assembly's drawn

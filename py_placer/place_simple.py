@@ -943,10 +943,13 @@ def main(argv=None):
                   f"({ux1 - ux0:.2f} x {uy1 - uy0:.2f} mm) at either quarter turn")
     # a part whose pad copper reaches past its drawn courtyard is priced on the
     # courtyard here, but check_assembly gates courtyard plus pad copper, so a
-    # neighbour can end over the pad (#1386)
+    # neighbour can end over the pad (#1386). Not a container's: check_assembly
+    # grades a container on its pins, never on courtyard plus pad copper
+    # (#1465), and the anneal prices those pins' copper.
     from placement.seeder import _pad_copper_overhang
     wide = {r: round(_pad_copper_overhang(state, r), 2) for r in sorted(state.parts)
-            if _pad_copper_overhang(state, r) > PAD_REACH_WARN_MM}
+            if r not in state.container_refs
+            and _pad_copper_overhang(state, r) > PAD_REACH_WARN_MM}
     if wide:
         print("  WARNING: pad copper reaches past the drawn courtyard: " + ', '.join(
             f"{r} {v:.2f} mm" + (' (locked)' if r not in movable else '')
