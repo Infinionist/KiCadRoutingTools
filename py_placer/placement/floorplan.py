@@ -10703,7 +10703,11 @@ def emit_intent(pcb_data, pcb_file: str, *,
                              'bounding box overlaps another block, so no zone '
                              'is claimed. Add one only if this really is a '
                              'contiguous area')
-        if len(sides) == 1:
+        # #1484: a pile's faces are staging too -- make_unplaced keeps each
+        # part's face, so an all-front block is pinned by nothing but where it
+        # was piled, and place_simple reads a block side as a DECLARED face
+        # (a flippable part in it could never flip). Kept for locked members.
+        if len(sides) == 1 and not (_pile and not set(members) <= _pile_locked):
             entry['side'] = sides.pop()
         blocks.append(entry)
 
@@ -11362,6 +11366,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
                            + '): staging poses are not claims'),
                 'withheld': ['edge_connectors[].edge read off a pose',
                              'blocks[].zone',
+                             'blocks[].side read off a face',
                              'legality_budget.oob_count'],
                 'refs_off_board': sorted(_pose_withheld),
                 'kept': ('KiCad-locked parts; a brief / mechanical.json '

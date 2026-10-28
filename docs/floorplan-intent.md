@@ -1797,8 +1797,12 @@ as a defect forever.
 its unlocked parts' poses are staging, not decisions, and every staged part
 is nearest SOME edge. So the emitter writes no edge read off such a pose
 (with `--declare-classes`, an edge receptacle keeps its class and band, with
-no `edge`), no zone, and no `overlap_area` or `oob_count` budget read off
-the staging (both go to `context.budget_withheld`).
+no `edge`), no zone, no block `side` read off its members' faces (#1484:
+`make_unplaced` keeps each part's face, so an all-front block would be pinned
+to the front by where it was piled, and `place_simple` reads a block side as a
+declared face, which a flippable part then never leaves), and no
+`overlap_area` or `oob_count` budget read off the staging (both go to
+`context.budget_withheld`).
 `context.pose_claims_withheld` says what was withheld and why, and lists the
 staged parts off the board. A KiCad-locked part's pose is a decision and
 keeps its claims, and a design brief or `mechanical.json` still merges after
