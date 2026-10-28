@@ -3522,6 +3522,8 @@ def grade_body_overlap(pcb_data, clearance: float,
             # #1443: where the parts' heights came from (`placement.heights`),
             # and the pairs they cleared or found too low
             'heights': _census.heights.note,
+            # ...and what they set aside or did not apply, one line each
+            'height_notices': list(_census.heights.notices),
             'height_clear': sum(1 for p in pairs if p.waiver == HEIGHT_WAIVER),
             # Parts whose footprint draws no .Fab outline at all, so the fab
             # channel CANNOT judge them (parser.extract_fab_sides skips them

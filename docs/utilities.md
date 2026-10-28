@@ -326,7 +326,9 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
   edge under a raised body with as little as 0.06 mm to spare, never through
   one. A part something reaches from above (a connector, a switch, a test
   point: `part_class` classes it, or its designator says so) never goes
-  under, and nothing goes inside its outline. Only a model's surfaces that
+  under, and nothing goes inside its outline (the run names a part whose
+  model's room that sets aside), unless the intent declares its
+  `heights[].underside_mm`. Only a model's surfaces that
   face the board say how much room is under it, so a model drawn without a
   bottom reads as solid, not hollow. A part whose height is unknown is judged on its occupancy alone, as
   before, and with no kicad-cli every height is unknown. The seat gate, the
