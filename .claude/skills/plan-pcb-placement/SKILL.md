@@ -236,7 +236,13 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
   into the IC's group. The rest of their clock group follows
   only when the crystal is that group's `anchor`; any other member stays in
   the clock group. Every intent `proximity` claim works the same way: the
-  claimed part joins its partner's group. The emitted intent carries these
+  claimed part joins its partner's group, and a claimed anchor takes its
+  whole group along; claims chain, so one row can fold several groups into
+  one. A group so emptied is dropped with its own `near`, `apart` and
+  `edge`: `check_groups` WARNs once for each, naming the group that absorbs
+  it and the hints lost, and `place_simple` says it once per run and in
+  `judge.json`'s `fold`. If the group should stay, claim a member that is
+  not its anchor, or say `near` instead of writing the row. The emitted intent carries these
   crystal claims as `proximity[]` rows (`context.source`
   `placement.crystals`, `max_mm` 8.1 and 2.2), graded as warnings; edit a
   row's `max_mm` to loosen or tighten that loop, or drop the `source` to
@@ -333,8 +339,10 @@ python3 -X utf8 py_tools/check_groups.py wk/<run>/fixed.kicad_pcb --groups wk/<r
 
 It reads the intent the way `place_simple` will: seated parts are fixed,
 and it names each claimed part that will follow its partner into the
-partner's group. The groups it lists and checks are the file as written, so
-a follower still shows in the group you gave it. Fix every ERROR (a part
+partner's group. Its group table shows the groups as `place_simple` will
+place them: a follower is listed in its partner's group, marked `(from
+<group>)`, and a group the claims empty reads `dissolved into <group>`. Its
+other checks (links, pulled parts, decaps) read the file as written. Fix every ERROR (a part
 in no group or in two, a ref not on the board) and
 read every WARN: a part with more signal links to another group may belong
 there; a decap "exempt" because no IC of its group carries its rail is right

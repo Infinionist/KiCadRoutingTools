@@ -684,17 +684,55 @@ def follower_roots(claims: Iterable[Dict]) -> Dict[str, str]:
     return roots
 
 
-def fold_followers(doc: Dict, claims: Iterable[Dict]) -> Tuple[Dict, Dict[str, Tuple[str, str]]]:
-    """`(doc, moved)`: the groups file with every `proximity[]` subject moved
-    into the group of the part its claims end at (`follower_roots`) -- and,
-    when a subject is its group's anchor, the rest of that group with it --
-    and {ref: (from group, to group)} for each part moved.
+def fold_groups(doc: Dict, rows: Iterable[Dict], templates: Iterable[Dict] = ()) -> Dict:
+    """The groups as place_simple places them: `{'doc', 'moved', 'dissolved'}`
+    from `fold_followers`, over the proximity claims `rows` (`claim_rows`)
+    and each `templates` member's claim at its chip. The one fold both
+    check_groups and place_simple report (#1467)."""
+    claims = list(rows) + [{'ref': m['ref'], 'near': t['anchor']}
+                           for t in templates for m in t['members']]
+    out, moved, dissolved = fold_followers(doc, claims)
+    return {'doc': out, 'moved': moved, 'dissolved': dissolved}
+
+
+def fold_text(fold: Dict) -> Tuple[Optional[str], List[str]]:
+    """`fold_groups`' result as text: `(moved, dissolved)`, the line naming
+    the parts moved (None when none is) and one line per dissolved group,
+    naming the group that absorbs it and the hints of its own it drops."""
+    moved = None
+    if fold['moved']:
+        moved = "parts that follow a claim into their partner's group: " + ', '.join(
+            f"{r} ({f} -> {t})" for r, (f, t) in sorted(fold['moved'].items()))
+    out = []
+    for d in fold['dissolved']:
+        parts = '; '.join(f"{', '.join(rs)} -> {t}" for t, rs in sorted(d['parts'].items()))
+        lost = '; '.join(f"{k} {', '.join(v) if isinstance(v, list) else v}"
+                         for k, v in sorted(d['lost'].items()))
+        out.append(f"group {d['group']} is dissolved into {d['into']} -- its parts follow "
+                   f"their claims, or its anchor's, out of it ({parts}) -- so "
+                   + (f"its own hints are dropped ({lost})" if lost else
+                      "it drops no hint of its own")
+                   + f" and hints naming it now name {d['into']}")
+    return moved, out
+
+
+def fold_followers(doc: Dict, claims: Iterable[Dict]
+                   ) -> Tuple[Dict, Dict[str, Tuple[str, str]], List[Dict]]:
+    """`(doc, moved, dissolved)`: the groups file with every `proximity[]`
+    subject moved into the group of the part its claims end at
+    (`follower_roots`) -- and, when a subject is its group's anchor, the rest
+    of that group with it -- {ref: (from group, to group)} for each part
+    moved, and a record per group the move empties.
 
     A follower is placed beside its partner, so it must share its
     partner's group: a crystal in a clock group of its own would be held
     apart from the IC whose pins it belongs at. A group the move empties is
     dropped, and the `near` and `apart` entries naming it are pointed at the
-    group that took its parts. The input is not modified."""
+    group that took its parts; its OWN `near`, `apart` and `edge` go with it.
+    Each `dissolved` record is {'group', 'into' (the group those entries now
+    name), 'parts' ({group: refs it took}), 'lost' ({hint: what it named},
+    leaving out a `near` group its parts went to)}. The input is not
+    modified."""
     roots = follower_roots(claims)
     where = group_of(doc)
     moved = {s: (where[s], where[r]) for s, r in roots.items()
@@ -710,7 +748,7 @@ def fold_followers(doc: Dict, claims: Iterable[Dict]) -> Tuple[Dict, Dict[str, T
                 if r not in moved and where.get(r) == g['name']:
                     moved[r] = (g['name'], moved[a][1])
     if not moved:
-        return doc, {}
+        return doc, {}, []
     out = json.loads(json.dumps(doc))
     for g in out['groups']:
         g['refs'] = [r for r in g['refs'] if r not in moved]
@@ -722,6 +760,22 @@ def fold_followers(doc: Dict, claims: Iterable[Dict]) -> Tuple[Dict, Dict[str, T
     for _s, (f, t) in sorted(moved.items()):
         if f in gone:
             took.setdefault(f, t)
+    dissolved = []
+    for g in doc['groups']:
+        if g['name'] not in gone:
+            continue
+        parts: Dict[str, List[str]] = {}
+        for r in g['refs']:
+            if r in moved:
+                parts.setdefault(moved[r][1], []).append(r)
+        # a `near` its parts now sit in is kept by the move; nothing else is
+        lost = {k: [n for n in g[k] if k == 'apart' or n not in parts]
+                for k in ('near', 'apart') if g.get(k)}
+        lost = {k: v for k, v in lost.items() if v}
+        if g.get('edge'):
+            lost['edge'] = g['edge']
+        dissolved.append({'group': g['name'], 'into': took.get(g['name']),
+                          'parts': parts, 'lost': lost})
     out['groups'] = [g for g in out['groups'] if g['refs']]
     for g in out['groups']:
         for key in ('near', 'apart'):
@@ -733,7 +787,7 @@ def fold_followers(doc: Dict, claims: Iterable[Dict]) -> Tuple[Dict, Dict[str, T
                     g[key] = names
                 else:
                     del g[key]
-    return out, moved
+    return out, moved, dissolved
 
 
 def tree_weight(n: int) -> float:

@@ -16,8 +16,11 @@ then the fewest such defects, each lot by lowest cost.
 `--seeds LIST` places the seeds it lists instead, and names the judged ones
 the same way.
 
-1. GROUPS: the groups file (`check_groups.py`), a crystal and its load caps
-   folded into their IC's group. A group is a set of parts kept together:
+1. GROUPS: the groups file (`check_groups.py`), each claimed part (a
+   crystal and its load caps, an intent `proximity[]` subject, a template
+   member) folded into its partner's group -- a whole group when its anchor
+   is claimed, and a group so emptied is dropped with its own hints, said
+   once per run and in judge.json's `fold`. A group is a set of parts kept together:
    the objective's group term keeps it in one piece, whatever shape the
    free space gives it. A group's `near`,
    `apart` and `edge` hints are soft terms of the objective; its `side`, and
@@ -176,7 +179,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
     from placement import floorplan as fp
     from placement.edge_seat import seat_state
     from placement.grouping import (BoardView, claim_rows, decap_conflicts,
-                                    fold_followers, group_of, is_ground)
+                                    fold_groups, fold_text, group_of, is_ground)
     from placement.simple import Model
     notes = []
     clearance, edge, _ = board_floor_knobs(board)
@@ -199,11 +202,10 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
     for t in tmpls:
         notes.append(f"template {t['anchor']}: {', '.join(m['ref'] for m in t['members'])} "
                      f"seated as drawn and carried with it")
-    doc, folded = fold_followers(doc, rows + [{'ref': m['ref'], 'near': t['anchor']}
-                                              for t in tmpls for m in t['members']])
-    if folded:
-        notes.append("in their IC's group: " + ', '.join(
-            f"{r} ({a} -> {b})" for r, (a, b) in sorted(folded.items())))
+    fold = fold_groups(doc, rows, tmpls)
+    doc = fold['doc']
+    moved_line, dissolved_lines = fold_text(fold)
+    notes += ([moved_line] if moved_line else []) + dissolved_lines
     groups = []
     for g in doc['groups']:
         members = [r for r in g['refs'] if r in state.parts]
@@ -285,6 +287,9 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
                   claim_limits=limits, claim_limit_weight=args.claim_limit_weight,
                   templates=tmpls, template_weight=args.template_weight)
     model.claim_arity = model_arity
+    # the fold, as data: the same in every seed, reported once per run (#1467)
+    model.fold = ({'moved': {r: list(ft) for r, ft in sorted(fold['moved'].items())},
+                   'dissolved': fold['dissolved']} if fold['moved'] else {})
     model.tmpl_tolerance = {t['anchor']: t.get('tolerance_mm') for t in tmpls}
     # the unlocked parts the intent declares on an edge, seated there; an
     # edge that cannot hold all its declared parts together seats the most
@@ -579,7 +584,9 @@ def _name_judged(a, seeds, summaries):
     boards (`judge` in judging order; `scattered`, `clustered`, `anchored` and
     `illegal` list the seeds by start and verdict, `refused` and
     `oversubscribed` the intent's own faults, the same in every seed and
-    each WARNED once, `floorplan` each seed's
+    each WARNED once, `fold` the parts that follow a claim into their
+    partner's group and the groups that emptied, likewise said once,
+    `floorplan` each seed's
     floorplan errors, `assembly` its check_assembly blocking count, and
     `baseline` the board the seeds were placed from, which judge_seeds hands
     quick_score so the fast route's score grades assembly the same way)."""
@@ -601,6 +608,10 @@ def _name_judged(a, seeds, summaries):
            # the claims priced over legs the grade does not read, likewise (#1426)
            'claim_arity': next((summaries[s]['claim_arity'] for s in seeds
                                 if summaries.get(s, {}).get('claim_arity')), []),
+           # the parts that follow a claim into their partner's group and the
+           # groups that emptied, likewise (#1467)
+           'fold': next((summaries[s]['fold'] for s in seeds
+                         if summaries.get(s, {}).get('fold')), {}),
            # each placed seed's check_floorplan --intent errors (None: not
            # graded), keyed by seed as JSON keys must be
            'floorplan': {str(s): (summaries[s].get('floorplan') or {}).get('errors')
@@ -640,6 +651,12 @@ def _name_judged(a, seeds, summaries):
                   f"check_floorplan --intent before keeping it")
     for rec in doc['claim_arity']:
         print(f"  WARNING: {arity_text(rec)}")
+    if doc['fold']:
+        from placement.grouping import fold_text
+        moved_line, dissolved_lines = fold_text(doc['fold'])
+        print(f"  NOTE: (every seed) {moved_line}")
+        for line in dissolved_lines:
+            print(f"  WARNING: {line}")
     for r, why in sorted(doc['refused'].items()):
         print(f"  WARNING: {r}'s declared pose is not legal, in every seed: "
               f"{'; '.join(why)}")
@@ -1187,7 +1204,7 @@ def main(argv=None):
               'oversubscribed': model.edge_oversubscribed, 'claim_arity': model.claim_arity,
               'floorplan': fp, 'assembly': asm, 'bga_field': bga_field,
               'decap_residual': resid, 'decap_repair': mended,
-              'unseated': model.edge_unseated, 'notes': notes,
+              'unseated': model.edge_unseated, 'notes': notes, 'fold': model.fold,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'hints_saturated': saturated, 'template_keepout': tk, 'pad_overhang': wide,
               'template_off': off, 'faces': face_report,
@@ -1197,7 +1214,7 @@ def main(argv=None):
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal', 'tight',
                                            'refused', 'oversubscribed', 'claim_arity', 'floorplan',
-                                           'assembly', 'bga_field', 'template_off', 'decap_residual', 'hints_saturated', 'estimate_fallback', 'faces', 'seconds')}))
+                                           'assembly', 'bga_field', 'template_off', 'decap_residual', 'hints_saturated', 'estimate_fallback', 'faces', 'fold', 'seconds')}))
     return 4 if illegal or refused or model.edge_oversubscribed else 0
 
 
