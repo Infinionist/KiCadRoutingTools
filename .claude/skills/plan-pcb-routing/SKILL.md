@@ -1303,7 +1303,8 @@ mechanically — do not eyeball it:
    ```python
    from fnmatch import fnmatchcase
    route_steps  = [["*", "!RF"]]              # each route.py step's --nets, in plan order
-   plane_nets   = {"GND", "+3V3"}             # the --nets you pass route_planes.py
+   plane_nets   = {"GND", "+3V3"}             # the nets route_planes.py pours: a split
+                                              # layer's "+3V3|+5V" is +3V3 and +5V
    impedance_se = {"RF"}                      # nets routed in Step 2b (route.py --impedance)
    power_nets   = {"GND", "+3V3"}             # the --power-nets on the route steps
    def claims(step, net):                     # the router's order: includes add, "!" removes

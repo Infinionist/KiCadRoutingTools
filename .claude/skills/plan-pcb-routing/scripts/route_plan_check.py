@@ -187,13 +187,23 @@ def r_starts_with_cd(p):
 def r_no_pipes(p):
     """SKILL.md :2640 -- no pipes. `manifest_to_plan` tokenises pipe segments
     into NET GLOBS, which is measured, not theoretical: a `2>&1 | tee x.log`
-    tail converts to `nets: ['*', '2>&1', '|', 'tee', 'x.log']`."""
+    tail converts to `nets: ['*', '2>&1', '|', 'tee', 'x.log']`.
+
+    A pipe is a `|` the shell reads, outside quotes (#1495): a quoted split
+    plane group, `--nets GND '+3V3|+5V'`, is one argument and no pipe."""
+    import shlex
     bad = []
     for n, ln in enumerate(p.lines, 1):
         s = ln.strip()
-        if not s or s.startswith('#'):
+        if not s or s.startswith('#') or '|' not in s:
             continue
-        if '|' in s:
+        try:
+            lx = shlex.shlex(s.rstrip('\\'), posix=True, punctuation_chars='|&;')
+            lx.whitespace_split = True
+            piped = any(set(t) <= {'|', '&'} and '|' in t for t in lx)
+        except ValueError:
+            piped = True            # unbalanced quotes: the shell's reading is unknown
+        if piped:
             bad.append(f'line {n} carries a pipe: {s[:70]!r}')
     return bad
 
@@ -443,8 +453,10 @@ def r_net_coverage_reconciles(p):
         impedance_se |= {n for n in _globs(argv, '--nets')
                          if not n.startswith('!')}
     plane_nets = set()
+    from plane_groups import plane_net_names
     for argv in pours:
-        plane_nets |= _globs(argv, '--nets')
+        # #1495: a split layer's quoted '|' group pours each of its nets
+        plane_nets |= set(plane_net_names(values(argv, '--nets')))
 
     bad = []
     orphans = set()

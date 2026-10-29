@@ -808,14 +808,21 @@ def parse_command(argv, cwd=None):
     elif action in ('route_planes', 'repair_planes'):
         layers = [str(l) for l in lists.get('--plane-layers', [])]
         net_names = [str(n) for n in nets]
+        # #1495: a split layer's quoted '|' group is ONE assignment of its
+        # nets on that layer -- the GUI plane tab knows no net called '+3V3|+5V'
+        _rd = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), 'py_router')
+        if _rd not in sys.path:
+            sys.path.insert(0, _rd)
+        from plane_groups import plane_net_names, split_plane_group
         if net_names and layers:
             step['assignments'] = [
-                {'nets': [n], 'layer': layers[min(k, len(layers) - 1)]}
+                {'nets': split_plane_group(n), 'layer': layers[min(k, len(layers) - 1)]}
                 for k, n in enumerate(net_names)]
         elif net_names and action == 'route_planes':
             # No --plane-layers (route_planes auto-detects zones): emit a
             # layer-less assignment; the GUI plane tab resolves the layer.
-            step['assignments'] = [{'nets': net_names, 'layer': ''}]
+            step['assignments'] = [{'nets': plane_net_names(net_names), 'layer': ''}]
         # repair_planes with no --plane-layers: emit NO assignments, so the
         # post-pass below inherits the preceding route_planes step's REAL
         # layers. route_disconnected_planes auto-detects zones on the CLI, but

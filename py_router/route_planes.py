@@ -4605,8 +4605,9 @@ Examples:
     plane_layers = []
     layer_nets = {}
 
+    from plane_groups import split_plane_group
     for net_arg, layer in zip(args.nets, args.plane_layers):
-        nets_on_layer = [n.strip() for n in net_arg.split('|')]
+        nets_on_layer = split_plane_group(net_arg)
         for net in nets_on_layer:
             net_names.append(net)
             plane_layers.append(layer)
@@ -4901,7 +4902,8 @@ Examples:
     import json as _json, clearance_ledger as _cl
     _summary = {
         "min_clearance_used": _cl.effective(args.clearance),
-        "plane_nets": sorted(set(args.nets)),
+        # #1495: a split layer's '|' group is its nets, not one name
+        "plane_nets": sorted(set(__import__('plane_groups').plane_net_names(args.nets))),
     }
     # `plane_nets` is a de-duplicated NAME list, and --nets/--plane-layers are
     # matched POSITIONALLY, so `--nets GND GND --plane-layers In1.Cu In2.Cu`
