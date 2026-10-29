@@ -390,23 +390,60 @@ _REFILL_MEMO_CAP = 8
 _REFILL_FAILED: set = set()
 
 
+#: The siblings a refill reads (#1494): the project's net classes and the
+#: .kicad_dru's custom rules both move a pour's clearance.
+_FILL_SIBLINGS = ('.kicad_pro', '.kicad_dru')
+
+
+def _effective_sibling(board_file: str, ext: str, project_from: str = None):
+    """The `ext` sibling a refill of `board_file` runs with: its own, else
+    `project_from`'s (a mid-chain board has none yet: the writeback runs after
+    the oracle, #338), else None."""
+    own = os.path.splitext(os.path.abspath(board_file))[0] + ext
+    if os.path.isfile(own):
+        return own
+    if project_from:
+        alt = os.path.splitext(os.path.abspath(project_from))[0] + ext
+        if os.path.isfile(alt):
+            return alt
+    return None
+
+
+def _stage_siblings(board_file: str, tmpdir: str, stem: str,
+                    project_from: str = None) -> None:
+    """Copy every `copy_board.SIBLING_EXTS` sibling of `board_file` (each
+    falling back to `project_from`'s) beside the staged board, so
+    `pcbnew.LoadBoard` builds its DRC engine with the board's custom rules
+    too: staged with the .kicad_pro alone, a pour pulled back only to the
+    zone or class clearance and shipped against a .kicad_dru it was never
+    filled to (#1494: 202 pad-to-zone errors under a 0.8 mm rule)."""
+    try:
+        from copy_board import SIBLING_EXTS
+    except Exception:                                        # noqa: BLE001
+        SIBLING_EXTS = _FILL_SIBLINGS
+    for ext in SIBLING_EXTS:
+        src = _effective_sibling(board_file, ext, project_from)
+        if src is not None:
+            shutil.copyfile(src, os.path.join(tmpdir, stem + ext))
+
+
 def _refill_memo_key(board_file: str, project_from: str = None):
     """Identity of everything a refill's result depends on: the board file's
-    bytes (path + mtime_ns + size as proxy) and the EFFECTIVE .kicad_pro
-    (the sibling, else project_from's -- netclass rules change the fill).
-    None = unkeyable (missing file); caller skips the memo."""
+    bytes (path + mtime_ns + size as proxy) and the EFFECTIVE .kicad_pro and
+    .kicad_dru (the sibling, else project_from's -- netclass rules and custom
+    rules both change the fill, #1494). None = unkeyable (missing file);
+    caller skips the memo."""
     try:
         bp = os.path.abspath(board_file)
         st = os.stat(bp)
         key = [bp, st.st_mtime_ns, st.st_size]
-        pro = os.path.splitext(bp)[0] + '.kicad_pro'
-        if not os.path.isfile(pro) and project_from:
-            pro = os.path.splitext(os.path.abspath(project_from))[0] + '.kicad_pro'
-        if os.path.isfile(pro):
-            pst = os.stat(pro)
-            key += [os.path.abspath(pro), pst.st_mtime_ns, pst.st_size]
-        else:
-            key += [None]
+        for ext in _FILL_SIBLINGS:
+            sib = _effective_sibling(bp, ext, project_from)
+            if sib is not None:
+                sst = os.stat(sib)
+                key += [sib, sst.st_mtime_ns, sst.st_size]
+            else:
+                key += [None]
         return tuple(key)
     except OSError:
         return None
@@ -529,13 +566,14 @@ def refill_islands_ex(board_file: str, timeout: int = EXACT_FILL_TIMEOUT,
     refill of `board_file`. The islands are None whenever `status.ok` is False,
     and the status says WHICH of the six causes it was.
 
-    The board is staged into a temp dir WITH its sibling .kicad_pro so the
-    refill runs at the project's real netclasses (a bare board refills at
-    stock rules and shrinks tight pours -- the phantom-divergence trap).
+    The board is staged into a temp dir WITH its siblings -- the .kicad_pro,
+    so the refill runs at the project's real netclasses (a bare board refills
+    at stock rules and shrinks tight pours -- the phantom-divergence trap),
+    and the .kicad_dru, whose custom rules move a pour too (#1494).
     Each (filled_polygon ...) block of the saved board is one connected
     island polygon (KiCad's fracture output), so island discovery is free.
 
-    MEMOIZED on (board bytes, effective .kicad_pro bytes) identity -- a
+    MEMOIZED on (board bytes, effective .kicad_pro and .kicad_dru) identity -- a
     refill is a pure function of those, and the plane-finalize pipeline
     (#562) refills the same unchanged file from several consumers
     (per-net fragility, the oracle's first round) at a pcbnew subprocess
@@ -563,15 +601,10 @@ def refill_islands_ex(board_file: str, timeout: int = EXACT_FILL_TIMEOUT,
         stem = os.path.splitext(os.path.basename(board_file))[0]
         staged = os.path.join(tmpdir, stem + '.kicad_pcb')
         shutil.copyfile(board_file, staged)
-        sib_pro = os.path.splitext(board_file)[0] + '.kicad_pro'
-        if not os.path.isfile(sib_pro) and project_from:
-            # Mid-chain boards have no sibling project yet (the writeback
-            # runs after the oracle, #338) -- stage the INPUT's project so
-            # the refill runs at the real netclasses, not stock rules.
-            sib_pro = os.path.splitext(project_from)[0] + '.kicad_pro'
-        if os.path.isfile(sib_pro):
-            shutil.copyfile(sib_pro, os.path.join(tmpdir,
-                                                  stem + '.kicad_pro'))
+        # Mid-chain boards have no sibling project yet (the writeback runs
+        # after the oracle, #338) -- the INPUT's project and rules are staged
+        # so the refill runs at the real netclasses and custom rules (#1494).
+        _stage_siblings(board_file, tmpdir, stem, project_from)
         script = os.path.join(tmpdir, 'refill.py')
         with open(script, 'w') as f:
             f.write(_REFILL_SCRIPT)
@@ -674,12 +707,7 @@ def write_filled_board(board_file: str, dst_file: str,
         stem = os.path.splitext(os.path.basename(board_file))[0]
         staged = os.path.join(tmpdir, stem + '.kicad_pcb')
         shutil.copyfile(board_file, staged)
-        sib_pro = os.path.splitext(board_file)[0] + '.kicad_pro'
-        if not os.path.isfile(sib_pro) and project_from:
-            sib_pro = os.path.splitext(project_from)[0] + '.kicad_pro'
-        if os.path.isfile(sib_pro):
-            shutil.copyfile(sib_pro, os.path.join(tmpdir,
-                                                  stem + '.kicad_pro'))
+        _stage_siblings(board_file, tmpdir, stem, project_from)     # #1494
         script = os.path.join(tmpdir, 'refill.py')
         with open(script, 'w') as f:
             f.write(_REFILL_SCRIPT)

@@ -231,8 +231,9 @@ def _fast_connectivity_project(board_file: str):
     still reports the ratsnest opens the oracle consumes.
 
     The staged project preserves the real board's design rules and net
-    classes (only severities are flipped), so `--refill-zones` produces the
-    same fill geometry -- the connectivity result is identical, just fast.
+    classes (only severities are flipped), and the board's .kicad_dru is
+    staged beside it (#1494), so `--refill-zones` produces the same fill
+    geometry -- the connectivity result is identical, just fast.
     When the board has no sibling .kicad_pro yet (mid-chain, before the
     project is written), a minimal ignore-only project is synthesized, which
     matches kicad-cli's own default-rule fill it would have used anyway.
@@ -261,6 +262,12 @@ def _fast_connectivity_project(board_file: str):
         shutil.copyfile(board_file, staged_pcb)
         with open(staged_pro, 'w', encoding='utf-8') as f:
             json.dump(proj, f, indent=2)
+        # #1494: the board's custom rules move the pour `--refill-zones`
+        # makes, so they are staged too, or the opens are read off a fill
+        # the board will not ship with
+        sib_dru = os.path.splitext(board_file)[0] + '.kicad_dru'
+        if os.path.isfile(sib_dru):
+            shutil.copyfile(sib_dru, os.path.join(tmpdir, stem + '.kicad_dru'))
         return staged_pcb, tmpdir
     except Exception:
         return board_file, None
