@@ -537,15 +537,23 @@ under a card, and a tall part can be placed there.
    (how far the body reaches from the connector's origin), `offset_mm` (the
    standoff's "off" when the card's centre line misses the connector's
    origin), `standoffs` (each `ref` with `length_mm`, the facts' distance
-   along), `removable` and `source` (the datasheets and figures). The
-   emitted intent then carries it with `min_reader` 15. **`removable`, case by case:** true when the body comes
+   along, and `off_mm` when it is off the centre line -- a module screwed
+   down at two far corners), `removable` and `source` (the datasheets and
+   figures). From the same drawings give `top_mm` (the body's own top, so a
+   card under a module is judged against it) and, for a card that goes in
+   at an angle (SO-DIMM, M.2), `insertion` (`angle_deg`, and `travel_mm`
+   when it slides in before it turns down). The emitted intent then carries
+   it with `min_reader` 15 (21 with any of these three). **`removable`, case by case:** true when the body comes
    off in service -- a card in its socket, a module on a connector it can be
    pulled from -- so a test point under it can still be probed with it out;
    false when it stays (soldered, glued, a fixed shield or one the enclosure
    holds down). Say which and why in the row's `source`.
-5. **Run check_floorplan again** (§3.4): no `cover` or `cover_unresolved`
-   warning. A `cover` warning names a standoff not where the row puts it:
-   fix the row, or move the standoff.
+5. **Run check_floorplan again** (§3.4): no `cover`, `cover_unresolved`
+   or `mountable` warning. A `cover` warning names a standoff not where the
+   row puts it: fix the row, or move the standoff. A `mountable` warning
+   names why a body cannot go on (a standoff off the board, a part too tall
+   under it, another body in its way); check_assembly prints the same per
+   cover, with the order the cards go in.
 
 `place_simple` then holds each standoff at its length from the connector.
 A standoff that cannot move (a locked boss, one at a declared pose) holds

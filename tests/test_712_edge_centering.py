@@ -440,8 +440,10 @@ def test_the_loader_refuses_every_malformed_along_edge_claim():
     # #1478: `rails[]`, supplies priced as rails whatever their fan-out. 19
     # since #1480: `replicate[].channels`, copies inside one sheet. 20 since
     # #1500: `heights[].under_cover`, a part reached from above judged
-    # under a cover by its declared height.
-    assert fp.READER_VERSION == 20, (
+    # under a cover by its declared height. 21 since #1504: a cover's
+    # `top_mm`, its `insertion` path and a standoff's `off_mm`, graded by
+    # `mountable`.
+    assert fp.READER_VERSION == 21, (
         f"{fp.READER_VERSION}: the field vocabulary grew. Re-state this "
         f"literal and say which field arrived, the way #712, #837, #902, "
         f"#893, #959 and #1051 did")

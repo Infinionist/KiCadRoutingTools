@@ -192,6 +192,7 @@ def main():
     # gating), and the refs whose edge it declares.
     body_edge_mm = None
     edge_claim_refs = ()
+    _intent = None
     if args.intent:
         try:
             from placement.floorplan import load_intent
@@ -370,6 +371,31 @@ def main():
     else:
         for n in g.get('height_notices') or ():
             print(f"  heights (#1443): {n}")
+    # #1504: whether each declared body can be mounted -- reported, never
+    # gating here; the floorplan grade's `mountable` rule is the channel an
+    # intent promotes
+    mount_rows = []
+    if _intent is not None and _intent.covers:
+        from placement.floorplan import mount_report
+        try:
+            mount_rows = mount_report(_intent, pcb, args.board)
+        except Exception as exc:                             # noqa: BLE001
+            print(f"  mountable (#1504): not measured ({type(exc).__name__}: {exc})")
+        for m in mount_rows:
+            if m.get('state') != 'measured':
+                print(f"  mountable (#1504): {m['connector']}: not checked -- {m.get('why')}")
+                continue
+            lr = m.get('least_room')
+            print(f"  mountable (#1504): {m['connector']} "
+                  f"{'YES' if m['mountable'] else 'NO'}"
+                  f"{' (removable)' if m['removable'] else ''}: "
+                  f"{len(m['standoffs'])} standoff(s), body {m['body_past_outline_mm']:g}mm "
+                  f"past the outline, {m['under']} part(s) under it"
+                  + (f", least room {lr['room_mm']:g}mm ({lr['ref']})" if lr else '')
+                  + (f"; goes in before {', '.join(m['before'])}" if m['before'] else '')
+                  + (f"; after {', '.join(m['after'])}" if m['after'] else ''))
+            for w in m['why'][:6]:
+                print(f"      {w}")
     if base_pile:
         print(f"  baseline {args.baseline} is a pile: its overlaps are staging, "
               f"not a baseline (#1103), so every advisory pair counts as new")
@@ -1148,6 +1174,8 @@ def main():
             'height_clear': g.get('height_clear', 0),
             'height_notices': list(g.get('height_notices') or ()),
             'height_pairs': [q._asdict() for q in g['pairs'] if q.kind == 'height'],
+            # #1504: whether each declared body can be mounted (report-only)
+            'mountable': mount_rows,
             'courtyard_advisory': sum(
                 1 for q in g['advisory_pairs'] if q.kind == 'courtyard'
                 and q not in g['courtyard_blocking_pairs']),

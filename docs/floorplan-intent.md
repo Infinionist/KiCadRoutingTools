@@ -157,8 +157,9 @@ suspect, suspect_reason, why
 | `rails[]` | `nets` (net-name globs, as `--nets` takes them), `why` (or `note` / `reason`), `context` (see "`rails[]`" below; needs `min_reader` 18) |
 | `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), or instead `channels` (copies inside one sheet: two or more lists of refs, the first the source, matched index for index; needs `min_reader` 19), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why` (or `note` / `reason`), `context`, `source` (see "`replicate[]`" below; needs `min_reader` 11) |
 | `templates[]` | `anchor` (the chip), `members` (each `ref`, `at` [dx, dy] mm and `rot`, a quarter turn, in the chip's own frame; `pads` and `note` as the fit wrote them), `tolerance_mm`, `kind` (`switching stage` or `rf front end`), `ground_return_mm`, `source`, `why` (or `note` / `reason`), `context`, and the fit-written `fitted` (see "`templates[]`" below; needs `min_reader` 13, and 14 with `kind` or `ground_return_mm`) |
-| `covers[]` | `connector`, `side` (`F`/`B`), `axis_deg` (a quarter turn in the connector's frame), `width_mm`, `underside_mm`, `length_mm`, `offset_mm`, `standoffs`, `removable`, `source`, `why` (or `note` / `reason`), `context` (see "`covers[]` and `heights[]`" below; needs `min_reader` 15) |
-| `covers[].standoffs[]` | `ref`, `length_mm`, `rot` |
+| `covers[]` | `connector`, `side` (`F`/`B`), `axis_deg` (a quarter turn in the connector's frame), `width_mm`, `underside_mm`, `length_mm`, `offset_mm`, `standoffs`, `removable`, `source`, `top_mm`, `insertion` (these two need `min_reader` 21), `why` (or `note` / `reason`), `context` (see "`covers[]` and `heights[]`" below; needs `min_reader` 15) |
+| `covers[].standoffs[]` | `ref`, `length_mm`, `rot`, `off_mm` (needs `min_reader` 21) |
+| `covers[].insertion` | `angle_deg`, `travel_mm` (needs `min_reader` 21) |
 | `heights[]` | `ref`, `height_mm`, `underside_mm`, `under_cover` (needs `min_reader` 20), `source`, `why` (or `note` / `reason`), `context` (needs `min_reader` 15) |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why` (or `note` / `reason`), `context`, and the compiler-written `source` (see "Arrays" below; needs `min_reader` 7) |
 | `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"`, `"mechanical"` or `"derived_default"`), `why` (or `note` / `reason`), `context`, `accept_courtyard_overlap` (a list of literal refs) (see "Fixed poses" below; needs `min_reader` 7) |
@@ -327,6 +328,7 @@ Each `min_reader` level and the keys it covers:
 | 18 | `rails[]` |
 | 19 | `replicate[].channels` |
 | 20 | `heights[].under_cover` |
+| 21 | `covers[].top_mm`, `covers[].insertion`, `covers[].standoffs[].off_mm` |
 
 The emitter and the design-brief compiler stamp the level their output needs.
 
@@ -1375,7 +1377,40 @@ every such standoff at its length, the ones `place_simple`'s declared-pose
 check refuses are dropped, and seed `k` seats the connector at legal pose
 `k mod n` and holds it there, so the seeds between them try every turn. With
 none legal it refuses before placing, naming the cover. A part may not be
-both a cover's and a template's. `place_pose --intent` judges a hand move
+both a cover's and a template's.
+
+**Mounting a body (#1504).** Three more keys say what a module's or card's
+drawing gives, and one rule grades whether it can go on:
+
+- `standoffs[].off_mm`: a standoff's offset to the left of the body's
+  centre line (a module screwed down at two far corners, `+16` and `-16`).
+  The `cover` rule measures the standoff against it, and a fixed standoff
+  seats the connector by it (#1507).
+- `top_mm`: the body's own top over the face. Two declared bodies that
+  overlap in plan must clear one another by `MARGIN_MM` (0.5) -- an M.2
+  card under an SO-DIMM module fits when the card's top is that far under
+  the module's underside -- and a body whose top is undeclared never clears
+  one over it. The pair is a `height` pair, priced by `place_simple`,
+  refused by `place_pose` and named by check_assembly, as a part under a
+  body is.
+- `insertion`: `{angle_deg, travel_mm?}`, the card going in at that angle
+  for `travel_mm` and then turning down about the connector to flat
+  (`heights._sweep`, sampled). Inside the body's length the path never
+  comes lower than the body, so only a part PAST its far end can be in its
+  way: one taller than the path's underside there is refused. A body over
+  the path is in its way unless it stands wholly under its lowest point or
+  wholly over its highest (`top_mm` needed for the latter): a fixed one is
+  a refused pair, a removable one only orders the two (this card goes in
+  first, `heights.insertion_order`).
+
+The `mountable` rule (WARN unless `severity` promotes it, armed by any
+`covers[]`) reads `floorplan.mount_report` per cover: each standoff on the
+board and at its place, how far the body reaches past the outline (reported,
+not judged: a module may overhang by design), the parts under it with the
+least room, every pair the heights refuse with it, and the order the paths
+ask; two bodies that each block the other's way in cannot both be mounted.
+check_assembly prints the same rows (`mountable (#1504): J1 YES ...`) and
+carries them in its JSON, report-only. `place_pose --intent` judges a hand move
 the same way: a move that newly puts a part under a declared body where it
 does not fit is refused (`height_pairs new: C2/J1`, exit 4), and `--snap`
 ranks only poses clear of it.

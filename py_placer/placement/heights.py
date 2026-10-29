@@ -73,7 +73,7 @@ import re
 import struct
 import subprocess
 import tempfile
-from typing import Dict, Optional, Tuple
+from typing import Dict, NamedTuple, Optional, Tuple
 
 #: the room a part needs between its top and a cover's underside to be
 #: ADMITTED under it, mm
@@ -134,6 +134,22 @@ def ipc_height(name: str) -> Optional[float]:
     return h if 0.05 <= h <= 30.0 else None
 
 
+class Decl(NamedTuple):
+    """A DECLARED body (`covers[]`), in its connector's local frame: its
+    `rect`, its `under`side (mm over the face), the refs it does not judge
+    (`skip`: its standoffs and pad-less footprints), the test points judged
+    by height under it when it is removable (`probed`), and since #1504 its
+    `top` (None: undeclared), whether it is `removable`, and the `sweep` it
+    goes in by (`_sweep`, None without an `insertion`)."""
+    rect: Tuple[float, float, float, float]
+    under: float
+    skip: frozenset
+    probed: frozenset
+    top: Optional[float] = None
+    removable: bool = False
+    sweep: Optional[dict] = None
+
+
 class Cover:
     """One part's room-under raster, in its footprint's LOCAL frame (the frame
     its courtyard and pads are stored in; board = pose + R(-rot) local).
@@ -170,10 +186,12 @@ class Cover:
         else:
             self.lift_box = None
         if decl is not None:
-            r = decl[0]
-            lb = self.lift_box or r
-            self.lift_box = (min(lb[0], r[0]), min(lb[1], r[1]),
-                             max(lb[2], r[2]), max(lb[3], r[3]))
+            for r in (decl[0], _sweep_rect(getattr(decl, 'sweep', None))):
+                if r is None:
+                    continue
+                lb = self.lift_box or r
+                self.lift_box = (min(lb[0], r[0]), min(lb[1], r[1]),
+                                 max(lb[2], r[2]), max(lb[3], r[3]))
 
     def _window(self, box):
         """The cell index ranges over local `box`, clipped, and whether the box
@@ -381,7 +399,19 @@ class Heights:
                     meet += cov.declared_area(
                         box, math.inf if td is None else td,
                         self._body_in(y, py, px) if bb is not None else None)
+                # #1504: past the body's far end, the path the card goes in
+                # by passes over the part, and must clear it too
+                sw = getattr(cov.decl, 'sweep', None)
+                if sw is not None:
+                    meet += sweep_part_area(sw, box, ty)
             over = max(over, meet)
+        # #1504: two declared bodies over one another, and each one's way in
+        # under the other
+        bb_over = body_pair_area(ca.decl if ca else None, pose_a,
+                                 cb.decl if cb else None, pose_b)
+        if bb_over is not None:
+            judged = True
+            over = max(over, bb_over)
         if not judged:
             return None
         return cleared, over, ins or 0.0
@@ -484,10 +514,190 @@ def cover_rect(row) -> Tuple[float, float, float, float]:
 
 def standoff_at(row, standoff) -> Tuple[float, float]:
     """Where a `covers[]` row puts one of its standoffs, connector's local
-    frame: `length_mm` along the axis, on the centre line."""
+    frame: `length_mm` along the axis, `off_mm` (default 0, #1504) to the
+    left of the centre line."""
     (ux, uy), (vx, vy) = _axis(row)
-    t, w = float(standoff['length_mm']), float(row.get('offset_mm') or 0.0)
+    t = float(standoff['length_mm'])
+    w = float(row.get('offset_mm') or 0.0) + float(standoff.get('off_mm') or 0.0)
     return t * ux + w * vx, t * uy + w * vy
+
+
+def cover_length(row) -> float:
+    """How far a `covers[]` row's body reaches along its axis."""
+    return float(row['length_mm'] if row.get('length_mm') is not None
+                 else max(s['length_mm'] for s in row['standoffs']))
+
+
+#: the insertion path is sampled at this many angles from flat to the
+#: insertion angle, and this many steps of the slide in at that angle
+_SWEEP_TURNS = 24
+_SWEEP_SLIDES = 8
+
+
+def _sweep(row) -> Optional[dict]:
+    """The path a declared body goes in by (#1504), or None without an
+    `insertion`: the card slides in at `angle_deg` for `travel_mm`, then
+    turns down about the connector to flat. Each pose is a line through the
+    pivot (the connector's origin, at the underside): at a distance `t`
+    along the axis its underside is `underside + t tan(angle)` and its top
+    `top_mm` above that over `cos(angle)`, for `t` from `s cos(angle)` to
+    `(s + length) cos(angle)` (`s` the slide still to go). Lateral extent
+    stays the body's."""
+    ins = row.get('insertion')
+    if not ins:
+        return None
+    (ux, uy), (vx, vy) = _axis(row)
+    th = math.radians(float(ins['angle_deg']))
+    tr = float(ins.get('travel_mm') or 0.0)
+    poses = [(th * k / _SWEEP_TURNS, 0.0) for k in range(_SWEEP_TURNS + 1)]
+    if tr > 0:
+        poses += [(th, tr * k / _SWEEP_SLIDES) for k in range(1, _SWEEP_SLIDES + 1)]
+    length = cover_length(row)
+    return {'u': (ux, uy), 'v': (vx, vy), 'off': float(row.get('offset_mm') or 0.0),
+            'half': float(row['width_mm']) / 2.0, 'length': length,
+            'under': float(row['underside_mm']), 'top': row.get('top_mm'),
+            'poses': poses,
+            'reach': max((s + length) * math.cos(p) for p, s in poses)}
+
+
+def sweep_part_area(sw, box, top) -> float:
+    """mm^2 of a part (its local occupancy `box`, `top` mm tall, None or inf
+    when unknown or reached from above) past a body's far end that the body's
+    insertion path `sw` passes over too low to clear (#1504). Inside the
+    body's length the path never comes lower than the body itself, which
+    `declared_area` judges, so only the part past it is read here."""
+    sp = _span(sw, box)
+    if sp is None:
+        return 0.0
+    (t0, t1), lat = sp
+    # strictly past the body: a part that only touches its far end is the
+    # body's question (`declared_area`), not the path's
+    a, b = max(t0, sw['length'] + 1e-6), min(t1, sw['reach'])
+    if b <= a:
+        return 0.0
+    got = sweep_at(sw, a, b)
+    if got is None:
+        return 0.0
+    tt = math.inf if top is None else top
+    return (b - a) * lat if tt + MARGIN_MM > got[0] else 0.0
+
+
+def _decl_box(d, pose, frame):
+    """A declared body's rect at `pose`, in the local frame of `frame`."""
+    return to_local(to_board(d.rect, pose), frame)
+
+
+def body_pair_area(da, pose_a, db, pose_b) -> Optional[float]:
+    """mm^2 where two DECLARED bodies (#1504) meet, or None when either is
+    undeclared: overlapping in plan, one must clear the other (`MARGIN_MM`
+    from the lower one's `top_mm` to the higher one's underside; an unknown
+    top never clears), and neither's insertion path may pass through the
+    other when that one is fixed (a removable one only orders the two,
+    `insertion_order`)."""
+    if da is None or db is None:
+        return None
+    rb = _decl_box(db, pose_b, pose_a)
+    ra = da.rect
+    w = min(ra[2], rb[2]) - max(ra[0], rb[0])
+    h = min(ra[3], rb[3]) - max(ra[1], rb[1])
+    out = 0.0
+    if w > 0 and h > 0:
+        fits = ((db.top is not None and db.top + MARGIN_MM <= da.under)
+                or (da.top is not None and da.top + MARGIN_MM <= db.under))
+        if not fits:
+            out = w * h
+    for x, px, y, py in ((da, pose_a, db, pose_b), (db, pose_b, da, pose_a)):
+        if x.sweep is not None and not y.removable:
+            out = max(out, path_blocked_area(x, y, _decl_box(y, py, px)))
+    return out
+
+
+def path_blocked_area(x, y, yb) -> float:
+    """mm^2 of body `y` (its rect `yb`, in `x`'s connector frame) in the way
+    of body `x`'s insertion path: over the path where `y` neither stands
+    wholly under its lowest point nor wholly over its highest. A path with
+    no `top_mm` reaches an unknown height, so any body over it is in the
+    way."""
+    sw = x.sweep
+    sp = _span(sw, yb)
+    if sp is None:
+        return 0.0
+    (t0, t1), lat = sp
+    got = sweep_at(sw, t0, t1)
+    if got is None:
+        return 0.0
+    lo, hi = got
+    under_it = y.top is not None and y.top + MARGIN_MM <= lo
+    over_it = hi is not None and y.under >= hi + MARGIN_MM
+    if under_it or over_it:
+        return 0.0
+    return (min(t1, sw['reach']) - max(t0, 0.0)) * lat
+
+
+def insertion_order(h, poses) -> list:
+    """`[(first, then)]`: pairs of declared bodies where `first`'s insertion
+    path passes under removable body `then`, so `first` goes in before it
+    (#1504). `poses` maps each connector to its (x, y, rot)."""
+    out = []
+    decl = {r: c.decl for r, c in h.covers.items()
+            if c.decl is not None and r in poses}
+    for a, da in decl.items():
+        if da.sweep is None:
+            continue
+        for b, db in decl.items():
+            if b != a and db.removable and path_blocked_area(
+                    da, db, _decl_box(db, poses[b], poses[a])) > 0:
+                out.append((a, b))
+    return sorted(out)
+
+
+def _sweep_rect(sw) -> Optional[Tuple[float, float, float, float]]:
+    """The plan box (local frame) the insertion path passes over."""
+    if sw is None:
+        return None
+    (ux, uy), (vx, vy) = sw['u'], sw['v']
+    xs, ys = [], []
+    for t in (0.0, sw['reach']):
+        for w in (sw['off'] - sw['half'], sw['off'] + sw['half']):
+            xs.append(t * ux + w * vx)
+            ys.append(t * uy + w * vy)
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _span(sw, box):
+    """A local box as (along-axis range, lateral overlap with the body, mm)
+    in the frame of the sweep `sw`, or None when it is beside the body."""
+    (ux, uy), (vx, vy) = sw['u'], sw['v']
+    ts, ws = [], []
+    for x in (box[0], box[2]):
+        for y in (box[1], box[3]):
+            ts.append(x * ux + y * uy)
+            ws.append(x * vx + y * vy - sw['off'])
+    lat = min(max(ws), sw['half']) - max(min(ws), -sw['half'])
+    return ((min(ts), max(ts)), lat) if lat > 0 else None
+
+
+def sweep_at(sw, t0, t1) -> Optional[Tuple[float, Optional[float]]]:
+    """(the lowest underside, the highest top -- None without `top_mm`) the
+    insertion path passes over at along-axis distances [t0, t1], or None
+    when it passes nowhere there."""
+    a, b = max(t0, 0.0), min(t1, sw['reach'])
+    if b < a:
+        return None
+    n = max(1, int(math.ceil((b - a) / CELL_MM)))
+    u, top = sw['under'], sw['top']
+    lo, hi, hit = math.inf, -math.inf, False
+    for k in range(n + 1):
+        x = a + (b - a) * k / n
+        for p, s in sw['poses']:
+            c = math.cos(p)
+            if s * c - 1e-9 <= x <= (s + sw['length']) * c + 1e-9:
+                ud = u + x * math.tan(p)
+                lo = min(lo, ud)
+                if top is not None:
+                    hi = max(hi, ud + (float(top) - u) / c)
+                hit = True
+    return (lo, hi if top is not None else None) if hit else None
 
 
 def along_axis(row, local_xy) -> Tuple[float, float]:
@@ -594,9 +804,11 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
         r = row.get('connector')
         if r not in fps:
             continue
-        decl = (cover_rect(row), float(row['underside_mm']),
-                frozenset(s['ref'] for s in row.get('standoffs') or ()) | padless,
-                probed if row.get('removable') else frozenset())
+        decl = Decl(cover_rect(row), float(row['underside_mm']),
+                    frozenset(s['ref'] for s in row.get('standoffs') or ()) | padless,
+                    probed if row.get('removable') else frozenset(),
+                    None if row.get('top_mm') is None else float(row['top_mm']),
+                    bool(row.get('removable')), _sweep(row))
         base = covers.get(r)
         if base is not None:
             covers[r] = Cover(r, base.x0, base.y0, base.lo, base.court, base.solid, decl)

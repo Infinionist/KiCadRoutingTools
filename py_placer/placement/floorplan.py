@@ -223,7 +223,12 @@ EDGE_BAND_SANITY_MM = 5.0
 #: than refused there. It changes what place_simple, place_pose and
 #: check_assembly admit under a cover; an older build refuses the key by
 #: name.
-READER_VERSION = 20
+#: 21 (#1504): `covers[].top_mm` (a body's own top, so bodies are judged
+#: against each other), `covers[].insertion` (the path a card goes in by)
+#: and `covers[].standoffs[].off_mm` (a standoff off the centre line), and
+#: the `mountable` rule that grades them. They change what the placer and
+#: the grade admit; an older build refuses the keys by name.
+READER_VERSION = 21
 #: The reader version that first reads `templates[]`.
 TEMPLATES_READER = 13
 #: The reader version that first reads a template row's `kind` and
@@ -242,6 +247,9 @@ RAILS_READER = 18
 CHANNELS_READER = 19
 #: The reader version that first reads `heights[].under_cover` (#1500).
 UNDER_COVER_READER = 20
+#: The reader version that first reads `covers[].top_mm`, `.insertion` and
+#: `.standoffs[].off_mm` (#1504).
+MOUNT_READER = 21
 #: #1475. The keep-outs a block's `fence_mm` compiles to are named
 #: `fence:<block>:<N|S|W|E>`; an intent may not name its own keep-out so.
 FENCE_KEEPOUT_PREFIX = 'fence:'
@@ -387,11 +395,17 @@ _KEEPOUT_KEYS = {'name', 'rect', 'circle', 'sides', 'allow', 'max_height_mm',
 #: each standoff `{ref, length_mm, rot?}` held that far along the axis.
 #: `removable`: the body comes off in service (a card in its socket), so a
 #: test point may stand under it where it fits. `source` says where the
-#: numbers came from (a datasheet, a model).
+#: numbers came from (a datasheet, a model). #1504: `top_mm`, the body's own
+#: top over the face (so a body under another body is judged); `insertion`
+#: `{angle_deg, travel_mm?}`, the card going in at that angle and turning
+#: down about the connector (the path the parts past its far end and the
+#: bodies over it must clear); a standoff's `off_mm`, its offset to the left
+#: of the body's centre line (a module screwed down at two corners).
 _COVER_KEYS = {'connector', 'side', 'axis_deg', 'width_mm', 'underside_mm',
                'length_mm', 'offset_mm', 'standoffs', 'removable', 'source',
-               'context'} | _FREE_TEXT_KEYS
-_COVER_STANDOFF_KEYS = {'ref', 'length_mm', 'rot'}
+               'top_mm', 'insertion', 'context'} | _FREE_TEXT_KEYS
+_COVER_STANDOFF_KEYS = {'ref', 'length_mm', 'rot', 'off_mm'}
+_COVER_INSERTION_KEYS = {'angle_deg', 'travel_mm'}
 #: #1443. One `heights[]` row: a part's `height_mm` (its top above its face)
 #: and/or `underside_mm` (the room under its body, across its occupancy),
 #: from `source`. `under_cover: true` (#1500, with `height_mm`) lets a part
@@ -1408,13 +1422,35 @@ def _cover_claims(raw: Dict) -> List[Dict]:
             rot = _number(s.get('rot', 0.0), f"{w}.rot")
             if abs(rot / 90.0 - round(rot / 90.0)) > 1e-6:
                 raise IntentError(f"{w}.rot: a quarter turn, got {rot!r}")
-            clean.append({'ref': r, 'length_mm': ln, 'rot': float(rot) % 360.0})
+            st = {'ref': r, 'length_mm': ln, 'rot': float(rot) % 360.0}
+            if s.get('off_mm') is not None:
+                st['off_mm'] = _number(s['off_mm'], f"{w}.off_mm")
+            clean.append(st)
         row['standoffs'] = clean
         if not clean and row.get('length_mm') is None:
             raise IntentError(f"{where}: needs `length_mm` or a standoff -- nothing "
                               f"says how far the body reaches")
         if row.get('length_mm') is None and max(s['length_mm'] for s in clean) <= 0:
             raise IntentError(f"{where}: its body reaches nowhere (every length is 0)")
+        if c.get('top_mm') is not None:
+            row['top_mm'] = _number(c['top_mm'], f"{where}.top_mm", lo=0.0)
+            if row['top_mm'] <= row['underside_mm']:
+                raise IntentError(f"{where}.top_mm: {row['top_mm']:g} is not above its "
+                                  f"underside_mm {row['underside_mm']:g}")
+        ins = c.get('insertion')
+        if ins is not None:
+            if not isinstance(ins, dict):
+                raise IntentError(f"{where}.insertion: expected {{angle_deg, travel_mm?}}")
+            _reject_unknown(ins, _COVER_INSERTION_KEYS, f"{where}.insertion")
+            if 'angle_deg' not in ins:
+                raise IntentError(f"{where}.insertion: needs `angle_deg`, the angle the "
+                                  f"card goes in at, from the socket's datasheet")
+            ang = _number(ins['angle_deg'], f"{where}.insertion.angle_deg")
+            if not 0.0 < ang < 90.0:
+                raise IntentError(f"{where}.insertion.angle_deg: between 0 and 90, "
+                                  f"got {ang:g}")
+            row['insertion'] = {'angle_deg': ang, 'travel_mm': _number(
+                ins.get('travel_mm', 0.0), f"{where}.insertion.travel_mm", lo=0.0)}
         out.append(row)
     return out
 
@@ -3915,6 +3951,8 @@ class _Ctx:
         #: #1443. One row per declared cover: each standoff's distance along
         #: the axis and off its centre line, passing ones too.
         self.cover_measured: List[Dict[str, object]] = []
+        #: #1504: `mount_report`'s rows, filled by `rule_mountable`
+        self.mount_measured: List[Dict[str, object]] = []
         #: #1443. The board's heights with the intent's declarations, read
         #: once when a rule asks (`_ctx_heights`).
         self._heights = None
@@ -7608,7 +7646,8 @@ def rule_cover(ctx) -> Iterator[Violation]:
     """Each declared cover (#1443) checked against the board, never
     completed from it: its connector on the row's face, and each standoff
     where the row puts it -- `length_mm` along the axis from the connector's
-    origin, on the centre line -- within `COVER_STANDOFF_TOLERANCE_MM`. One
+    origin, `off_mm` (default 0) to the left of the centre line -- within
+    `COVER_STANDOFF_TOLERANCE_MM`. One
     `cover` finding per cover with a standoff off its place; a row naming a
     ref the board does not have, or a connector on the other face, is
     `cover_unresolved`. WARN by default (both names); the `severity` map may
@@ -7643,10 +7682,12 @@ def rule_cover(ctx) -> Iterator[Violation]:
             p = fps[s['ref']]
             lx, ly = to_local((p.x, p.y, p.x, p.y), pose)[:2]
             t, w = along_axis(c, (lx, ly))
-            miss = math.hypot(t - s['length_mm'], w)
+            # #1504: measured against its declared offset from the line (0
+            # unless the row says `off_mm`: a corner screw)
+            miss = math.hypot(t - s['length_mm'], w - s.get('off_mm', 0.0))
             row = {'ref': s['ref'], 'declared_mm': s['length_mm'],
                    'along_mm': round(t, 3), 'off_line_mm': round(w, 3),
-                   'miss_mm': round(miss, 3)}
+                   'declared_off_mm': s.get('off_mm', 0.0), 'miss_mm': round(miss, 3)}
             rows.append(row)
             if miss > COVER_STANDOFF_TOLERANCE_MM + legality.EPS:
                 off.append(row)
@@ -7664,10 +7705,132 @@ def rule_cover(ctx) -> Iterator[Violation]:
             message=(f"{key}: {len(off)} of {len(rows)} standoff(s) off the place the "
                      f"cover gives them -- worst {w['ref']}, {w['along_mm']:.2f}mm "
                      f"along the axis (declared {w['declared_mm']:g}mm) and "
-                     f"{w['off_line_mm']:+.2f}mm off its centre line"),
+                     f"{w['off_line_mm']:+.2f}mm off its centre line (declared "
+                     f"{w['declared_off_mm']:+g}mm)"),
             measured={'index': i, 'off': len(off), 'max_mm': w['miss_mm'],
                       'worst': [x['ref'] for x in off[:NAMED_WORST]]},
             expected={'tolerance_mm': COVER_STANDOFF_TOLERANCE_MM})
+
+
+def mount_report(intent, pcb, pcb_file='', heights=None) -> List[Dict[str, object]]:
+    """#1504: whether each declared cover's body can be MOUNTED where its
+    connector stands, one row per `covers[]` row: its standoffs (on the
+    board, and where the row puts them), how far its body reaches past the
+    outline, the parts under it with the least room, every pair the heights
+    refuse with it (a part under it too tall or of unknown height, a part
+    its insertion path cannot clear, another body it meets), and the order
+    its insertion path asks (`heights.insertion_order`: this body in before
+    a removable one over its way in). `mountable` is False when a standoff
+    is missing, off its place or off the board, a pair is refused, or two
+    bodies each block the other's way in; None when the cover is not
+    resolved on this board. Facts for `rule_mountable` and check_assembly;
+    the body's overhang past the outline is reported, not judged (a module
+    may overhang by design)."""
+    from .body import board_bodies
+    from .heights import (cover_rect, for_board, insertion_order, standoff_at,
+                          to_board, to_local)
+    if not intent.covers:
+        return []
+    fps = pcb.footprints or {}
+    h = heights if heights is not None else for_board(pcb, pcb_file or None,
+                                                      intent.height_declarations())
+    geo = board_bodies(pcb, pcb_file or None)
+    gate = legality.BoardOutlineGate(pcb.board_info, 0.0)
+    poses = {r: (f.x, f.y, f.rotation or 0.0) for r, f in fps.items()}
+    sides = {r: legality.footprint_side(f) for r, f in fps.items()}
+    order = insertion_order(h, poses)
+    rows = []
+    for i, c in enumerate(intent.covers):
+        con = c['connector']
+        row = {'index': i, 'connector': con, 'removable': c['removable']}
+        if con not in fps or sides[con] != c['side']:
+            row.update(state='unresolved', mountable=None,
+                       why=(f"the board has no {con}" if con not in fps else
+                            f"{con} is on {sides[con]}.Cu, the row says {c['side']}"))
+            rows.append(row)
+            continue
+        pose = poses[con]
+        occ_c = getattr(geo.get(con), 'occupancy_local', None)
+        body = to_board(cover_rect(c), pose)
+        row['body_past_outline_mm'] = round(gate.rect_outside_amount(body), 3)
+        why, sts = [], []
+        for s in c['standoffs']:
+            if s['ref'] not in fps:
+                sts.append({'ref': s['ref'], 'state': 'missing'})
+                why.append(f"standoff {s['ref']} is not on the board")
+                continue
+            g, f = geo.get(s['ref']), fps[s['ref']]
+            want = to_board((*standoff_at(c, s),) * 2, pose)[:2]
+            miss = math.dist(want, (f.x, f.y))
+            occ = getattr(g, 'occupancy_local', None)
+            off = (gate.rect_outside_amount(to_board(occ, poses[s['ref']]))
+                   if occ is not None else 0.0)
+            sts.append({'ref': s['ref'], 'miss_mm': round(miss, 3),
+                        'past_outline_mm': round(off, 3)})
+            if miss > COVER_STANDOFF_TOLERANCE_MM + legality.EPS:
+                why.append(f"standoff {s['ref']} is {miss:.2f}mm off its place")
+            if off > legality.EPS:
+                why.append(f"standoff {s['ref']} is {off:.2f}mm past the outline")
+        row['standoffs'] = sts
+        under, blocked = [], []
+        skip = {s['ref'] for s in c['standoffs']} | {con}
+        if occ_c is not None:
+            for r, g in sorted(geo.items()):
+                occ = getattr(g, 'occupancy_local', None)
+                if r in skip or r not in fps or occ is None or sides[r] != c['side']:
+                    continue
+                v = h.pair(con, pose, occ_c, c['side'], r, poses[r], occ, sides[r],
+                           inside=False)
+                if v:
+                    blocked.append({'ref': r, 'area_mm2': round(v, 3)})
+                b = to_board(occ, poses[r])
+                if (b[0] < body[2] and body[0] < b[2] and b[1] < body[3]
+                        and body[1] < b[3]):
+                    top = h.height(r)
+                    under.append({'ref': r, 'height_mm': top,
+                                  'room_mm': (None if top is None else
+                                              round(c['underside_mm'] - top, 3))})
+        known = [u for u in under if u['room_mm'] is not None]
+        row['under'] = len(under)
+        row['least_room'] = min(known, key=lambda u: u['room_mm']) if known else None
+        row['blocked'] = blocked
+        for b in blocked:
+            why.append(f"{b['ref']} is refused with it ({b['area_mm2']:g}mm2)")
+        row['before'] = [b for a, b in order if a == con]      # this goes in first
+        row['after'] = [a for a, b in order if b == con]       # these go in first
+        both = sorted(set(row['before']) & set(row['after']))
+        if both:
+            why.append(f"it and {', '.join(both)} each block the other's way in")
+        row['why'] = why
+        row['state'] = 'measured'
+        row['mountable'] = not why
+        rows.append(row)
+    return rows
+
+
+def rule_mountable(ctx) -> Iterator[Violation]:
+    """#1504: one `mountable` finding per declared cover whose body cannot be
+    mounted where its connector stands (`mount_report`), WARN unless the
+    `severity` map promotes it. The report rides on `ctx.mount_measured`."""
+    if not ctx.intent.covers:
+        return
+    sev = ctx.intent.severity_of('mountable', default=WARN)
+    try:
+        rows = mount_report(ctx.intent, ctx.pcb, ctx.pcb_file)
+    except Exception as ex:                                  # noqa: BLE001
+        ctx.mount_measured.append({'state': 'unmeasured', 'why': f'{type(ex).__name__}: {ex}'})
+        return
+    ctx.mount_measured.extend(rows)
+    for m in rows:
+        if m.get('mountable') is False:
+            yield Violation(
+                rule='mountable', severity=sev, ref=m['connector'],
+                block=ctx.owner.get(m['connector']),
+                message=(f"covers[{m['index']}] ({m['connector']}): its body cannot be "
+                         f"mounted -- " + '; '.join(m['why'][:4])
+                         + (f"; +{len(m['why']) - 4} more" if len(m['why']) > 4 else '')),
+                measured={'index': m['index'], 'why': m['why'][:NAMED_WORST]},
+                expected={'mountable': True})
 
 
 def template_keepout_findings(intent, parts, anchor_pose=None) -> List[Dict]:
@@ -7918,6 +8081,7 @@ RULES = (
     ('replicate', rule_replicate),
     ('template', rule_template),
     ('cover', rule_cover),
+    ('mountable', rule_mountable),
 )
 
 #: Rules whose violations are raised OUTSIDE the `RULES` loop, and so have no
@@ -8048,6 +8212,7 @@ _SKIP_REASON = {
     'replicate': 'the intent declares no replicate copies',
     'template': 'the intent declares no templates',
     'cover': 'the intent declares no covers',
+    'mountable': 'the intent declares no covers',
 }
 
 
@@ -8226,7 +8391,7 @@ def _wants(intent: Intent, rule: str) -> bool:
         return bool(intent.replicate)
     if rule == 'template':
         return bool(intent.templates)
-    if rule == 'cover':
+    if rule in ('cover', 'mountable'):
         return bool(intent.covers)
     return True
 
@@ -8260,6 +8425,7 @@ _ARMING_KEY = {
     'replicate': 'replicate[]',
     'template': 'templates[]',
     'cover': 'covers[]',
+    'mountable': 'covers[]',
 }
 
 #: What each rule reports at when the intent's `severity` map says nothing.
@@ -8314,6 +8480,10 @@ _POLICY_RULES = {
     'cover': ('a body a connector carries, read from its datasheets; the board '
               'says where the connector is, not which card it takes or how '
               'low that card reaches'),
+    # #1504. Whether that body can be mounted follows from the same rows.
+    'mountable': ('a body a connector carries, read from its datasheets; the '
+                  'board says where the connector is, not which card it takes '
+                  'or how it goes in'),
 }
 
 
@@ -8684,6 +8854,7 @@ class GradeResult:
     #: #1443: every declared cover's standoffs against the lengths it gives
     #: them, passing ones included. Empty when the intent declares none.
     cover_measured: List[Dict[str, object]] = field(default_factory=list)
+    mount_measured: List[Dict[str, object]] = field(default_factory=list)
     #: #1051: every declared array's formation measurement, formed or not,
     #: with the members its pin order could not place. Empty when no array
     #: is declared.
@@ -10241,6 +10412,7 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
         replicate_measured=list(ctx.replicate_measured),
         template_measured=list(ctx.template_measured),
         cover_measured=list(ctx.cover_measured),
+        mount_measured=list(ctx.mount_measured),
         array_measured=list(ctx.array_measured),
         edge_connector_evidence=list(ctx.edge_connector_evidence),
         decap_pin_evidence=pin_evidence,
@@ -11708,6 +11880,8 @@ def format_text(r: GradeResult) -> str:
                      + ''.join(f"; {s['ref']} {s['along_mm']:.2f}mm along "
                                f"(declared {s['declared_mm']:g}), "
                                f"{s['off_line_mm']:+.2f}mm off the line"
+                               + (f" (declared {s['declared_off_mm']:+g})"
+                                  if s.get('declared_off_mm') else '')
                                for s in m['standoffs']))
     for m in r.template_measured:
         if m.get('state') == 'unresolved':
@@ -12260,6 +12434,7 @@ def to_json(r: GradeResult) -> Dict:
         **({'templates': r.template_measured} if r.template_measured
            else {}),
         **({'covers': r.cover_measured} if r.cover_measured else {}),
+        **({'mountable': r.mount_measured} if r.mount_measured else {}),
         **({'pad_stacks': r.pad_stacks} if r.pad_stacks is not None
            else {}),
     }

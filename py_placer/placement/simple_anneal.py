@@ -416,6 +416,12 @@ class Annealer:
                 R = st.cover_reach(a)
                 cand = self.model._ixp.query((R[0] - g, R[1] - g, R[2] + g, R[3] + g))
                 cand.update(mine)
+                # #1504: another cover whose body (or way in) reaches this
+                # one's, wherever its connector stands
+                for b in self.cover_list:
+                    Q = st.cover_reach(b)
+                    if Q[0] - g < R[2] and R[0] < Q[2] + g and Q[1] - g < R[3] and R[1] < Q[3] + g:
+                        cand.add(b)
             else:
                 G = self._grown(a)
                 cand = []

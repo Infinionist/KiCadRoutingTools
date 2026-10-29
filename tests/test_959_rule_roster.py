@@ -88,6 +88,10 @@ ARM_WITH = {
     'cover': {'covers': [{'connector': 'J1', 'side': 'F', 'axis_deg': 0, 'width_mm': 22,
                           'underside_mm': 1.5, 'standoffs': [{'ref': 'H1', 'length_mm': 42}],
                           'removable': True, 'source': 'socket datasheet'}]},
+    # #1504: the same declaration arms whether its body can be mounted.
+    'mountable': {'covers': [{'connector': 'J1', 'side': 'F', 'axis_deg': 0, 'width_mm': 22,
+                              'underside_mm': 1.5, 'standoffs': [{'ref': 'H1', 'length_mm': 42}],
+                              'removable': True, 'source': 'socket datasheet'}]},
 }
 
 

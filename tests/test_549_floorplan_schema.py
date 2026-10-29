@@ -157,8 +157,10 @@ KEY_SETS = {
     # #1443: one declared cover, every number the author's, and its standoffs.
     '_COVER_KEYS': {'connector', 'side', 'axis_deg', 'width_mm', 'underside_mm',
                     'length_mm', 'offset_mm', 'standoffs', 'removable', 'source',
-                    'context'} | FREE,
-    '_COVER_STANDOFF_KEYS': {'ref', 'length_mm', 'rot'},
+                    'top_mm', 'insertion', 'context'} | FREE,
+    # #1504: a corner standoff's offset, and the path a card goes in by.
+    '_COVER_STANDOFF_KEYS': {'ref', 'length_mm', 'rot', 'off_mm'},
+    '_COVER_INSERTION_KEYS': {'angle_deg', 'travel_mm'},
     '_HEIGHT_KEYS': {'ref', 'height_mm', 'underside_mm', 'under_cover', 'source',
                      'context'} | FREE,
     '_EDGE_CONNECTOR_KEYS': {
@@ -278,6 +280,7 @@ def test_the_key_sets_are_exactly_what_is_documented():
         '_REPLICATE_KEYS': 'replicate[]',
         '_COVER_KEYS': 'covers[]',
         '_COVER_STANDOFF_KEYS': 'covers[].standoffs[]',
+        '_COVER_INSERTION_KEYS': 'covers[].insertion',
         '_HEIGHT_KEYS': 'heights[]',
     }
     checked = 0
@@ -416,7 +419,8 @@ def test_an_intent_using_every_known_key_loads():
         # #1443. A declared cover, every key on one row, and part heights.
         'covers': [{'connector': 'J3', 'side': 'F', 'axis_deg': 90, 'width_mm': 22,
                     'underside_mm': 2.5, 'length_mm': 44, 'offset_mm': 0.0,
-                    'standoffs': [{'ref': 'MH2', 'length_mm': 42, 'rot': 0}],
+                    'standoffs': [{'ref': 'MH2', 'length_mm': 42, 'rot': 0, 'off_mm': 0.0}],
+                    'top_mm': 3.5, 'insertion': {'angle_deg': 25, 'travel_mm': 2},
                     'removable': True, 'source': 's', 'why': 'w', 'note': 'n', 'context': {'why': 'w'}}],
         'heights': [{'ref': 'U9', 'height_mm': 0.8, 'underside_mm': 2.0, 'source': 's',
                      'under_cover': True, 'why': 'w', 'note': 'n', 'context': {'why': 'w'}}],
@@ -448,6 +452,7 @@ def test_an_intent_using_every_known_key_loads():
         seen |= set(r)
     seen |= set(raw['dispositions'])
     seen |= set(raw['covers'][0]) | set(raw['covers'][0]['standoffs'][0])
+    seen |= set(raw['covers'][0]['insertion'])
     seen |= set(raw['heights'][0])
     for k in raw['keepouts']:
         seen |= set(k)
