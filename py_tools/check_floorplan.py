@@ -793,6 +793,11 @@ def main(argv=None):
             # beside the board are graded and never routed.
             _print_keep_away_unpriced(keep_away_unpriced(
                 doc.get('keep_away'), args.board))
+            # #1479: rows are graded, and no placement step seats them.
+            from placement.arrays import graded_only_warning
+            _rows = graded_only_warning(doc.get('arrays'))
+            if _rows:
+                print(f"  WARNING {_rows}")
             # #1103: a pile says what it did not read off its poses.
             _pcw = (doc.get('context') or {}).get('pose_claims_withheld')
             if _pcw:

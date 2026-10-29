@@ -333,6 +333,11 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
         if added:
             notes.append(f"rails declared: {', '.join(added)} priced as rails "
                          f"(--rail-weight {args.rail_weight:g}) whatever their fan-out")
+    # the intent's arrays[] rows are graded, never seated (#1479)
+    from placement.arrays import graded_only_warning
+    _rows = graded_only_warning(intent.arrays if intent is not None else None)
+    if _rows:
+        print(f"  WARNING: {_rows}")
     model = Model(state, pcb, rails=set(view.rails) | declared_rails, claims=claims,
                   decaps=decaps, supply=supply, decap_pins=decap_pins,
                   groups=groups, congestion_weight=args.congestion_weight,

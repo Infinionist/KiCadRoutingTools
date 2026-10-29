@@ -360,7 +360,7 @@ of it; `check_floorplan --intent` grades all of it.
 | `edge_connectors[]` with an `edge` | applied to an unlocked edge part (connector, receptacle, switch, test pad; a cap the emitter declared because it overhangs is not): held to that edge where every edge-connector conjunct holds (band, edge read, pad copper clear of the outline), sliding along it | yes |
 | `decaps` limits (`max_distance_mm`, `max_pin_distance_mm`) | priced where graded at error: the decap-limit term | yes |
 | `blocks[].rotation`, `rotation_candidates` | not read (`place_fanout_clearance --intent` holds them) | no rule checks a part's angle; the plan check bounds a zone on the declared angles, and `array_conflict` flags a row whose rotation contradicts them |
-| `arrays[]` | not read | yes (`array_formation`, `array_conflict`) |
+| `arrays[]` | not read: `place_simple` warns that the rows are graded only | yes (`array_formation`, `array_conflict`) |
 | `keep_away[]` | not read | yes (pad edge to pad edge, WARN unless its severity is raised); `route.py` reads the design brief's `keep_away` itself |
 | `replicate[]` | not read (`place_pose replicate --intent` applies it) | yes |
 | `templates[]` | applied and priced: each member seated at its template pose round its chip at the start, carried with every move of the chip, its drift priced (`--template-weight`, default 100 per mm); it joins the chip's group and is not priced as a decap | yes (`template`, WARN) |
@@ -644,3 +644,7 @@ contract.
   can is solid: on thunderscope, where the human board puts 354 parts under
   four cans and a heatsink, the placer ended with 6 and 16 parts illegal, and
   placed cleanly only with the cans removed.
+- **Rows formed after placement.** A declared `arrays[]` row is graded only.
+  A pass after the anneal could line a row's members up inside the space
+  they already took, keeping their order, pitch and one rotation, and keep
+  the change only where the board then routes no worse.

@@ -366,7 +366,9 @@ declines each suggestion into `arrays[]`; the Python API's
 `emit_intent(derive_arrays='auto')` writes them all, and has no CLI flag.
 `array_formation` is a POLICY rule, dark when nothing is declared, and it
 grades through `arrays.formation` (tolerances in `arrays.DEFAULT_TOLERANCES`,
-measured on courtyard centres).
+measured on courtyard centres). No placement step seats a row: when the
+intent declares `arrays[]`, `place_simple` and `check_floorplan
+--emit-intent` say so with one WARNING (`arrays.graded_only_warning`).
 
 Refused at load, naming the member: a member in two arrays, fewer than two
 members, a member listed twice, a member also named by `must_lock`, also an
