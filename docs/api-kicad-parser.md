@@ -640,11 +640,13 @@ parts double-applies it.
 ## Board side: `flip_layer_token`
 
 ```python
-flip_layer_token(name: str) -> str
+flip_layer_token(name: str, inner_count: Optional[int] = None) -> str
 ```
 
 The other face's spelling of a layer token (#714): `F.SilkS` → `B.SilkS`,
-`B.Cu` → `F.Cu`, and **anything else unchanged**.
+`B.Cu` → `F.Cu`, inner copper mirrored through the stack when `inner_count`
+(the board's number of inner copper layers) is given, and **anything else
+unchanged**.
 
 A prefix rule, deliberately not a table — the knowledge is that KiCad spells a
 sided layer `F.<x>` / `B.<x>`, not the list of which ones exist. Measured over
@@ -654,18 +656,19 @@ B.CrtYd B.Mask B.Paste *.Cu *.Mask Dwgs.User Cmts.User Eco1.User Eco2.User
 User.1`; this flips the thirteen sided ones and returns the other seven as they
 are.
 
-Two things it deliberately does **not** do, because both would be guesses:
-
 - `*.Cu` and `*.Mask` pass through. They are KiCad's ALL-copper / all-mask sets
   and are already their own mirror; narrowing `*.Cu` to `B.Cu` would silently
   drop 66 pads on `rp2350_fpga_eensy_prePlane` U8 alone.
-- Inner copper passes through unchanged, and that matches KiCad: probed
-  against pcbnew 10.0.0 on a six-layer board, `FOOTPRINT::Flip` leaves a pad on
-  `In1.Cu` and an `fp_line` on `In2.Cu` where they are. So the identity answer
-  is correct here, not merely conservative. `placement.writer` nonetheless
-  **refuses** a pad naming an explicit `In<n>.Cu`, for a different reason: no
-  tracked board carries one, so nothing here would notice if a future KiCad
-  began remapping them.
+- Inner copper: with `inner_count` = n, `In<k>.Cu` becomes `In<n+1-k>.Cu`, so a
+  flipped part's inner-layer items stay next to the face they were next to.
+  That is pcbnew's own flip since 10.0.6 (measured by the parity gate's
+  inner-layer witness on a six-layer board: `In1.Cu` -> `In4.Cu`, `In2.Cu` ->
+  `In3.Cu`); pcbnew 10.0.0 left them in place. Without `inner_count` an inner
+  layer passes through. `placement.writer` passes the board's count
+  (`board_inner_copper_count`), writes a flipped all-copper list in layer-id
+  order as pcbnew does, refuses an inner-layer item when it was not given the
+  count, and still **refuses** a pad naming an explicit `In<n>.Cu` (padstack
+  semantics no tracked board exercises).
 
 ## Pad and copper helpers
 

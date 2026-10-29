@@ -1067,7 +1067,7 @@ class PCBData:
         return total
 
 
-def flip_layer_token(name: str) -> str:
+def flip_layer_token(name: str, inner_count: Optional[int] = None) -> str:
     """The other face's spelling of a layer token (#714).
 
     A PREFIX RULE, deliberately not a table. Three name->id tables in this repo
@@ -1089,23 +1089,27 @@ def flip_layer_token(name: str) -> str:
     ALL-copper set and is already its own mirror; rewriting it to `B*.Cu` or
     `B.Cu` would silently narrow 66 pads on rp2350's U8 alone).
 
-    Inner copper passes through unchanged, and that is what KiCad does too:
-    probed against pcbnew 10.0.0 on a six-layer board, `FOOTPRINT::Flip` leaves
-    a pad on `In1.Cu` and an `fp_line` on `In2.Cu` exactly where they are. An
-    earlier version of this docstring asserted the mirror image would be
-    `In<n+1-k>.Cu` -- that was reasoning, and the oracle this repo uses as
-    ground truth everywhere else contradicts it.
-
-    The identity answer is therefore CORRECT for KiCad 10, not merely
-    conservative. `placement.writer` still refuses a pad naming an explicit
-    `In<n>.Cu`, which is a separate and deliberate choice: no tracked board
-    carries one, so this repo has no regression test that would notice if a
-    future KiCad started remapping them.
+    Inner copper mirrors through the stack when `inner_count` (the board's
+    number of inner copper layers) is given: `In<k>.Cu` becomes
+    `In<n+1-k>.Cu`, so a flipped part's inner-layer items stay next to the
+    face they were next to. That is what pcbnew does since 10.0.6, measured by
+    the parity gate's inner-layer witness (an `fp_text` on `In1.Cu` and a
+    footprint zone on `In1.Cu`/`In2.Cu` of a six-layer board land on `In4.Cu`
+    and `In3.Cu`/`In4.Cu`). pcbnew 10.0.0 left them where they were, which is
+    why the count is a parameter rather than a guess: without it an inner
+    layer passes through unchanged. `placement.writer` always passes it, and
+    still refuses a PAD naming an explicit `In<n>.Cu` (padstack semantics no
+    tracked board exercises).
     """
     if name.startswith('F.'):
         return 'B.' + name[2:]
     if name.startswith('B.'):
         return 'F.' + name[2:]
+    m = re.match(r'In(\d+)\.Cu$', name)
+    if m and inner_count:
+        k = int(m.group(1))
+        if 1 <= k <= inner_count:
+            return f'In{inner_count + 1 - k}.Cu'
     return name
 
 

@@ -663,11 +663,34 @@ def _mirror_xy_pairs(node: str, ref: str, heads=('start', 'end', 'center',
     return pat.sub(fix, node)
 
 
-def _flip_layer_nodes(node: str) -> str:
+def _flip_layer_nodes(node: str, flip=flip_layer_token) -> str:
     """Toggle every `(layer "X")` token inside `node`."""
     def fix(m):
-        return f'(layer "{flip_layer_token(m.group(1))}")'
+        return f'(layer "{flip(m.group(1))}")'
     return re.sub(r'\(layer\s+"([^"]+)"\)', fix, node)
+
+
+def board_inner_copper_count(board_text: str) -> int:
+    """The number of inner copper layers the board's `(layers ...)` table
+    declares: its copper layers less the two faces."""
+    from kicad_parser import _layer_table
+    return max(0, len(_layer_table(board_text)[1]) - 2)
+
+
+def _block_layer_flip(ref: str, inner_count: Optional[int]):
+    """The layer-token flip for one footprint block: the board's inner copper
+    mirrored through the stack (`flip_layer_token`), and an inner layer
+    REFUSED when the caller did not say how many there are -- its mirror
+    depends on the count, and passing it through unchanged is what pcbnew
+    10.0.0 did and 10.0.6 no longer does."""
+    def flip(name: str) -> str:
+        if _INNER_LAYER.match(name) and inner_count is None:
+            raise SideFlipUnsupported(
+                f"{ref}: an item on the inner copper layer {name!r} mirrors "
+                f"through the board's stack, and this flip was not given the "
+                f"board's inner-layer count. Refusing.")
+        return flip_layer_token(name, inner_count)
+    return flip
 
 
 def _flip_at_angle(node: str, ref: str, new_angle_of) -> str:
@@ -878,10 +901,10 @@ def _swap_arc_ends(node: str) -> str:
     return node
 
 
-def _flip_graphic(node: str, head: str, ref: str) -> str:
+def _flip_graphic(node: str, head: str, ref: str, flip=flip_layer_token) -> str:
     """Mirror one `fp_*` graphic node."""
     node = _mirror_xy_pairs(node, ref)
-    node = _flip_layer_nodes(node)
+    node = _flip_layer_nodes(node, flip)
     if head == 'fp_arc':
         node = _swap_arc_ends(node)
     return node
@@ -973,7 +996,7 @@ def _mirror_about(tok: str, centre: str, ref: str, where: str) -> str:
     return '0' if out in ('-0', '') else out
 
 
-def _flip_layer_list(node: str) -> str:
+def _flip_layer_list(node: str, flip=flip_layer_token) -> str:
     """Toggle the names in `node`'s `(layers ...)`, keeping a list that names
     both faces as written: it is its own mirror, and pcbnew writes it in the
     same order."""
@@ -983,12 +1006,30 @@ def _flip_layer_list(node: str) -> str:
     lend = find_matching_paren(node, lm.start())
     body = node[lm.end():lend]
     toks = layer_list_tokens(body)
-    if {flip_layer_token(t) for t in toks} == set(toks):
+    flipped = [flip(t) for t in toks]
+    if set(flipped) == set(toks):
         return node
-    return node[:lm.end()] + map_layer_list_tokens(body, flip_layer_token) + node[lend:]
+    if all(_copper_rank(t) is not None for t in flipped):
+        # an all-copper list (a zone's) is written in layer-id order -- F.Cu,
+        # B.Cu, In1.Cu, ... -- which an inner layer's mirror reverses
+        ranked = iter(sorted(flipped, key=_copper_rank))
+        return node[:lm.end()] + map_layer_list_tokens(body, lambda t: next(ranked)) \
+            + node[lend:]
+    return node[:lm.end()] + map_layer_list_tokens(body, flip) + node[lend:]
 
 
-def _flip_zone(node: str, ref: str, y0: str) -> str:
+def _copper_rank(name: str) -> Optional[int]:
+    """A copper layer's place in KiCad's layer-id order (F.Cu, B.Cu, In1.Cu,
+    In2.Cu, ...), or None for any other layer."""
+    if name == 'F.Cu':
+        return 0
+    if name == 'B.Cu':
+        return 1
+    m = re.match(r'In(\d+)\.Cu$', name)
+    return 1 + int(m.group(1)) if m else None
+
+
+def _flip_zone(node: str, ref: str, y0: str, flip=flip_layer_token) -> str:
     """Mirror a footprint-internal `(zone ...)` about the footprint's y.
 
     Its outline is stored in ABSOLUTE board coordinates, so pcbnew 10.0's flip
@@ -1006,11 +1047,11 @@ def _flip_zone(node: str, ref: str, y0: str) -> str:
         return f"(xy {m.group(1)} {_mirror_about(m.group(2), y0, ref, 'zone')})"
 
     node = re.sub(r'\(xy\s+([^\s()]+)\s+([^\s()]+)\)', fix, node)
-    node = _flip_layer_nodes(node)
-    return _flip_layer_list(node)
+    node = _flip_layer_nodes(node, flip)
+    return _flip_layer_list(node, flip)
 
 
-def _flip_point(node: str, ref: str, y0: str) -> str:
+def _flip_point(node: str, ref: str, y0: str, flip=flip_layer_token) -> str:
     """Mirror a footprint `(point ...)`: an ABSOLUTE `(at x y)` sent to
     `y' = 2*y0 - y` by pcbnew 10.0's flip, and its layer toggled."""
     m = re.search(r'\(at\s+([^\s()]+)\s+([^\s()]+)\)', node)
@@ -1020,7 +1061,7 @@ def _flip_point(node: str, ref: str, y0: str) -> str:
             f"read: {node[:120]!r}")
     rep = f"(at {m.group(1)} {_mirror_about(m.group(2), y0, ref, 'point')})"
     node = node[:m.start()] + rep + node[m.end():]
-    return _flip_layer_nodes(node)
+    return _flip_layer_nodes(node, flip)
 
 
 # #878: the rule itself lives in `legality`; this module reads it off
@@ -1045,7 +1086,8 @@ def _block_side(fp_text: str) -> str:
 
 
 def _flip_footprint_block(fp_text: str, ref: str, old_rot: float,
-                          new_rot: float, old_y: Optional[str] = None) -> str:
+                          new_rot: float, old_y: Optional[str] = None,
+                          inner_count: Optional[int] = None) -> str:
     """Mirror a whole footprint block to the other face (#714).
 
     A paren-balanced walk over the block's top-level children with a per-kind
@@ -1063,7 +1105,12 @@ def _flip_footprint_block(fp_text: str, ref: str, old_rot: float,
     footprint zone and a `point` are stored in absolute coordinates and mirror
     about it. The caller then carries them through the rest of the pose change
     (`_move_zone_pts`), exactly as it does on a move.
+
+    `inner_count` is the board's number of inner copper layers: an item on
+    `In<k>.Cu` mirrors to `In<n+1-k>.Cu`, as pcbnew does since 10.0.6, and
+    without the count such an item is refused (`_block_layer_flip`).
     """
+    flip = _block_layer_flip(ref, inner_count)
     # The block MUST declare a side of its own, and this is checked rather
     # than assumed: `_block_side` defaults to 'F' when there is no top-level
     # `(layer ...)`, so a block without one would have all its geometry
@@ -1102,10 +1149,9 @@ def _flip_footprint_block(fp_text: str, ref: str, old_rot: float,
             continue                     # already written by the caller
         elif head == 'layer':
             saw_layer = True
-            new = _flip_layer_nodes(node)
+            new = _flip_layer_nodes(node, flip)
         elif head == 'private_layers':
-            new = re.sub(r'"([^"]+)"',
-                         lambda m: '"' + flip_layer_token(m.group(1)) + '"',
+            new = re.sub(r'"([^"]+)"', lambda m: '"' + flip(m.group(1)) + '"',
                          node)
         elif head == 'pad':
             new = _flip_pad(node, ref, old_rot, new_rot)
@@ -1115,7 +1161,7 @@ def _flip_footprint_block(fp_text: str, ref: str, old_rot: float,
                     f"{ref}: a ({head} ...) is stored in absolute coordinates "
                     f"and mirrors about the footprint's own y, which this call "
                     f"was not given.")
-            new = (_flip_zone if head == 'zone' else _flip_point)(node, ref, old_y)
+            new = (_flip_zone if head == 'zone' else _flip_point)(node, ref, old_y, flip)
         elif head in _FLIP_TEXTS:
             # The mirror FLAG is conditional on the text living on a sided
             # layer, and only the flag is. Measured against pcbnew 10.0.0: a
@@ -1143,11 +1189,11 @@ def _flip_footprint_block(fp_text: str, ref: str, old_rot: float,
             # `tests/gui_parity/test_714_mirror_pcbnew_parity.py`.
             new = _flip_at_angle(node, ref,
                                  lambda a: new_rot + 180.0 - (a - old_rot))
-            new = _flip_layer_nodes(new)
+            new = _flip_layer_nodes(new, flip)
             if sided:
                 new = _flip_justify(new, ref)
         else:
-            new = _flip_graphic(node, head, ref)
+            new = _flip_graphic(node, head, ref, flip)
 
         if new != node:
             pieces.append((s, e, new))
@@ -1217,6 +1263,9 @@ def write_placed_output(input_file: str, output_file: str,
     # unbracketed teardrop token would rotate or flip only its first pad.
     from kicad_parser import read_board_text
     content = read_board_text(input_file, quiet=True)
+    # the board's inner copper count: a flipped part's inner-layer items
+    # mirror through the stack (`flip_layer_token`)
+    inner_count = board_inner_copper_count(content)
 
     # Move text from copper layers to silkscreen (prevents routing interference)
     content = move_copper_text_to_silkscreen(content)
@@ -1370,7 +1419,8 @@ def write_placed_output(input_file: str, output_file: str,
             # regress.
             new_fp_text = _flip_footprint_block(new_fp_text, key,
                                                 old_rot, new_rot,
-                                                old_y=at_match.group(2))
+                                                old_y=at_match.group(2),
+                                                inner_count=inner_count)
             # Zones and points mirrored about the OLD position, which leaves
             # them where pcbnew's bare flip puts them: the part at its old x/y
             # with its orientation negated. From there to the requested pose

@@ -59,9 +59,11 @@ def flip_refusals(board_path: str, refs: Set[str]) -> Dict[str, str]:
     """`{ref: reason}` for the parts in `refs` the placement writer cannot
     flip (`writer.SideFlipUnsupported`), tried on their own blocks."""
     from kicad_parser import footprint_at_match, iter_footprint_blocks
-    from placement.writer import SideFlipUnsupported, _flip_footprint_block
+    from placement.writer import (SideFlipUnsupported, _flip_footprint_block,
+                                  board_inner_copper_count)
     with open(board_path, encoding='utf-8') as f:
         text = f.read()
+    inner = board_inner_copper_count(text)
     out = {}
     for _s, _e, fp_text, _raw, key in iter_footprint_blocks(text):
         if key not in refs:
@@ -70,7 +72,8 @@ def flip_refusals(board_path: str, refs: Set[str]) -> Dict[str, str]:
         rot = float(m.group(3)) if m and m.group(3) else 0.0
         try:
             _flip_footprint_block(fp_text, key, rot, -rot,
-                                  old_y=m.group(2) if m else None)
+                                  old_y=m.group(2) if m else None,
+                                  inner_count=inner)
         except SideFlipUnsupported as ex:
             out[key] = str(ex)
     return out
