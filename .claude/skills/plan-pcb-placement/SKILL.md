@@ -96,7 +96,8 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   when nobody says. When the user states where something goes ("each
   regulator beside the parts it supplies", "filter, then regulator, then
   loads"), follow the user, and write it so the placer can act on it (a
-  group, a `near`, a zone in §3.4c, a `proximity` row). In REPORT.md, name
+  group, a `near`, a zone in §3.4c, a distance as in §3.3: a `proximity`
+  row inside one group, a `links[]` row across groups). In REPORT.md, name
   each place where the user's intent and a prior differed and which you
   followed.
 - **Ask for the EMC rows the board cannot state.** Run
@@ -107,9 +108,10 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   pad edge, and a ready `proximity` row with `max_mm` left null. Ask the
   user for the limits (crystal to its load pins, input cap to the
   regulator's VIN and PGND, inductor to SW, ESD array or diode to its
-  connector, and each row of the schematic's layout notes, §3.3), put the
-  rows in the brief's or the intent's `proximity`, and report which you
-  were given. Ask
+  connector, and each row of the schematic's layout notes, §3.3), put each
+  row whose two parts are in one group in the brief's or the intent's
+  `proximity`, and each row across groups in the intent's `links[]`
+  (§3.3), and report which you were given. Ask
   in the same breath about `emc_roles.keep_away`: per crystal or oscillator,
   a rule keeping its clock nets away from every switch node, with its
   measured gap and a `brief_row` ready to paste into the brief's
@@ -264,9 +266,16 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
     name and `why`, and for the template candidates (a buck or boost note
     names a switching stage).
   - **A layout note is the designer's own proximity claim** ("C11 close to
-    pin45"). Put each row the `### Layout notes` subsection prints into the
-    intent's `proximity[]`, with a `why` quoting the note, and ask the user
-    for each limit along with the EMC rows (§2). With nobody to ask, use
+    pin45"). Write each row the `### Layout notes` subsection prints, with a
+    `why` quoting the note, and ask the user for each limit along with the
+    EMC rows (§2). Where it goes depends on the groups, as for every
+    distance (the fold, below): both parts in one group, the intent's
+    `proximity[]`; across groups, a `links[]` row (`a` the subject, `b` its
+    partner), which keeps both groups. A link measures courtyard to
+    courtyard and has no `pads`, so a note at another group's pin is held
+    only to that part. When the subject belongs with that pin's part (a
+    cap at its supply pin), move it into that group and write the
+    `proximity[]` row with `pads` instead. With nobody to ask, use
     2.0 mm for a part named at a pin (a row with `pads`) and 5.0 mm for a
     part named near a part. A note that does not name its subject lists the
     parts drawn nearest it: write its row only when the note, those parts
@@ -286,8 +295,9 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
   one. A group so emptied is dropped with its own `near`, `apart` and
   `edge`: `check_groups` WARNs once for each, naming the group that absorbs
   it and the hints lost, and `place_simple` says it once per run and in
-  `judge.json`'s `fold`. If the group should stay, claim a member that is
-  not its anchor, or say `near` instead of writing the row. The emitted intent carries these
+  `judge.json`'s `fold`. If the group should stay, write the distance as a
+  `links[]` row (below) instead of a `proximity` row, or claim a member
+  that is not its anchor. The emitted intent carries these
   crystal claims as `proximity[]` rows (`context.source`
   `placement.crystals`, `max_mm` 8.1 and 2.2), graded as warnings; edit a
   row's `max_mm` to loosen or tighten that loop, or drop the `source` to

@@ -712,7 +712,9 @@ def fold_text(fold: Dict) -> Tuple[Optional[str], List[str]]:
                    f"their claims, or its anchor's, out of it ({parts}) -- so "
                    + (f"its own hints are dropped ({lost})" if lost else
                       "it drops no hint of its own")
-                   + f" and hints naming it now name {d['into']}")
+                   + f" and hints naming it now name {d['into']}; to keep a group, "
+                   "declare a distance across groups in the intent's links[], "
+                   "which merges nothing, not as a proximity[] row")
     return moved, out
 
 
