@@ -191,8 +191,10 @@ def build_parser(with_verbs=True):
                    help="Track width the FACE rule prices a lane at. "
                         "Omitted, the board's Default netclass width")
     p.add_argument('--snap', action='store_true',
-                   help="If the requested pose is refused, take the nearest "
-                        "legal pose within --radius instead (ranked by "
+                   help="If the requested pose is refused, or the part itself "
+                        "is in a gating pair there (one the board already had "
+                        "included), take the nearest pose within --radius "
+                        "where it is in none instead (ranked by "
                         "pose_score, then RE-GRADED here -- the ranker's "
                         "legality is an AABB gate and this verb's verdict is "
                         "exact geometry, so a candidate is verified, never "
@@ -779,6 +781,23 @@ def _report(summary):
              summary.get('own_pad_short_count_after')))
     for a, b in (summary.get('own_pad_short_pairs_after') or [])[:5]:
         print("  %s/%s" % (a, b))
+    # #1385/#1506: courtyard pairs the project grades as errors -- in the
+    # text, not only the JSON, inherited ones included.
+    cb = summary.get('courtyard_error_pairs_before')
+    ca = summary.get('courtyard_error_pairs_after')
+    if cb or ca:
+        print("courtyard overlaps the project grades as errors: %d -> %d"
+              % (len(cb or ()), len(ca or ())))
+        for pr in (ca or [])[:5]:
+            print("  %s" % '/'.join(str(x) for x in pr))
+    own = summary.get('snap_own_pairs')
+    if own and not summary.get('snapped'):
+        print("note: --snap/--near found no pose clearing %s's own pair(s) at the "
+              "requested pose (%s); written there, no worse than the board"
+              % (next(iter(summary.get('ops') or [{}])).get('ref', 'the part'),
+                 '; '.join('%s %s' % (k, ', '.join('/'.join(str(x) for x in pr)
+                                                     for pr in v))
+                           for k, v in own.items())), file=sys.stderr)
     # #1266: a pad on another part's footprint graphic copper (a SOT-89 tab).
     print("pads on another part's graphic copper (touching, any net): "
           "%s -> %s; short of clearance: %s -> %s"

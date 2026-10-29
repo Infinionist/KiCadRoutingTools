@@ -752,6 +752,22 @@ def regrade_refusal(before: Dict, after: Dict, bad: List[str],
     return out
 
 
+def own_pairs(report: Dict, ref: str) -> Dict[str, List]:
+    """`{key: pairs}`: the gating pairs (`PAIR_KEYS`) part `ref` is itself in
+    -- a pair naming it, or one of its pads (`U1.1`). What a snap judges a
+    candidate on (#1506): the moved part's own legality, never another
+    part's damage the board already had."""
+    def mine(pr):
+        return any(isinstance(x, str) and (x == ref or x.startswith(ref + '.'))
+                   for x in (pr if isinstance(pr, (list, tuple)) else (pr,)))
+    out = {}
+    for k in PAIR_KEYS:
+        got = [pr for pr in report.get(k) or () if mine(pr)]
+        if got:
+            out[k] = got
+    return out
+
+
 def is_clean(report: Dict) -> bool:
     """Is this board legal in the ABSOLUTE sense, not merely no worse?"""
     return not (report.get('pad_edge', {}).get('complete') is False
@@ -1523,7 +1539,15 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
             summary['snap_census'] = {
                 'skipped': 'snap applies to exactly one pose op; this call '
                            'carries %d' % len(placements)}
-        if ((bad or (strict and not is_clean(after))) and snap
+        # #1506: a snap also runs when the MOVED part is itself in a gating
+        # pair at the requested pose, even one the board already had: "the
+        # nearest legal pose" is the part's own legality, judged on its own
+        # pairs (`own_pairs`), never refused for another part's damage.
+        mine = (own_pairs(after, placements[0]['reference'])
+                if snap and len(placements) == 1 and not replicated else {})
+        if mine:
+            summary['snap_own_pairs'] = mine
+        if ((bad or (strict and not is_clean(after)) or mine) and snap
                 and len(placements) == 1 and not replicated):
             # Rank around the REQUESTED point, not the part's old one, and
             # judge the part against its pose on the INPUT board (#1256):
@@ -1632,7 +1656,17 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                            if _pose_key(p) not in graded][:snap_tries]:
                     graded.add(_pose_key(cp))
                     trial, pcb_c, g, b = _grade_pose(cp)
-                    if (not b and (not strict or is_clean(g))
+                    ok = not b and (not strict or is_clean(g))
+                    mine = own_pairs(g, ref) if ok else {}
+                    if mine:
+                        # refused for the part's own pairs alone (#1506)
+                        refused_by['own_pairs'] = refused_by.get('own_pairs', 0) + 1
+                        bucket = refused_pairs.setdefault('own_pairs', {})
+                        for prs in mine.values():
+                            for pr in prs:
+                                k = '/'.join(str(x) for x in pr)
+                                bucket[k] = bucket.get(k, 0) + 1
+                    if (ok and not mine
                             and (floor is None or not worsened(floor, g))):
                         return (cp, trial, pcb_c, g, b)
                 return None

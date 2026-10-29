@@ -561,6 +561,13 @@ verdict the verb acts on, `legal` is whether the board is clean at this pose.
 rectangular outline, or one within 0.1 mm of its bbox (measured against the
 bbox shrunk by that stray, `pad_edge.outline_inset_mm`); a castellated pad
 straddling the outline is exempt there, as it is off the board (#1326).
+A snap (`--snap`, or `--near`) is the exception that looks at the part
+itself: it also runs when the moved part is in a gating pair at the requested
+pose -- a courtyard overlap the project grades as an error, a pad conflict,
+one it already had included -- and takes the nearest pose where the part is
+in no such pair (`pose_ops.own_pairs`, #1506). Another part's damage never
+refuses a candidate; when none clears the part, it is written as asked and
+said so. The text report prints the courtyard error pairs before and after.
 `--strict-legal` refuses unless the result is clean; `--force` writes anyway
 and records `forced`. A KiCad `(locked yes)` refuses a direct move — name the
 ref in `unlock` in the same call if you mean it; `--force` deliberately does
