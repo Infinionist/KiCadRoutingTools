@@ -319,18 +319,26 @@ def _foreign_pad_types(pcb_data, layer):
     return got
 
 
-def _scoped_pad_excess(config, net_id, nids, types, base_clearance):
+def _scoped_pad_excess(config, net_id, nids, types, base_clearance, layer=None):
     """#1491: per foreign pad, the scoped rule's requirement for the moving
     net's track against it, minus `base_clearance` (negative where the rule
-    relaxes), or NaN where no scoped rule binds the pair."""
+    relaxes), or NaN where no scoped rule binds the pair -- or where a layer
+    rule later in the file replaces it on `layer`, whose value
+    `base_clearance` already is."""
     s = getattr(config, 'scoped_clearance', None)
     out = np.full(len(nids), np.nan)
     if s is None:
         return out
+    lmap = getattr(config, 'layer_clearances', None) or {}
     for i, (nid, pt) in enumerate(zip(nids, types)):
-        v, every = s.pair(int(net_id), int(nid), ('track',), (('pad', pt),))
-        if v is not None and every:
-            out[i] = v - base_clearance
+        if int(nid) == int(net_id):
+            continue
+        got = s.sc.pair_value(int(net_id), 'track', int(nid), 'pad', None, pt)
+        if got is None:
+            continue
+        if layer is not None and layer in s.sc.layer_rules_after(lmap, got[2]):
+            continue
+        out[i] = max(got[0], s.fab_floor) - base_clearance
     return out
 
 
@@ -376,7 +384,8 @@ def _seg_foreign_pad_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
             # #1491: a class/type-scoped rule REPLACES the class term for the
             # pads it binds (a pad's own override still outranks it)
             types = np.asarray(_foreign_pad_types(pcb_data, layer), dtype=object)[near]
-            sx_ = _scoped_pad_excess(config, net_id, nids[near], types, base_clearance)
+            sx_ = _scoped_pad_excess(config, net_id, nids[near], types, base_clearance,
+                                     layer)
             bound = ~np.isnan(sx_)
             if bound.any():
                 # KiCad: a pad override returns before any rule is read
@@ -6816,7 +6825,7 @@ def _neck_zone_exact_fits(seg, pcb_data, net_id: int, config) -> bool:
         return False
 
     from sense_branch import terminal_sense_dist
-    own_l = config.layer_clearance(layer, config.obstacle_clearance(net_id))
+    own_l = config.layer_clearance(layer, config.obstacle_clearance(net_id), net_id)
     if terminal_sense_dist(pcb_data, net_id, x1, y1, x2, y2, layer, hw) - hw \
             < own_l - NECK_GRAZE_TOL:
         return False

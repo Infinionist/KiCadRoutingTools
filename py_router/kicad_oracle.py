@@ -1704,7 +1704,7 @@ def _direct_sliver_weld(pcb_data, net_id, ax, ay, bx, by, layer, config,
     # join pad; a weld never lands on or crosses it.
     from sense_branch import terminal_sense_dist
     if terminal_sense_dist(pcb_data, net_id, x1, y1, x2, y2, layer, w / 2.0) \
-            < reach + config.layer_clearance(layer, config.obstacle_clearance(net_id)):
+            < reach + config.layer_clearance(layer, config.obstacle_clearance(net_id), net_id):
         return None
     return Segment(start_x=x1, start_y=y1, end_x=x2, end_y=y2,
                    width=w, layer=layer, net_id=net_id)

@@ -777,16 +777,21 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         # KiCad couples the two NAMES, not because our detector paired them.
         _pn = pcb_data.nets.get(p_net_id)
         _nn = pcb_data.nets.get(n_net_id)
+        # A scoped rule replaces the layer rules before it in the file and
+        # yields to those after it (KiCad's last match), layer by layer.
+        _sv = (_gap_scoped.pair_value(p_net_id, 'track', n_net_id, 'track')
+               if _gap_scoped is not None else None)
+        _lm = (_gap_scoped.layer_rules_after(_gap_layer_map, _sv[2])
+               if _sv is not None else _gap_layer_map)
         g, why = pair_gap_rule_floor(
-            _gap_layer_map, _routable_layers, _gap_track_rules,
+            _lm, _routable_layers, _gap_track_rules,
             _gap_classes.get(p_net_id, frozenset()),
             _gap_classes.get(n_net_id, frozenset()),
             coupled=nets_coupled(getattr(_pn, 'name', None),
                                  getattr(_nn, 'name', None)))
-        if _gap_scoped is not None:
-            _sv = _gap_scoped.pair_value(p_net_id, 'track', n_net_id, 'track')
-            if _sv is not None and _sv[0] > g:
-                g, why = _sv[0], f"the .kicad_dru scoped rule '{_sv[1]}'"
+        if (_sv is not None and _sv[0] > g
+                and any(l not in (_lm or {}) for l in _routable_layers)):
+            g, why = _sv[0], f"the .kicad_dru scoped rule '{_sv[1]}'"
         if track_clearances:
             # an explicit map (tests) prices the pair as pair_clearance does
             v = max(track_clearances.get(p_net_id) or 0.0,

@@ -9,7 +9,9 @@ and check_drc priced the copper there too, while KiCad enforced the rule.
 `design_rules`' condition engine (commutative, last match wins, replacing the
 class value); the router prices each obstacle at the max over the routed
 set (`ScopedClearanceInstall`), so a relaxing rule lowers a stamp only as far
-as every routed net allows, and check_drc grades the pair exactly.
+as every routed net allows, and check_drc grades the pair exactly. Between a
+scoped rule and a layer rule (#498) the LATER one in the file wins, on the
+router and in check_drc alike (`ScopedClearanceRules.resolve_pair`).
 
     python3 tests/test_1491_scoped_clearance_rules.py
 """
@@ -120,8 +122,84 @@ def stamps(td):
           json.dumps(scoped_clearance_report(cfg)))
 
 
+LAYER_F = '(rule "f" (layer "F.Cu") (constraint clearance (min {v}mm)))'
+
+
+def _ordered_board(td, name, first, second, segments=()):
+    b = os.path.join(td, name)
+    write_board(b, classes=[{'name': 'CSI', 'clearance': 0.2, 'priority': 0}],
+                patterns=[('A', 'CSI'), ('B', 'CSI')], rules={'min_clearance': 0.05},
+                dru=f'{first} {second}', segments=segments)
+    return b
+
+
+def _drc(b):
+    return subprocess.run(PY + [os.path.join('py_router', 'check_drc.py'), b,
+                                '--clearance', '0.1'],
+                          capture_output=True, text=True, cwd=REPO)
+
+
+def file_order(td):
+    print('3. a layer rule and a scoped rule: the later one in the file wins')
+    from kicad_dru import install_layer_clearances
+    csi = f'(rule "csi gap" (constraint clearance (min 0.3mm)) {CSI})'
+    for label, first, second, f_cu in (
+            ('layer rule, then the scoped rule', LAYER_F.format(v=0.15), csi, 0.3),
+            ('scoped rule, then the layer rule', csi, LAYER_F.format(v=0.15), 0.15)):
+        b = _ordered_board(td, f'ord{f_cu}.kicad_pcb', first, second)
+        pcb = pcb_data_for(b)
+        from routing_config import GridRouteConfig
+        from kicad_dru import install_track_clearances
+        cfg = GridRouteConfig()
+        cfg.clearance = 0.2
+        cfg.layers = ['F.Cu', 'B.Cu']
+        cfg.set_net_clearances({}, [1])
+        install_layer_clearances(cfg, None, b, pcb)
+        install_track_clearances(cfg, None, b, pcb, routed_net_ids=[1])
+        got = cfg.pair_clearance(1, 2, 'F.Cu', kind='track')
+        check(f'{label}: the CSI pair on F.Cu is {f_cu}', abs(got - f_cu) < 1e-9, f'{got}')
+        got = cfg.layer_clearance('F.Cu', cfg.obstacle_clearance(2), 2)
+        check(f'{label}: ...and the router stamps CSI B on F.Cu at {f_cu}',
+              abs(got - f_cu) < 1e-9, f'{got}')
+        got = cfg.layer_clearance('F.Cu', cfg.obstacle_clearance(3), 3)
+        check(f'{label}: ...a non-CSI net there keeps the layer rule 0.15',
+              abs(got - 0.15) < 1e-9, f'{got}')
+        got = cfg.pair_clearance(1, 2, 'B.Cu', kind='track')
+        check(f'{label}: ...and on unruled B.Cu the scoped rule 0.3 holds',
+              abs(got - 0.3) < 1e-9, f'{got}')
+        segs = [(5, 10, 15, 10, 0.2, 'F.Cu', 1), (5, 10.45, 15, 10.45, 0.2, 'F.Cu', 2)]
+        b = _ordered_board(td, f'ordg{f_cu}.kicad_pcb', first, second, segs)
+        r = _drc(b)
+        flagged = r.returncode != 0
+        check(f'{label}: check_drc on CSI tracks 0.25 mm apart on F.Cu '
+              f'{"flags" if f_cu > 0.25 else "passes"} them',
+              flagged == (f_cu > 0.25), r.stdout[-400:])
+
+    # a relaxing pad rule after a tightening layer rule: the pad stamp relaxes
+    b = os.path.join(td, 'ordpad.kicad_pcb')
+    write_board(b, classes=[{'name': 'HS', 'clearance': 0.5, 'priority': 0}],
+                patterns=[('A', 'HS')], rules={'min_clearance': 0.05},
+                dru=f'{LAYER_F.format(v=0.4)} (rule "hs pad" (constraint clearance '
+                    f'(min 0.2mm)) {HS_PAD})')
+    pcb = pcb_data_for(b)
+    from routing_config import GridRouteConfig
+    from kicad_dru import install_track_clearances
+    cfg = GridRouteConfig()
+    cfg.clearance = 0.2
+    cfg.layers = ['F.Cu', 'B.Cu']
+    cfg.set_net_clearances({1: 0.5}, [1])
+    install_layer_clearances(cfg, None, b, pcb)
+    install_track_clearances(cfg, None, b, pcb, routed_net_ids=[1])
+    pad = SimpleNamespace(net_id=2, pad_type='smd', layers=['F.Cu'])
+    got = cfg.layer_clearance('F.Cu', cfg.pad_obstacle_clearance(pad), pad=pad)
+    check('layer rule 0.4, then the HS pad rule 0.2: an HS route stamps a pad on '
+          'F.Cu at 0.2', abs(got - 0.2) < 1e-9, f'{got}')
+    got = cfg.layer_clearance('F.Cu', cfg.obstacle_clearance(2), 2)
+    check('...and a track on F.Cu at the layer rule 0.4', abs(got - 0.4) < 1e-9, f'{got}')
+
+
 def grader(td):
-    print('3. check_drc grades the pair exactly')
+    print('4. check_drc grades the pair exactly')
     b = os.path.join(td, 'g1.kicad_pcb')
     write_board(b, classes=[{'name': 'CSI', 'clearance': 0.2, 'priority': 0}],
                 patterns=[('A', 'CSI'), ('B', 'CSI')],
@@ -144,7 +222,7 @@ def grader(td):
 
 
 def routed(td):
-    print('4. routed: the pair gap and the relaxed pad escape')
+    print('5. routed: the pair gap and the relaxed pad escape')
     b = os.path.join(td, 'csi.kicad_pcb')
     subprocess.run(PY + [os.path.join('py_router', 'copy_board.py'),
                          os.path.join('kicad_files', 'qfn_csi_underpad_diff.kicad_pcb'), b],
@@ -182,7 +260,7 @@ def routed(td):
 def main():
     td = tempfile.mkdtemp(prefix='krt1491_')
     try:
-        for t in (selection, stamps, grader, routed):
+        for t in (selection, stamps, file_order, grader, routed):
             t(td)
     finally:
         shutil.rmtree(td, ignore_errors=True)

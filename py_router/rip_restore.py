@@ -57,11 +57,14 @@ def _conflict_sweep(pcb_data: PCBData, config: GridRouteConfig,
         # KiCad pairwise max of the two nets' resolutions; #498: a .kicad_dru
         # rule for the layer the coppers meet on replaces that (stack max for
         # via-via, where they meet on every layer).
+        # #1491: each net's stamp orders its class/type-scoped rule against
+        # the layer rule by file position, as the router stamped it.
         v = max(clr_of(a_net), clr_of(b_net))
         if layer is not None and hasattr(config, 'layer_clearance'):
-            return config.layer_clearance(layer, v)
+            return max(config.layer_clearance(layer, v, a_net),
+                       config.layer_clearance(layer, v, b_net))
         if layer is None and hasattr(config, 'stack_clearance'):
-            return config.stack_clearance(v)
+            return max(config.stack_clearance(v, a_net), config.stack_clearance(v, b_net))
         return v
 
     def _track_pair_clr(a_net, b_net, layer):

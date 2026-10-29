@@ -203,7 +203,7 @@ def compute_net_obstacle_cells(
         # value under-attributes wide-clearance nets' real blocking reach.
         _clr = config.obstacle_clearance(net_id) if hasattr(config, 'obstacle_clearance') else config.clearance
         if hasattr(config, 'layer_clearance'):  # #498: layer rule replaces
-            _clr = config.layer_clearance(config.layers[layer_idx], _clr)
+            _clr = config.layer_clearance(config.layers[layer_idx], _clr, net_id)
         expansion_mm = reserve_width / 2 + seg_width / 2 + _clr + extra_clearance
         cells = segment_blocked_cells_array(x1, y1, x2, y2, expansion_mm, grid_step)
         if len(cells):
@@ -215,7 +215,7 @@ def compute_net_obstacle_cells(
         # (so an off-grid via is covered without the old floored-circle drift).
         _clr = config.obstacle_clearance(net_id) if hasattr(config, 'obstacle_clearance') else config.clearance
         if hasattr(config, 'stack_clearance'):  # #498: via spans the stack
-            _clr = config.stack_clearance(_clr)
+            _clr = config.stack_clearance(_clr, net_id)
         via_margin = via_size / 2 + config.track_width / 2 + _clr + extra_clearance
         cells = segment_blocked_cells_array(x, y, x, y, via_margin, grid_step)
         if len(cells):

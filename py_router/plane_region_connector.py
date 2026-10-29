@@ -3325,7 +3325,15 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
         best = 0.0
         for nid in nids:
             best = max(best, config.layer_clearance(
-                layer, config.obstacle_clearance(nid)))
+                layer, config.obstacle_clearance(nid), nid))
+        if config.scoped_clearance is not None:
+            # #1491: a pad may be priced apart from its net's tracks
+            _one = {}
+            for p in _pads_l:
+                _one.setdefault((p.net_id, p.pad_type), p)
+            for _p in _one.values():
+                best = max(best, config.layer_clearance(
+                    layer, config.pad_obstacle_clearance(_p), pad=_p))
         return best
 
     _clr_max_by_layer = {}
@@ -3348,7 +3356,7 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
         bb = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
         if _sense_live and terminal_sense_dist(
                 pcb_data, net_id, x1, y1, x2, y2, layer, half) < half + \
-                config.layer_clearance(layer, config.obstacle_clearance(net_id)) - EPS:
+                config.layer_clearance(layer, config.obstacle_clearance(net_id), net_id) - EPS:
             return False
         clr_max = _clr_max_by_layer.get(layer)
         if clr_max is None:
@@ -3360,7 +3368,7 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
                              & (_vy <= bb[3] + vreq))[0]:
             v = _vias_l[vi]
             req = half + v.size / 2.0 + config.layer_clearance(  # #498
-                layer, config.obstacle_clearance(v.net_id))
+                layer, config.obstacle_clearance(v.net_id), v.net_id)
             if not (bb[0] - req <= v.x <= bb[2] + req
                     and bb[1] - req <= v.y <= bb[3] + req):
                 continue
@@ -3380,7 +3388,7 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
             # track, and so is this foreign segment
             req = half + s.width / 2.0 + config.track_obstacle_clearance(
                 s.net_id, config.layer_clearance(
-                    layer, config.obstacle_clearance(s.net_id)))
+                    layer, config.obstacle_clearance(s.net_id), s.net_id))
             if not (bb[0] - req <= max(s.start_x, s.end_x)
                     and min(s.start_x, s.end_x) <= bb[2] + req
                     and bb[1] - req <= max(s.start_y, s.end_y)
@@ -3409,7 +3417,7 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
                 if p.pad_type != 'np_thru_hole' and (on_layer or is_th):
                     clr = config.pad_override_clearance(
                         config.layer_clearance(  # #498: meet on the leg's layer
-                            layer, config.obstacle_clearance(pnid)),
+                            layer, config.pad_obstacle_clearance(p), pad=p),  # #1491
                         p)
                     pext = max(p.size_x, p.size_y) / 2.0
                     req = half + pext + clr
@@ -3507,7 +3515,7 @@ def build_base_obstacles(
         # #498: one grouped value stamps ALL layers here, so take the stack max
         # -- conservative on relaxed layers (over-blocks a repair join near a
         # foreign via), never under the rule on tightened ones.
-        _clr = config.stack_clearance(config.obstacle_clearance(via.net_id))
+        _clr = config.stack_clearance(config.obstacle_clearance(via.net_id), via.net_id)
         foreign_centers_by_size.setdefault((via.size, _clr), []).append(
             coord.to_grid(via.x, via.y))
     for (vsize, _clr), centers in foreign_centers_by_size.items():
@@ -3582,7 +3590,7 @@ def build_base_obstacles(
             continue
         layer_idx = layer_map.get(seg.layer)
         _seg_clr = config.layer_clearance(  # #498 (#434 cross-class)
-            seg.layer, config.obstacle_clearance(seg.net_id))
+            seg.layer, config.obstacle_clearance(seg.net_id), seg.net_id)
         if layer_idx is None:
             # Copper on a layer OUTSIDE routing_layers (repair joins route on
             # the plane layers only): tracks cannot go there, but a repair
@@ -3648,9 +3656,9 @@ def build_base_obstacles(
             if getattr(config, 'layer_clearances', None):
                 _pls = [l for l in (pad.layers or [])
                         if l.endswith('.Cu') and l != '*.Cu']
-                _pc = (config.stack_clearance(_pc)
+                _pc = (config.stack_clearance(_pc, pad=pad)
                        if ('*.Cu' in (pad.layers or []) or not _pls)
-                       else max(config.layer_clearance(l, _pc) for l in _pls))
+                       else max(config.layer_clearance(l, _pc, pad=pad) for l in _pls))
             pad_clr = config.pad_override_clearance(_pc, pad)
             pad_expansion_mm = track_width / 2 + pad_clr + cushion
             half_w, half_h = pad_rect_halfspan(pad, pad_expansion_mm)

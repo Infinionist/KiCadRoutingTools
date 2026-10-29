@@ -475,7 +475,8 @@ def build_via_obstacle_map(
     for via in pcb_data.vias:
         _clr = (config.clearance if via.net_id == exclude_net_id
                 else config.obstacle_clearance(via.net_id))
-        _clr = config.stack_clearance(_clr)  # #498: barrels meet on every layer
+        _clr = config.stack_clearance(  # #498: barrels meet on every layer
+            _clr, None if via.net_id == exclude_net_id else via.net_id)
         centers_by_size.setdefault((via.size, _clr), []).append(coord.to_grid(via.x, via.y))
     for (vsize, _clr), via_centers in centers_by_size.items():
         via_via_expansion_mm = vsize / 2 + config.via_size / 2 + _clr + grid_cushion
@@ -500,7 +501,7 @@ def build_via_obstacle_map(
         # netclass clearance (#434 cross-class).
         seg_expansion_mm = (config.via_size / 2 + seg.width / 2
                             + config.layer_clearance(  # #498: meet on seg.layer
-                                seg.layer, config.obstacle_clearance(seg.net_id))
+                                seg.layer, config.obstacle_clearance(seg.net_id), seg.net_id)
                             + grid_cushion)
         # FFI batching (2026-08-14): accumulate the memoized capsule arrays
         # and stamp once after the loop -- concatenation preserves the exact
@@ -632,9 +633,9 @@ def _add_pad_via_obstacle(obstacles: GridObstacleMap, pad: Pad,
     if clearance_override is None and getattr(config, 'layer_clearances', None):
         _pls = [l for l in (pad.layers or []) if l.endswith('.Cu') and l != '*.Cu']
         if '*.Cu' in (pad.layers or []) or not _pls:
-            clearance = config.stack_clearance(clearance)
+            clearance = config.stack_clearance(clearance, pad=pad)
         else:
-            clearance = max(config.layer_clearance(l, clearance) for l in _pls)
+            clearance = max(config.layer_clearance(l, clearance, pad=pad) for l in _pls)
     # Honor a per-pad local clearance override (fiducial keep-clear rings etc.)
     # unless an explicit same-net override was supplied.
     if clearance_override is None:
@@ -1211,7 +1212,8 @@ def build_routing_obstacle_map(
                     # required clearance (no-net fiducial DRC, upduino #146).
                     pad_clr = config.pad_override_clearance(
                         config.layer_clearance(  # #498: on route_layer
-                            route_layer, config.obstacle_clearance(net_id)),
+                            route_layer, config.pad_obstacle_clearance(pad),  # #1491
+                            pad=pad),
                         pad)
                     # Half-grid discretization cushion, matching this file's own
                     # VIA stamps and build_base_obstacles (#173) -- the segment
@@ -1277,7 +1279,7 @@ def build_routing_obstacle_map(
                             + config.track_obstacle_clearance(
                                 seg.net_id, config.layer_clearance(
                                     route_layer,
-                                    config.obstacle_clearance(seg.net_id))))
+                                    config.obstacle_clearance(seg.net_id), seg.net_id)))
         # FFI batching (2026-08-14): same pattern as the via loop above --
         # accumulate, then one Rust call for the whole (single-layer) set.
         # #815: SPAN form (789,803 calls / 10.4% on glasgow_revC). Same
@@ -1312,7 +1314,7 @@ def build_routing_obstacle_map(
         # to ~half a cell on the via side.
         r_mm = (via.size / 2 + route_track_w / 2
                 + config.layer_clearance(  # #498: the route meets it on route_layer
-                    route_layer, config.obstacle_clearance(via.net_id))
+                    route_layer, config.obstacle_clearance(via.net_id), via.net_id)
                 + config.grid_step / 2)
         rg = coord.to_grid_dist_safe(r_mm)
         r_sq = (r_mm - GRID_TIE_EPS) ** 2   # tie -> OPEN; twin in obstacle_cache

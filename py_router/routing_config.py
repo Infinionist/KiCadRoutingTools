@@ -510,27 +510,48 @@ class GridRouteConfig:
         v = self.track_clearances.get(net_id)
         return resolved if v is None or v <= resolved else v
 
-    def layer_clearance(self, layer: str, fallback: float) -> float:
+    def layer_clearance(self, layer: str, fallback: float,
+                        net_id: Optional[int] = None, pad=None) -> float:
         """#498 pair clearance on `layer`: the .kicad_dru rule value when the
         layer is ruled (replacement -- may be below `fallback`), else
         `fallback` (the caller's net/class-resolved value). Single-layer
         copper (segments, SMD pads) resolves through this; stack-spanning
-        copper uses stack_clearance()."""
+        copper uses stack_clearance().
+
+        A stamp names its obstacle (`net_id`, or the foreign `pad`) so a
+        class/type-scoped rule LATER in the file than the layer's rule wins
+        over it for the routed nets it binds (#1491, KiCad's last match);
+        without one, or with no such rule, the layer rule replaces as
+        before."""
         if self.layer_clearances:
             v = self.layer_clearances.get(layer)
             if v is not None:
+                if self.scoped_clearance is not None and (
+                        net_id is not None or pad is not None):
+                    s = self.scoped_clearance.stamp_on_layer(
+                        int((net_id if net_id is not None
+                             else getattr(pad, 'net_id', 0)) or 0),
+                        (getattr(pad, 'pad_type', None) or 'smd')
+                        if pad is not None else None, layer, v)
+                    if s is not None:
+                        return s
                 return v
         return fallback
 
-    def stack_clearance(self, fallback: float) -> float:
+    def stack_clearance(self, fallback: float, net_id: Optional[int] = None,
+                        pad=None) -> float:
         """#498 clearance for STACK-SPANNING pairs (via barrels, TH drills):
         KiCad evaluates the pair on every layer both coppers exist on, so the
         requirement is the max over the stack. max(fallback, all rule values)
         -- conservatively keeps `fallback` even when every routed layer is
         ruled lower, since the board may have copper on layers outside
-        config.layers."""
+        config.layers. `net_id` / `pad` order each layer's rule against the
+        scoped channel as `layer_clearance` does."""
         if not self.layer_clearances:
             return fallback
+        if self.scoped_clearance is not None and (net_id is not None or pad is not None):
+            return max([fallback] + [self.layer_clearance(l, fallback, net_id, pad)
+                                     for l in self.layer_clearances])
         return max([fallback] + list(self.layer_clearances.values()))
 
     def obstacle_clearance(self, net_id: int) -> float:
@@ -603,6 +624,21 @@ class GridRouteConfig:
     # a verdict at the stamp value would refuse legal copper whenever a wider
     # class is routed anywhere in the call.
 
+    def _class_pair_clearance(self, net_a: int, net_b: int,
+                              base: Optional[float] = None) -> float:
+        """`max(base or clearance, class A, class B)`: the pair before any
+        .kicad_dru rule."""
+        clr = self.clearance if base is None else base
+        nc = self.net_clearances
+        if nc:
+            a = nc.get(net_a)
+            if a is not None and a > clr:
+                clr = a
+            b = nc.get(net_b)
+            if b is not None and b > clr:
+                clr = b
+        return clr
+
     def pair_clearance(self, net_a: int, net_b: int,
                        layer: Optional[str] = None, *, kind: str = 'layer',
                        base: Optional[float] = None, types=None) -> float:
@@ -640,31 +676,26 @@ class GridRouteConfig:
                      else (cp.get(kind) or {}).get(layer))
                 if v is not None:
                     return v
-        clr = self.clearance if base is None else base
-        nc = self.net_clearances
-        if nc:
-            a = nc.get(net_a)
-            if a is not None and a > clr:
-                clr = a
-            b = nc.get(net_b)
-            if b is not None and b > clr:
-                clr = b
+        clr = self._class_pair_clearance(net_a, net_b, base)
+        if kind not in ('layer', 'track', 'stack'):
+            raise ValueError(f"pair_clearance kind {kind!r}: expected "
+                             f"'layer', 'track' or 'stack'")
         if self.scoped_clearance is not None and net_a != net_b:
-            # #1491: a class/type-scoped rule REPLACES the class value when it
-            # binds every item combination the kind stands for, else raises it
+            # #1491: a class/type-scoped rule REPLACES the class value for each
+            # item combination it binds, and the layer rule replaces it in turn
+            # only where it comes later in the file (kicad_dru.resolve_pair)
             types = (types if types is not None else
                      (('via',), ('via',)) if kind == 'stack' else
                      (('track',), ('track',)) if kind == 'track' else
                      (('track', 'via'), ('track', 'via')))
-            sv, every = self.scoped_clearance.pair(net_a, net_b, types[0], types[1])
-            if sv is not None:
-                clr = sv if every else max(clr, sv)
-        if kind == 'stack':
+            clr = self.scoped_clearance.pair(
+                net_a, net_b, types[0], types[1], clr, self.layer_clearances,
+                layer=layer if kind != 'stack' else None, stack=kind == 'stack')
+            if kind == 'stack':
+                return clr
+        elif kind == 'stack':
             return self.stack_clearance(clr)
-        if kind != 'layer' and kind != 'track':
-            raise ValueError(f"pair_clearance kind {kind!r}: expected "
-                             f"'layer', 'track' or 'stack'")
-        if layer is not None:
+        elif layer is not None:
             clr = self.layer_clearance(layer, clr)
         if kind == 'track' and self.track_clearances:
             tp = (self.track_partner_clearances.get(frozenset((net_a, net_b)))
@@ -732,20 +763,30 @@ class GridRouteConfig:
         class and rule term only, so a board that declares neither is
         unchanged whatever its pads carry). `pad_pair_clearance` is
         `pad_override_clearance(<this>, pad, other_pad)`."""
-        _pt = ('pad', getattr(pad, 'pad_type', None) or 'smd')
-        _ot = ((('pad', getattr(other_pad, 'pad_type', None) or 'smd'),)
-               if other_pad is not None else ('track', 'via'))
-        eff = self.pair_clearance(getattr(pad, 'net_id', 0) or 0, other_net,
-                                  base=base, types=((_pt,), _ot))
+        pad_net = getattr(pad, 'net_id', 0) or 0
+        shared = None
+        if layer is None and self.layer_clearances:
+            from check_drc import pad_copper_layers
+            cu = list(self.board_copper_layers or self.layers)
+            shared = (pad_copper_layers(pad, cu),
+                      pad_copper_layers(other_pad, cu) if other_pad is not None
+                      else None)
+        if self.scoped_clearance is not None and pad_net != other_net:
+            # #1491: per item combination, the scoped rule and the layer rules
+            # in file order (kicad_dru.resolve_pair), as pair_clearance
+            _pt = ('pad', getattr(pad, 'pad_type', None) or 'smd')
+            _ot = ((('pad', getattr(other_pad, 'pad_type', None) or 'smd'),)
+                   if other_pad is not None else ('track', 'via'))
+            return self.scoped_clearance.pair(
+                pad_net, other_net, (_pt,), _ot,
+                self._class_pair_clearance(pad_net, other_net, base),
+                self.layer_clearances, layer=layer, pad_layers=shared)
+        eff = self.pair_clearance(pad_net, other_net, base=base)
         if layer is not None:
             return self.layer_clearance(layer, eff)
-        if self.layer_clearances:
-            from check_drc import pads_shared_layer_clearance, pad_copper_layers
-            cu = list(self.board_copper_layers or self.layers)
-            eff = pads_shared_layer_clearance(
-                eff, self.layer_clearances, pad_copper_layers(pad, cu),
-                pad_copper_layers(other_pad, cu) if other_pad is not None
-                else None)
+        if shared is not None:
+            from check_drc import pads_shared_layer_clearance
+            eff = pads_shared_layer_clearance(eff, self.layer_clearances, *shared)
         return eff
 
     def net_clearances_by_name(self, nets) -> Dict[str, float]:

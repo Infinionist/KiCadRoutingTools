@@ -4241,9 +4241,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                                     _cls_of.get(net_b, ()), eff,
                                     coupled=coupled, layer=layer)
 
-    def _layer_cl(layer: str, eff: float) -> float:
-        v = _lcl.get(layer) if _lcl else None
-        return v if v is not None else eff
+    from kicad_dru import apply_layer_rules
 
     def _stack_cl(eff: float) -> float:
         # Stack-spanning pairs (via-via): the barrels meet on every copper
@@ -4253,29 +4251,22 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
     def _pad_copper(pad):
         return pad_copper_layers(pad, _board_copper)
 
-    def _pads_cl(eff: float, pad, other_pad=None) -> float:
-        # Pad-vs-via / pad-vs-pad meet on their SHARED copper layers; TH
-        # geometry is identical on every layer, so the max over shared layers
-        # is the exact requirement. The body lives at module level
-        # (pads_shared_layer_clearance) so placement/legality.py resolves the
-        # same rule rather than a hand-mirrored copy -- #697.
-        if not _lcl:
-            return eff          # strict no-op: expand nothing (see the helper)
-        return pads_shared_layer_clearance(
-            eff, _lcl, _pad_copper(pad),
-            _pad_copper(other_pad) if other_pad is not None else None)
-
-    def _pair_cl(net_a: int, net_b: int, layer: str = None, types=None) -> float:
+    def _pair_rules(net_a: int, net_b: int, types=None):
+        """(the pair's value before the layer rules, the layer rules that
+        still replace it): the class value and every layer rule, or -- where
+        a class/type-scoped rule binds the pair (#1491) -- that rule's value
+        and only the layer rules LATER in the file, KiCad's last match, by the
+        router's own resolver (kicad_dru.ScopedClearanceRules.resolve_pair)."""
         base = clearance if not _ncl_by_id else \
             max(clearance, _ncl_by_id.get(net_a, 0.0), _ncl_by_id.get(net_b, 0.0))
         if _scoped is not None and types is not None and net_a != net_b:
             (_ta, _pta), (_tb, _ptb) = types
-            _sv = _scoped.pair_value(net_a, _ta, net_b, _tb, _pta, _ptb)
-            if _sv is not None:
-                base = _sv[0]                      # #1491: the rule replaces the class
-        if layer is not None:
-            return _layer_cl(layer, base)
-        return base
+            return _scoped.resolve_pair(net_a, _ta, net_b, _tb, _pta, _ptb, base, _lcl)
+        return base, _lcl
+
+    def _pair_cl(net_a: int, net_b: int, layer: str = None, types=None) -> float:
+        base, lm = _pair_rules(net_a, net_b, types)
+        return apply_layer_rules(base, lm, layer=layer)
 
     # A pad / footprint clearance OVERRIDE replaces the class/rule value,
     # floored at rules.min_clearance (KiCad 10, measured by
@@ -4312,8 +4303,9 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
     # #1491: the clearance rules scoped by net class or item type, graded
     # PAIR-EXACT through the router's own resolver (kicad_dru.
     # ScopedClearanceRules): the rule that binds a pair of items REPLACES its
-    # class value, at KiCad's value (no fab floor), before the layer rule and a
-    # pad override -- the order `_pair_cl` / `_pad_pair_cl` apply.
+    # class value, at KiCad's value (no fab floor); a layer rule replaces it in
+    # turn only where it comes later in the file (`_pair_rules`), and a pad
+    # override last.
     _scoped = None
     if pcb_file:
         try:
@@ -4370,15 +4362,20 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
     def _pad_pair_cl(pad, other_net: int, layer: str = None, other_pad=None,
                      other_type: str = None) -> float:
         _ot = (other_type or ('pad' if other_pad is not None else None))
-        eff = _pair_cl(pad.net_id, other_net,
-                       types=((('pad', getattr(pad, 'pad_type', None) or 'smd'),
-                               (_ot, getattr(other_pad, 'pad_type', None) or 'smd'
-                                if _ot == 'pad' else None))
-                              if _ot is not None else None))
-        if layer is not None:
-            eff = _layer_cl(layer, eff)
-        else:
-            eff = _pads_cl(eff, pad, other_pad)
+        eff, lm = _pair_rules(pad.net_id, other_net,
+                              types=((('pad', getattr(pad, 'pad_type', None) or 'smd'),
+                                      (_ot, getattr(other_pad, 'pad_type', None) or 'smd'
+                                       if _ot == 'pad' else None))
+                                     if _ot is not None else None))
+        # Pad-vs-via / pad-vs-pad meet on their SHARED copper layers; TH
+        # geometry is identical on every layer, so the max over shared layers
+        # is the exact requirement (pads_shared_layer_clearance, which
+        # placement/legality.py resolves too -- #697). No rules: expand nothing.
+        eff = apply_layer_rules(
+            eff, lm, layer=layer,
+            pad_layers=((_pad_copper(pad),
+                         _pad_copper(other_pad) if other_pad is not None else None)
+                        if layer is None and lm else None))
         if other_type is not None:
             _cv = _coupled_cl(pad.net_id, other_net, 'pad', other_type,
                               (layer,) if layer is not None else _pad_copper(pad))
@@ -5017,8 +5014,9 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                 continue
             via_via_checked.add(pair_key)
 
-            _eff = _stack_cl(_pair_cl(net1, net2, types=(('via', None), ('via', None)))
-                             if net1 != net2 else clearance)
+            _eff = (apply_layer_rules(*_pair_rules(net1, net2, (('via', None), ('via', None))),
+                                      stack=True)
+                    if net1 != net2 else _stack_cl(clearance))
             _cv = _coupled_cl(net1, net2, 'via', 'via', _board_copper)
             if _cv is not None:
                 _eff = _cv
