@@ -268,8 +268,8 @@ How to read it:
   so once rather than listing every net.
 - **Void on a plain low-speed net is usually noise.** Only escalate for nets that
   are genuinely impedance-controlled or high-speed.
-- **A void inside the antipad of the net's own via (or its P/N partner's) is a
-  layer change, not a slot.** check_impedance counts those as
+- **A void inside the antipad of the net's own via or through-hole pin (or
+  its P/N partner's) is a layer change, not a slot.** check_impedance counts those as
   `own_via_antipad_runs`, never as crossings. Whether a GND via sits beside the
   transition is a separate return-path question.
 - **If `--coplanar-gap` was declared**, the audit's "NO ground beside" and "gap
