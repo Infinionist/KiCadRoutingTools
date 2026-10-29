@@ -543,7 +543,12 @@ under a card, and a tall part can be placed there.
    warning. A `cover` warning names a standoff not where the row puts it:
    fix the row, or move the standoff.
 
-`place_simple` then holds each standoff at its length from the connector and
+`place_simple` then holds each standoff at its length from the connector.
+A standoff that cannot move (a locked boss, one at a declared pose) holds
+the connector instead: each seed seats it at the next legal quarter turn
+that puts the standoff at its length, and refuses before placing when no
+turn is legal. The `cover` rule is a warning unless the intent's `severity`
+makes it an error. `place_simple` also
 admits a part under the body only when its height is known and its top is
 0.5 mm or more under the underside; check_assembly gates one that is not. A
 part whose height nothing gives (no 3D model, no IPC-7351 name) is never put

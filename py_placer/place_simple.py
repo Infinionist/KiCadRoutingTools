@@ -28,7 +28,10 @@ the same way.
 2. The parts the file locks stay put (connectors on their edges, mounting
    holes: whatever the enclosure or a mating part decides), and so does
    every part the intent seats at a declared pose (`fixed_poses[]`, from
-   the design brief or mechanical.json), written there first; every other
+   the design brief or mechanical.json), written there first -- and so does
+   a cover's connector whose standoff cannot move, seated where it puts the
+   standoff at its length, at the seed's turn among the legal ones (#1507,
+   `Intent.cover_connector_poses`); every other
    part starts at a random place on the board, or, for a seed named in
    `--clustered-seeds`, with each group's members gathered round one random
    point. An unlocked edge part (a
@@ -219,8 +222,18 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=(),
              else validate_templates(base.get('templates')))
     tmembers = {m['ref'] for t in tmpls for m in t['members']}
     for t in tmpls:
-        notes.append(f"template {t['anchor']}: {', '.join(m['ref'] for m in t['members'])} "
-                     f"seated as drawn and carried with it")
+        refs = [m['ref'] for m in t['members'] if m['ref'] in state.parts]
+        mv = [r for r in refs if r in movable]
+        held = [r for r in refs if r not in movable]
+        if mv:
+            notes.append(f"template {t['anchor']}: {', '.join(mv)} seated as drawn and "
+                         f"carried with it")
+        if held:
+            # a member that cannot move is neither seated nor carried (#1507)
+            notes.append(f"template {t['anchor']}: {', '.join(held)} cannot move: "
+                         + ("the anchor is held where they are" if t['anchor'] not in movable
+                            else "the anchor is pulled toward them by the template cost "
+                                 "alone, never seated there"))
     fold = fold_groups(doc, rows, tmpls)
     doc = fold['doc']
     moved_line, dissolved_lines = fold_text(fold)
@@ -1119,6 +1132,52 @@ def main(argv=None):
             f"{f['reference']}" + (f" -> {f['new_side']}" if 'new_side' in f else
                                    f" at ({f['new_x']:g}, {f['new_y']:g}) {f['new_rotation']:g}")
             for f in flips))
+    # ... and a cover whose standoff cannot move fixes its connector, at one
+    # pose per quarter turn (#1507): each seed takes the next legal one and
+    # holds it, as a declared pose, so the seeds between them try every turn
+    seats = intent.cover_connector_poses(pcb, set(fixed) | extract_locked_refs(src))
+    if seats:
+        from list_nets import board_floor_knobs
+        from placement.edge_seat import seat_state
+        from placement.seeder import _fixed_pose_check
+        clearance, edge, _ = board_floor_knobs(src)
+        st0 = seat_state(pcb, src, intent, blocks, clearance, edge, set(fixed),
+                         estimate_courtyards=True)
+        waived = frozenset(frozenset(p) for p in intent.courtyard_waiver_pairs())
+        stay = {r: (p.x, p.y, p.rot) for r, p in st0.parts.items() if p.locked}
+        moves = []
+        for s in seats:
+            j, why = s['connector'], []
+            legal_at = []
+            for pose in s['poses']:
+                how, reasons, _c = _fixed_pose_check(
+                    st0, j, pose, {o: q for o, q in stay.items() if o != j}, waived=waived)
+                if how is None:
+                    why.append(f"{pose[2]:g} deg: {'; '.join(reasons)}")
+                else:
+                    legal_at.append(pose)
+            if not legal_at:
+                print(f"place_simple: the cover on {j} holds it to {', '.join(s['standoffs'])}, "
+                      f"which cannot move, and no pose that does so is legal ("
+                      + ('; '.join(why) or 'its standoffs disagree at every quarter turn')
+                      + "). Nothing was written.", file=sys.stderr)
+                if tmp:
+                    shutil.rmtree(tmp, ignore_errors=True)
+                return 2
+            x, y, rot = legal_at[(a.seed or 0) % len(legal_at)]
+            stay[j] = (x, y, rot)           # a later cover is judged against it
+            fixed[j] = {'ref': j, 'x': x, 'y': y, 'rot': rot, 'source': f'cover on {j}'}
+            moves.append({'reference': j, 'new_x': x, 'new_y': y, 'new_rotation': rot})
+            print(f"  NOTE: {j} seated where its cover puts {', '.join(s['standoffs'])}, which "
+                  f"cannot move: at ({x:g}, {y:g}) {rot:g}, legal pose "
+                  f"{(a.seed or 0) % len(legal_at) + 1} of {len(legal_at)}")
+        tmp = tmp or tempfile.mkdtemp(prefix='place_simple_')
+        os.makedirs(os.path.join(tmp, 'cover'), exist_ok=True)
+        seated = os.path.join(tmp, 'cover', os.path.basename(a.board))
+        write_placed_output(src, seated, moves)
+        copy_siblings(src, seated)
+        src, pcb = seated, parse_kicad_pcb(seated)
+        blocks, _problems = floorplan.resolve_blocks(intent, pcb, sources)
     from placement import simple_anneal
     from placement.simple import legal
     state, model, movable, notes = build(pcb, src, doc, base, a, intent, blocks, set(fixed))

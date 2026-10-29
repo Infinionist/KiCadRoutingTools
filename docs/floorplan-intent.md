@@ -1366,7 +1366,14 @@ seat gate and the anneal price it, and check_assembly gates it as a
 `height` pair (`HEIGHT-BLOCKING`; with `--baseline`, the pairs a move made).
 Each standoff is held `length_mm` along the axis from the connector:
 `place_simple` seats and carries it as a template member anchored on the
-connector, and the `cover` rule reports one off its place. A part may not be
+connector, and the `cover` rule reports one off its place, at WARN unless
+`severity` says otherwise. A standoff that cannot move -- locked in the
+board, or at a `fixed_poses[]` pose -- fixes the connector instead
+(`Intent.cover_connector_poses`, #1507): one pose per quarter turn puts
+every such standoff at its length, the ones `place_simple`'s declared-pose
+check refuses are dropped, and seed `k` seats the connector at legal pose
+`k mod n` and holds it there, so the seeds between them try every turn. With
+none legal it refuses before placing, naming the cover. A part may not be
 both a cover's and a template's. `place_pose --intent` judges a hand move
 the same way: a move that newly puts a part under a declared body where it
 does not fit is refused (`height_pairs new: C2/J1`, exit 4), and `--snap`

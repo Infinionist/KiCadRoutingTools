@@ -367,7 +367,8 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb preview.png \
   compiled into the intent; `removable` lets a test point under it): its body
   moves with its connector, a part goes under it only when its height is
   known and fits, and its standoffs are held at their lengths as template
-  members. `heights[]` declares a part's height or underside from its
+  members (a standoff that cannot move holds the connector instead: each
+  seed seats it at a legal turn that puts the standoff there). `heights[]` declares a part's height or underside from its
   datasheet, and a keep-out's `max_height_mm` admits a part of known height
   no taller (`docs/floorplan-intent.md`).
   A run that leaves a part with no legal pose is annealed again from a fresh

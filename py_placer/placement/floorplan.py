@@ -705,6 +705,35 @@ class Intent:
                         'why': f"cover on {c['connector']}: standoffs at their lengths"})
         return out
 
+    def cover_connector_poses(self, pcb_data, held) -> List[Dict[str, object]]:
+        """#1507: each cover whose connector may move while a standoff may
+        not (`held`: the refs locked in the board or at a declared pose), as
+        `{'connector', 'standoffs', 'poses'}` -- the connector's poses, one
+        per quarter turn, that put every held standoff at its length (within
+        the cover's tolerance), the connector keeping its face. A template's
+        cost only pulls an anchor toward a member that cannot move, so the
+        connector is seated at one of these instead (`place_simple`)."""
+        from .templates import member_target
+        fps = pcb_data.footprints
+        out = []
+        for t in self.cover_templates():
+            j = t['anchor']
+            if j not in fps or j in held:
+                continue
+            hm = [m for m in t['members'] if m['ref'] in held and m['ref'] in fps]
+            if not hm:
+                continue
+            poses = []
+            for rot in (0.0, 90.0, 180.0, 270.0):
+                f0 = fps[hm[0]['ref']]
+                ox, oy, _r = member_target((0.0, 0.0, rot), hm[0])
+                pose = (f0.x - ox, f0.y - oy, rot)
+                if all(math.dist(member_target(pose, m)[:2], (fps[m['ref']].x, fps[m['ref']].y))
+                       <= t['tolerance_mm'] for m in hm[1:]):
+                    poses.append(pose)
+            out.append({'connector': j, 'standoffs': [m['ref'] for m in hm], 'poses': poses})
+        return out
+
     def assembly_sides(self) -> str:
         """The declared policy, or 'both' -- which constrains nothing.
 
