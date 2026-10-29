@@ -525,14 +525,25 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
     else:
         why = _reached(pcb_data)
         reached = frozenset(why)
-    top, covers = dict(h.top), dict(h.covers)
+    top, covers, bodies = dict(h.top), dict(h.covers), dict(h.bodies)
     n_h = n_u = n_c = 0
     rows, unresolved = height_rows(declared.get('heights') or (), fps)
     unders = []
     for r, row in rows.items():
         if row.get('height_mm') is not None:
-            top[r] = (float(row['height_mm']), 'declared')
+            d = float(row['height_mm'])
+            top[r] = (d, 'declared')
             n_h += 1
+            # The declared height is the part's top over its model too, so a
+            # declared body, a measured raised body and a height-limited
+            # keep-out read one height (#1505): declared taller than the
+            # model, every cell stands at it (the model does not show where
+            # the tall member is); declared lower, the cells are clipped.
+            b = bodies.get(r)
+            if b is not None and len(b[1]):
+                pts, hv, ext = b
+                bodies[r] = (pts, np.full_like(hv, d) if d > float(hv.max())
+                             else np.minimum(hv, d), ext)
         if row.get('underside_mm') is not None:
             unders.append((r, row))
     applied = {}
@@ -591,7 +602,7 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
                 f"from above ({why.get(r, 'reached')})"
                 for r, u in sorted(applied.items()) if r in reached]
     notices += unresolved
-    out = Heights(top, covers, note=note, reached=why or reached, bodies=h.bodies,
+    out = Heights(top, covers, note=note, reached=why or reached, bodies=bodies,
                   set_aside=set_aside, notices=notices)
     if len(_DECL_MEMO) > 64:
         _DECL_MEMO.clear()
