@@ -6690,9 +6690,17 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # reconcile sub-run inherits the gate through _reconcile_kwargs.
             if env_knobs.INRUN_FLOOR_SYNC and fix_drc_settings:
                 try:
-                    from fix_kicad_drc_settings import apply_routed_floors
+                    from fix_kicad_drc_settings import (apply_routed_floors,
+                                                        step_hole_clearance)
+                    # #1493: the copper-to-hole floor this run HELD (the
+                    # board's own), lowered only to what its own copper needs,
+                    # as route_diff writes it (#1369) -- not the copper
+                    # clearance, which no copper may have needed
                     apply_routed_floors(output_file,
                                         clearance=config.clearance,
+                                        hole_clearance=step_hole_clearance(
+                                            input_file, output_file, config.clearance,
+                                            verbose=False, ledger=False),
                                         edge_clearance=config.board_edge_clearance,
                                         clamp_nondefault_netclasses=False,
                                         verbose=True)
@@ -10308,10 +10316,16 @@ For differential pair routing, use route_diff.py:
             if eff_clearance < args.clearance:
                 print(f"  Min clearance used: {eff_clearance:.4g} mm "
                       f"(below nominal {args.clearance:.4g}) - grading at this floor")
-            from fix_kicad_drc_settings import fix_project_for_output, drc_fix_kwargs
+            from fix_kicad_drc_settings import (fix_project_for_output, drc_fix_kwargs,
+                                                step_hole_clearance)
+            # #1493: the copper-to-hole floor this step HELD, lowered only to
+            # what its own copper needs (#1369's route_diff fix, route.py's half)
+            _hole_clr = step_hole_clearance(args.input_file, args.output_file,
+                                            eff_clearance)
             fix_project_for_output(
                 args.output_file, input_pcb=args.input_file,
-                clearance=eff_clearance, hole_to_hole=args.hole_to_hole_clearance,
+                clearance=eff_clearance, hole_clearance=_hole_clr,
+                hole_to_hole=args.hole_to_hole_clearance,
                 edge_clearance=args.board_edge_clearance, track_width=args.track_width,
                 via_diameter=args.via_size, via_drill=args.via_drill,
                 **drc_fix_kwargs(args))
