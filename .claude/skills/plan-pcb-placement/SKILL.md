@@ -560,7 +560,11 @@ under it: declare its height in the brief's `heights[]` (`ref`,
 `height_mm`, `source`) only from its datasheet, never a guess. A module whose 3D model is drawn
 solid down to the board takes its datasheet's underside the same way
 (`underside_mm`). An enclosure's height limit over an area is a keep-out
-with `max_height_mm`.
+with `max_height_mm`. A connector, switch or test point is reached from
+above and never goes under a cover, whatever its height; when the design
+stacks one under a body on purpose (an M.2 socket under an SO-DIMM module),
+add `"under_cover": true` to its `heights[]` row, with its datasheet
+`height_mm`, and say why in its `source`.
 
 ### 3.4c Regions the user gives (only then)
 

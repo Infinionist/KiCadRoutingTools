@@ -546,6 +546,19 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
                              else np.minimum(hv, d), ext)
         if row.get('underside_mm') is not None:
             unders.append((r, row))
+    # #1500: a part reached from above that the author declares may stand
+    # under a cover, at its declared height, is judged by that height there
+    # (an M.2 socket under an SO-DIMM module) -- never one whose height is
+    # unknown, and said, as #1462 says the mirror case.
+    lifted = sorted(r for r, row in rows.items()
+                    if row.get('under_cover') and row.get('height_mm') is not None
+                    and r in reached)
+    lift_notices = [f"{r}: declared under_cover at height_mm {float(rows[r]['height_mm']):g}: "
+                    f"judged under a cover by that height, though it is reached from "
+                    f"above ({(why or {}).get(r, 'reached')})" for r in lifted]
+    if lifted:
+        reached = frozenset(reached) - set(lifted)
+        why = {k: v for k, v in (why or {}).items() if k not in lifted}
     applied = {}
     if unders:
         try:
@@ -601,7 +614,7 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
     notices += [f"{r}: declared underside_mm {u:g} applied, though it is reached "
                 f"from above ({why.get(r, 'reached')})"
                 for r, u in sorted(applied.items()) if r in reached]
-    notices += unresolved
+    notices += lift_notices + unresolved
     out = Heights(top, covers, note=note, reached=why or reached, bodies=bodies,
                   set_aside=set_aside, notices=notices)
     if len(_DECL_MEMO) > 64:

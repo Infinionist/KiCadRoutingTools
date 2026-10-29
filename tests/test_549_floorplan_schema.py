@@ -159,7 +159,8 @@ KEY_SETS = {
                     'length_mm', 'offset_mm', 'standoffs', 'removable', 'source',
                     'context'} | FREE,
     '_COVER_STANDOFF_KEYS': {'ref', 'length_mm', 'rot'},
-    '_HEIGHT_KEYS': {'ref', 'height_mm', 'underside_mm', 'source', 'context'} | FREE,
+    '_HEIGHT_KEYS': {'ref', 'height_mm', 'underside_mm', 'under_cover', 'source',
+                     'context'} | FREE,
     '_EDGE_CONNECTOR_KEYS': {
         'ref', 'edge', 'overhang_mm', 'max_setback_mm', 'class', 'source',
         'suspect', 'suspect_reason', 'overhang_capped',
@@ -418,7 +419,7 @@ def test_an_intent_using_every_known_key_loads():
                     'standoffs': [{'ref': 'MH2', 'length_mm': 42, 'rot': 0}],
                     'removable': True, 'source': 's', 'why': 'w', 'note': 'n', 'context': {'why': 'w'}}],
         'heights': [{'ref': 'U9', 'height_mm': 0.8, 'underside_mm': 2.0, 'source': 's',
-                     'why': 'w', 'note': 'n', 'context': {'why': 'w'}}],
+                     'under_cover': True, 'why': 'w', 'note': 'n', 'context': {'why': 'w'}}],
     }
     # Every key of every set must appear above, or this proves less than it
     # claims -- the point is coverage of the vocabulary, not of a sample.

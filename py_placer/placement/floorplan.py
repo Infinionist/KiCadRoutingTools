@@ -218,7 +218,12 @@ EDGE_BAND_SANITY_MM = 5.0
 #: their parts, matched index for index. Graded by `replicate` and applied
 #: by `place_pose replicate --intent`; an older build refuses the key by
 #: name.
-READER_VERSION = 19
+#: 20 (#1500): `heights[].under_cover` -- a part reached from above (a
+#: connector, a switch) judged under a cover by its declared height rather
+#: than refused there. It changes what place_simple, place_pose and
+#: check_assembly admit under a cover; an older build refuses the key by
+#: name.
+READER_VERSION = 20
 #: The reader version that first reads `templates[]`.
 TEMPLATES_READER = 13
 #: The reader version that first reads a template row's `kind` and
@@ -235,6 +240,8 @@ LINKS_READER = 17
 RAILS_READER = 18
 #: The reader version that first reads `replicate[].channels` (#1480).
 CHANNELS_READER = 19
+#: The reader version that first reads `heights[].under_cover` (#1500).
+UNDER_COVER_READER = 20
 #: #1475. The keep-outs a block's `fence_mm` compiles to are named
 #: `fence:<block>:<N|S|W|E>`; an intent may not name its own keep-out so.
 FENCE_KEEPOUT_PREFIX = 'fence:'
@@ -387,8 +394,10 @@ _COVER_KEYS = {'connector', 'side', 'axis_deg', 'width_mm', 'underside_mm',
 _COVER_STANDOFF_KEYS = {'ref', 'length_mm', 'rot'}
 #: #1443. One `heights[]` row: a part's `height_mm` (its top above its face)
 #: and/or `underside_mm` (the room under its body, across its occupancy),
-#: from `source`.
-_HEIGHT_KEYS = {'ref', 'height_mm', 'underside_mm', 'source',
+#: from `source`. `under_cover: true` (#1500, with `height_mm`) lets a part
+#: reached from above -- a connector, a switch -- stand under a cover by its
+#: declared height instead of being refused there.
+_HEIGHT_KEYS = {'ref', 'height_mm', 'underside_mm', 'under_cover', 'source',
                 'context'} | _FREE_TEXT_KEYS
 #: `source`, `suspect`, `suspect_reason`, `overhang_capped` and
 #: `observed_overhang_mm` are emitter-written and read by nothing today; they
@@ -1441,6 +1450,14 @@ def _height_claims(raw: Dict) -> List[Dict]:
                 row[k] = _number(h[k], f"{where}.{k}", lo=0.0)
         if row.get('height_mm') is not None and row['height_mm'] <= 0:
             raise IntentError(f"{where}.height_mm: expected > 0")
+        if 'under_cover' in h:
+            if not isinstance(h['under_cover'], bool):
+                raise IntentError(f"{where}.under_cover: expected true or false, "
+                                  f"got {h['under_cover']!r}")
+            if h['under_cover'] and row.get('height_mm') is None:
+                raise IntentError(f"{where}.under_cover: needs the part's `height_mm` -- "
+                                  f"a part reached from above goes under a cover only by "
+                                  f"a height its datasheet gives")
         row['source'] = _source(h, where)
         out.append(row)
     return out

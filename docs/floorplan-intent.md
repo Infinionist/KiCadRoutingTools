@@ -159,7 +159,7 @@ suspect, suspect_reason, why
 | `templates[]` | `anchor` (the chip), `members` (each `ref`, `at` [dx, dy] mm and `rot`, a quarter turn, in the chip's own frame; `pads` and `note` as the fit wrote them), `tolerance_mm`, `kind` (`switching stage` or `rf front end`), `ground_return_mm`, `source`, `why` (or `note` / `reason`), `context`, and the fit-written `fitted` (see "`templates[]`" below; needs `min_reader` 13, and 14 with `kind` or `ground_return_mm`) |
 | `covers[]` | `connector`, `side` (`F`/`B`), `axis_deg` (a quarter turn in the connector's frame), `width_mm`, `underside_mm`, `length_mm`, `offset_mm`, `standoffs`, `removable`, `source`, `why` (or `note` / `reason`), `context` (see "`covers[]` and `heights[]`" below; needs `min_reader` 15) |
 | `covers[].standoffs[]` | `ref`, `length_mm`, `rot` |
-| `heights[]` | `ref`, `height_mm`, `underside_mm`, `source`, `why` (or `note` / `reason`), `context` (needs `min_reader` 15) |
+| `heights[]` | `ref`, `height_mm`, `underside_mm`, `under_cover` (needs `min_reader` 20), `source`, `why` (or `note` / `reason`), `context` (needs `min_reader` 15) |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why` (or `note` / `reason`), `context`, and the compiler-written `source` (see "Arrays" below; needs `min_reader` 7) |
 | `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"`, `"mechanical"` or `"derived_default"`), `why` (or `note` / `reason`), `context`, `accept_courtyard_overlap` (a list of literal refs) (see "Fixed poses" below; needs `min_reader` 7) |
 | `legality_budget` | `overlap_area`, `oob_count`, `oob_amount` (`oob_area` refused — see below) |
@@ -326,6 +326,7 @@ Each `min_reader` level and the keys it covers:
 | 17 | `links[]`, `chains[]` |
 | 18 | `rails[]` |
 | 19 | `replicate[].channels` |
+| 20 | `heights[].under_cover` |
 
 The emitter and the design-brief compiler stamp the level their output needs.
 
@@ -1400,6 +1401,16 @@ applied over the rule. Without a declaration such a part stays solid even
 where its 3D model shows room under it, and every reader names it (`J9:
 model room under it not applied: reached from above (reference prefix J)`),
 never a "room under" line.
+
+The same rule refuses such a part UNDER any cover, whatever its height: a
+connector is reached from above, so nothing may stand over it. `under_cover:
+true` on its `heights[]` row, with its `height_mm`, lifts that for the one
+part (#1500): it is judged under a cover by its declared height, as any
+part of known height is -- an M.2 socket under an SO-DIMM module -- and
+every reader names the override (`J7: declared under_cover at height_mm 3.2:
+judged under a cover by that height, though it is reached from above (...)`).
+The key needs `height_mm` (a part of unknown height is never risked under a
+body) and `min_reader` 20; an undeclared connector stays refused.
 
 A row's `ref` is a reference or a reference glob (`C*`, matched as a
 block's `refs` are): a row naming the part outright outranks a glob, and of

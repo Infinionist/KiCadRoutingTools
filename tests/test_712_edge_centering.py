@@ -438,8 +438,10 @@ def test_the_loader_refuses_every_malformed_along_edge_claim():
     # zone no part may use. 17 since #1477: `links[]` and `chains[]`, two
     # sets of parts within a distance, their groups unmerged. 18 since
     # #1478: `rails[]`, supplies priced as rails whatever their fan-out. 19
-    # since #1480: `replicate[].channels`, copies inside one sheet.
-    assert fp.READER_VERSION == 19, (
+    # since #1480: `replicate[].channels`, copies inside one sheet. 20 since
+    # #1500: `heights[].under_cover`, a part reached from above judged
+    # under a cover by its declared height.
+    assert fp.READER_VERSION == 20, (
         f"{fp.READER_VERSION}: the field vocabulary grew. Re-state this "
         f"literal and say which field arrived, the way #712, #837, #902, "
         f"#893, #959 and #1051 did")

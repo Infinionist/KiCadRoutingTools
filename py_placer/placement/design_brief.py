@@ -1276,6 +1276,8 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
         need_reader = max(need_reader, 10)
     if fragment.get('covers') or fragment.get('heights'):
         need_reader = max(need_reader, fp.COVERS_READER)
+    if any(h.get('under_cover') for h in fragment.get('heights') or ()):
+        need_reader = max(need_reader, fp.UNDER_COVER_READER)
     if need_reader:
         fragment['min_reader'] = need_reader
 
