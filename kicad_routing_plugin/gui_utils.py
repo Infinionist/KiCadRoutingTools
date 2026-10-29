@@ -861,6 +861,11 @@ def persist_live_tool_records(board, same_net_pad_clearance=None):
             persist_protected_nets(_pro, consume_protection_candidates(),
                                    board=board)
             persist_impedance_specs(_pro, consume_impedance_specs(), board=board)
+            # #1503: the pairs matched P to N, and the skew each was matched to
+            from protected_nets import (consume_intra_pair_tolerances,
+                                        persist_intra_pair_tolerances)
+            persist_intra_pair_tolerances(_pro, consume_intra_pair_tolerances(),
+                                          board=board)
             # #1379: the power widths this step was asked for, measured and disclosed.
             from protected_nets import consume_power_widths, persist_power_widths
             persist_power_widths(_pro, consume_power_widths(), board=board)

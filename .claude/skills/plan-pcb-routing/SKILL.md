@@ -2492,10 +2492,14 @@ Key options:
 - `--no-gnd-vias` - Disable automatic GND via placement near signal vias
 - `--diff-pair-intra-match` - Match P/N lengths within each pair. Its verdict
   (`intra_pair_matching[].status`) is read off the shipped copper (#1303), so a
-  `matched` means the board's P/N skew is inside `--length-match-tolerance`.
-  Where the pair has a hard skew budget, declare it as a `.kicad_dru`
-  `(constraint skew (max ..) (within_diff_pairs))` rule: check_drc and
-  board_score grade it, as KiCad does. A board whose project declares a
+  `matched` means the board's P/N skew is inside its tolerance. The tolerance
+  is a `.kicad_dru` `(constraint skew (max ..) (within_diff_pairs))` rule's
+  max where one binds the pair -- and such a rule turns matching on for its
+  pairs without the flag -- else 0.1 mm; an explicit `--length-match-tolerance`
+  overrides both. The step records each matched pair and its tolerance on the
+  board, and check_drc and board_score grade the pair at it where no rule
+  binds it (#1503). Where the pair has a hard skew budget, declare it as such
+  a rule: KiCad grades it too. A board whose project declares a
   diff-pair net class (a `diff_pair_gap`/`diff_pair_width` that differs from
   Default's) needs such a rule: board_score only MEASURES a pair nothing
   grades, and `check_complete` names the declaration in its reason

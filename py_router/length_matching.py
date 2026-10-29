@@ -3733,7 +3733,7 @@ def apply_meanders_to_diff_pair(
         modified_result['centerline_length'] = avg_routed_length  # Use actual routed length
         # Use max(P,N) total for route_length when intra-match is enabled (since it will equalize)
         # Otherwise use average for consistent comparison
-        if config.diff_pair_intra_match:
+        if intra_pair_on(config, p_net_id):
             p_total = p_routed_length + p_stub_length
             n_total = n_routed_length + n_stub_length
             modified_result['route_length'] = max(p_total, n_total)
@@ -4155,6 +4155,24 @@ def _splice_into_legs(result, old_segments, new_segments, all_segments):
     result['new_segments'] = [s for lr in legs for s in lr['new_segments']] + extra
 
 
+def intra_pair_on(config, p_net_id) -> bool:
+    """Is the pair whose P net is `p_net_id` matched P to N this run (#1503):
+    the pairs `config.intra_pair_tolerances` names when the engine set it
+    (every pair under --diff-pair-intra-match, else those a .kicad_dru P/N
+    skew rule binds), else every pair under the flag."""
+    tols = getattr(config, 'intra_pair_tolerances', None)
+    if tols is not None:
+        return p_net_id in tols
+    return bool(config.diff_pair_intra_match)
+
+
+def intra_pair_tolerance(config, p_net_id) -> float:
+    """The skew the pair is matched to (#1503): its own from
+    `config.intra_pair_tolerances`, else `config.length_match_tolerance`."""
+    return (getattr(config, 'intra_pair_tolerances', None) or {}).get(
+        p_net_id, config.length_match_tolerance)
+
+
 def regrade_intra_pair_reports(reports, pair_copper, pcb_data, diff_pair_ids,
                                tolerance):
     """Decide each intra-pair record's status from the SHIPPED copper (#1303).
@@ -4200,7 +4218,7 @@ def regrade_intra_pair_reports(reports, pair_copper, pcb_data, diff_pair_ids,
             continue
         if skew is None:
             rec['status'], rec['reason'] = 'unmatched', 'not-measured'
-        elif skew <= tolerance + 1e-9:
+        elif skew <= rec.get('tolerance_mm', tolerance) + 1e-9:
             rec['status'] = 'matched' if st in ('matched', 'improved') else 'within-tolerance'
             rec['reason'] = None
         else:
@@ -4238,12 +4256,21 @@ def run_intra_pair_matching(diff_pair_ids, routed_results, config, pcb_data,
                        members have copper, so the caller still learns the skew
       skipped          deliberately handled elsewhere (see reason)
     """
+    import copy
     skip = set(skip_p_net_ids or ())
     reports = []
+    outer = config
     for pair_name, pair in diff_pair_ids:
+        if not intra_pair_on(outer, pair.p_net_id):
+            continue
+        # #1503: each pair at its own tolerance (a .kicad_dru P/N skew rule's,
+        # the flag's, else the default)
+        config = copy.copy(outer)
+        config.length_match_tolerance = intra_pair_tolerance(outer, pair.p_net_id)
         rec = {'pair': pair_name, 'p_net': pair.p_net_name, 'n_net': pair.n_net_name,
                'status': None, 'reason': None,
-               'delta_mm': None, 'delta_before_mm': None}
+               'delta_mm': None, 'delta_before_mm': None,
+               'tolerance_mm': config.length_match_tolerance}
         if pair.p_net_id in skip:
             # AC-coupled (XNet) members are matched end-to-end by the #196 pass;
             # matching them per-side too would double-meander.

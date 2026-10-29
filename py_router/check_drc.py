@@ -2946,9 +2946,11 @@ def _pair_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
     declares neither kind.
     """
     path = pcb_file or getattr(pcb_data, 'source_path', '') or ''
-    from kicad_dru import (read_board_length_rules, binding_length_rule,
+    from kicad_dru import (board_skew_rules, binding_length_rule,
                            coupled_net_pairs)
-    rules, notes = read_board_length_rules(path, kinds=('skew', 'diff_pair_uncoupled'))
+    # #1503: with the pairs a route_diff step matched, at the tolerance it
+    # matched them to, wherever the .kicad_dru's own rule does not bind them
+    rules, notes = board_skew_rules(path, kinds=('skew', 'diff_pair_uncoupled'))
     if not rules:
         if notes and not quiet:
             for n in notes:

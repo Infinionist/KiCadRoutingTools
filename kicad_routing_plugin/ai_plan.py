@@ -363,6 +363,9 @@ _GEOMETRY_OVERRIDE_CHECKS = {
     # and each pair uses its OWN netclass diff geometry (the omitted-flag default).
     'diff_pair_width': 'diff_pair_width_check',
     'diff_pair_gap': 'diff_pair_gap_check',
+    # #1503: a plan's tolerance == the CLI passing --length-match-tolerance,
+    # which overrides a .kicad_dru P/N skew rule for the pairs it matches
+    'length_match_tolerance': 'length_match_tolerance_check',
 }
 
 
@@ -1738,6 +1741,11 @@ class PlanExecutor:
                                        board=_live)
                 persist_impedance_specs(_pro, consume_impedance_specs(),
                                         board=_live)
+                # #1503: the pairs matched P to N, and the skew each was matched to
+                from protected_nets import (consume_intra_pair_tolerances,
+                                            persist_intra_pair_tolerances)
+                persist_intra_pair_tolerances(_pro, consume_intra_pair_tolerances(),
+                                              board=_live)
                 # #1379: the plan's power-net width requests, measured and disclosed.
                 from protected_nets import (consume_power_widths,
                                             persist_power_widths)

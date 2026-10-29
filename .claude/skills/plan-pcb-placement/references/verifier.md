@@ -41,7 +41,9 @@ Trust nothing it told you. Measure it yourself, from the repo root.
    The tools also name declarations they found and report them without
    blocking `check_complete`: a project diff-pair net class with no
    `.kicad_dru` skew / diff_pair_uncoupled rule binding it is
-   `diff_pairs.declared` (write the rule with the budget the board needs,
+   `diff_pairs.declared` -- unless a route_diff step length-matched the
+   pair, which records its tolerance and is graded at it (#1503) --
+   (write the rule with the budget the board needs,
    e.g. `(rule "pair skew" (condition "A.NetClass == '<class>'") (constraint
    skew (max 0.15mm) (within_diff_pairs)))` in `<BOARD>.kicad_dru`); the
    project's `net_impedance` records and the power widths the run asked of

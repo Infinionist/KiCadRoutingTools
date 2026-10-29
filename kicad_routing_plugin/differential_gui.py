@@ -1128,6 +1128,7 @@ class DifferentialTab(wx.Panel):
                 length_match_groups=config.get('length_match_groups'),
                 length_match_tolerance=config.get('length_match_tolerance',
                                                   defaults.LENGTH_MATCH_TOLERANCE),
+                intra_pair_tolerance=config.get('intra_pair_tolerance'),
                 meander_amplitude=config.get('meander_amplitude', defaults.MEANDER_AMPLITUDE),
                 meander_spacing=config.get('meander_spacing', defaults.MEANDER_SPACING),
                 time_matching=config.get('time_matching', False),

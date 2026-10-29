@@ -262,6 +262,10 @@ class GridRouteConfig:
     meander_spacing: float = 2.0  # arm pitch as a multiple of net track width
     diff_chamfer_extra: float = 1.5  # Chamfer multiplier for diff pair meanders (>1 avoids P/N crossings)
     diff_pair_intra_match: bool = False  # Enable intra-pair P/N length matching (meander shorter track)
+    # #1503: {P net id: tolerance mm} for the pairs matched P to N this run --
+    # every pair under diff_pair_intra_match, else those a .kicad_dru P/N skew
+    # rule binds; None: none (`length_matching.intra_pair_on`)
+    intra_pair_tolerances: Optional[Dict[int, float]] = None
     ac_couple_match: bool = False  # End-to-end length-match AC-coupled pairs split by series caps (#196)
     # Hybrid escape: when a coupled pair's terminal connector can't clear foreign
     # copper (#165 graze), keep the coupled middle and defer each terminal leg to

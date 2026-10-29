@@ -556,6 +556,70 @@ def read_board_length_rules(board_path: str, kinds=('length',)
     return parse_dru_length_rules(text, kinds)
 
 
+#: the name a recorded intra-pair tolerance grades under (#1503)
+RECORDED_INTRA_RULE = 'route_diff intra-pair (recorded)'
+
+
+def recorded_intra_pair_rules(board_path: str) -> List[LengthRule]:
+    """The skew rules the board's records imply (#1503): one per pair a
+    route_diff step length-matched, P against N (`within_diff_pairs`) at the
+    tolerance it matched to, scoped to the pair's two nets by name. A caller
+    puts them BEFORE the .kicad_dru's own rules: KiCad's binding is the last
+    rule that matches, so a declared skew rule over the same nets wins."""
+    if not board_path:
+        return []
+    try:
+        from protected_nets import pro_path_for_board, read_intra_pair_tolerances
+        rec = read_intra_pair_tolerances(pro_path_for_board(board_path))
+    except Exception:
+        return []
+    out = []
+    for p, r in sorted(rec.items()):
+        try:
+            tol = float(r['tolerance_mm'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        n = str(r.get('n') or '')
+        if not n:
+            continue
+        out.append(LengthRule(RECORDED_INTRA_RULE, None, None, tol,
+                              (('netname', p), ('netname', n)), '', 'error',
+                              'skew', True))
+    return out
+
+
+def board_skew_rules(board_path: str, kinds=('skew', 'diff_pair_uncoupled')
+                     ) -> Tuple[List[LengthRule], List[str]]:
+    """The skew-family rules a grader reads (#1503): the board's recorded
+    intra-pair tolerances, then the .kicad_dru's own (which win where both
+    bind a net, as KiCad's last-match does)."""
+    rules, notes = read_board_length_rules(board_path, kinds=kinds)
+    if 'skew' in kinds:
+        rules = recorded_intra_pair_rules(board_path) + rules
+    return rules, notes
+
+
+def intra_pair_rule_tolerances(board_path: str, pairs, member, net_names=None
+                               ) -> Dict[str, Tuple[float, str]]:
+    """{P net: (max_mm, rule name)} for each `(p, n)` pair both of whose
+    nets the .kicad_dru's binding skew rule is a P/N rule
+    (`within_diff_pairs`) with a `max` (#1503): what route_diff matches the
+    pair to when no tolerance is given. `member` maps a net name to its
+    classes. Recorded tolerances are not read here -- a routing step takes
+    the board's declaration or its own flag, never a previous step's."""
+    rules, _notes = read_board_length_rules(board_path, kinds=('skew',))
+    out = {}
+    if not rules:
+        return out
+    for p, n in pairs:
+        rp, _bp = binding_length_rule(rules, p, member.get(p), net_names)
+        rn, _bn = binding_length_rule(rules, n, member.get(n), net_names)
+        if (rp is not None and rp is rn and rp.within_diff_pairs
+                and rp.max_mm is not None):
+            out[p] = (float(rp.max_mm), rp.name)
+    return out
+
+
 def length_rule_matches(rule: LengthRule, net_name: str, classes,
                         net_names=None) -> Optional[bool]:
     """Does `rule` bind the net? None when its scope is not modelled (the

@@ -14,6 +14,7 @@ from routing_config import DiffPairNet
 from memory_debug import get_process_memory_mb, estimate_track_proximity_cache_mb
 from obstacle_costs import compute_track_proximity_for_net
 from net_queries import calculate_route_length
+from length_matching import intra_pair_on  # #1503
 from pcb_modification import add_route_to_pcb_data
 from dataclasses import replace
 from diff_pair_routing import (route_diff_pair_with_obstacles, get_diff_pair_endpoints,
@@ -649,7 +650,7 @@ def route_diff_pairs(
             result['p_routed_length'] = p_routed_length
             result['n_routed_length'] = n_routed_length
             # For inter-pair matching: use max(P,N) total if intra-pair will equalize them, else use average
-            if config.diff_pair_intra_match:
+            if intra_pair_on(config, pair.p_net_id):
                 p_total = p_routed_length + p_stub_length
                 n_total = n_routed_length + n_stub_length
                 result['route_length'] = max(p_total, n_total)
@@ -956,7 +957,7 @@ def route_diff_pairs(
                             retry_result['p_routed_length'] = p_routed_length
                             retry_result['n_routed_length'] = n_routed_length
                             # For inter-pair matching: use max(P,N) total if intra-pair will equalize them
-                            if config.diff_pair_intra_match:
+                            if intra_pair_on(config, pair.p_net_id):
                                 p_total = p_routed_length + p_stub_length
                                 n_total = n_routed_length + n_stub_length
                                 retry_result['route_length'] = max(p_total, n_total)
@@ -1103,7 +1104,7 @@ def route_diff_pairs(
                         swap_result['p_routed_length'] = p_routed_length
                         swap_result['n_routed_length'] = n_routed_length
                         # For inter-pair matching: use max(P,N) total if intra-pair will equalize them
-                        if config.diff_pair_intra_match:
+                        if intra_pair_on(config, pair.p_net_id):
                             p_total = p_routed_length + p_stub_length
                             n_total = n_routed_length + n_stub_length
                             swap_result['route_length'] = max(p_total, n_total)

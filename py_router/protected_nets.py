@@ -47,6 +47,11 @@ PRO_KEY = "protected_nets"
 IMPEDANCE_KEY = "net_impedance"
 SNPC_KEY = "same_net_pad_clearance"
 POWER_WIDTHS_KEY = "power_widths"
+#: #1503: the pairs a route_diff step length-matched P to N, keyed by the P
+#: net: {'n': N net, 'tolerance_mm': the skew it matched to, 'source': 'cli'
+#: | 'dru' | 'default'} -- what the graders hold a pair to when no
+#: .kicad_dru skew rule binds it (`kicad_dru.recorded_intra_pair_rules`).
+INTRA_KEY = "intra_pair_tolerance"
 
 _GLOB_CHARS = set('*?[')
 
@@ -101,6 +106,29 @@ def note_power_widths(mapping: Dict[str, float]) -> None:
 
 def consume_power_widths() -> Dict[str, float]:
     return _consume(POWER_WIDTHS_KEY)
+
+
+def note_intra_pair_tolerances(mapping: Dict[str, dict]) -> None:
+    """Record the pairs this step length-matched and the tolerance each was
+    matched to (#1503)."""
+    _note(INTRA_KEY, mapping)
+
+
+def consume_intra_pair_tolerances() -> Dict[str, dict]:
+    return _consume(INTRA_KEY)
+
+
+def persist_intra_pair_tolerances(pro_path: str, mapping: Dict[str, dict],
+                                  verbose: bool = True, board=None) -> bool:
+    return _persist_map(pro_path, INTRA_KEY, mapping,
+                        "Intra-pair tolerances (graded where no .kicad_dru skew "
+                        "rule binds the pair)", verbose, board=board)
+
+
+def read_intra_pair_tolerances(pro_path: str) -> Dict[str, dict]:
+    """The recorded intra-pair tolerances for the board beside a .kicad_pro
+    ({} when absent)."""
+    return _dict_map_from(_namespace(pro_path), INTRA_KEY)
 
 
 def pro_path_for_board(board_path: str) -> str:

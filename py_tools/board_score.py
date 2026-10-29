@@ -944,7 +944,9 @@ def score_diff_pairs(board: str, drc: dict, pcb=None) -> dict:
     In2.Cu, N on B.Cu -- 0 mm coupled, 4.5 mm skew -- and no grader said so.
 
     GRADED only against what the board DECLARES: its `.kicad_dru` skew and
-    diff_pair_uncoupled rules, which check_drc's pair-rule pass grades and
+    diff_pair_uncoupled rules -- and, for a pair a route_diff step length-
+    matched where no such rule binds it, the tolerance that step matched it
+    to, recorded on the board (#1503) -- which check_drc's pair-rule pass grades and
     this component counts (`count`; the rows leave `drc`, so nothing is
     counted twice). A board that declares neither is measured, not graded:
     `ran` False with the measurements attached, listed in UNGRADED -- KiCad
@@ -955,12 +957,14 @@ def score_diff_pairs(board: str, drc: dict, pcb=None) -> dict:
     rows = (drc or {}).get('pair_rules') or {}
     try:
         from kicad_parser import parse_kicad_pcb
-        from kicad_dru import coupled_net_pairs, read_board_length_rules
+        from kicad_dru import coupled_net_pairs, board_skew_rules
         from net_queries import diff_pair_copper, net_pads_joined, CopperIndex
         from design_rules import DesignRules
         if pcb is None:
             pcb = parse_kicad_pcb(board)
-        rules, _notes = read_board_length_rules(
+        # #1503: the .kicad_dru's rules, and the pairs a route_diff step
+        # matched at the tolerance it matched them to where no rule binds them
+        rules, _notes = board_skew_rules(
             board, kinds=('skew', 'diff_pair_uncoupled'))
         names = {nid: n.name for nid, n in pcb.nets.items() if nid and n.name}
         pairs = coupled_net_pairs(names)

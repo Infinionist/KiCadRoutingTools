@@ -379,6 +379,45 @@ def _nothing_to_do_document(status: str, extra: Optional[dict] = None) -> dict:
     return document
 
 
+def resolve_intra_pair_tolerances(diff_pair_ids, config, pcb_data, input_file,
+                                  override=None):
+    """#1503: `({P net id: tolerance}, {P net id: (source, rule)})` for the
+    pairs this run matches P to N, or `(None, {})` when it matches none.
+
+    A pair a .kicad_dru P/N skew rule binds (`kicad_dru.
+    intra_pair_rule_tolerances`) is matched to the rule's max whether or not
+    the flag is on (source 'dru'); under `diff_pair_intra_match` every other
+    pair is matched to `config.length_match_tolerance` ('default'). An
+    explicit `override` replaces the number for every matched pair ('cli')."""
+    path = input_file or getattr(pcb_data, 'source_path', '') or ''
+    rule = {}
+    if path and diff_pair_ids:
+        try:
+            from kicad_dru import intra_pair_rule_tolerances
+            from list_nets import net_class_memberships
+            nm = {nid: n.name for nid, n in pcb_data.nets.items() if nid and n.name}
+            member = {nm[i]: c for i, c in net_class_memberships(path, nm).items() if i in nm}
+            by_name = intra_pair_rule_tolerances(
+                path, [(p.p_net_name, p.n_net_name) for _, p in diff_pair_ids],
+                member, set(nm.values()))
+            rule = {p.p_net_id: by_name[p.p_net_name] for _, p in diff_pair_ids
+                    if p.p_net_name in by_name}
+        except Exception as exc:                             # noqa: BLE001
+            print(f"  (.kicad_dru skew rules not read: {exc})")
+    tols, src = {}, {}
+    for _name, p in diff_pair_ids:
+        if p.p_net_id in rule:
+            tols[p.p_net_id] = rule[p.p_net_id][0]
+            src[p.p_net_id] = ('dru', rule[p.p_net_id][1])
+        elif config.diff_pair_intra_match:
+            tols[p.p_net_id] = config.length_match_tolerance
+            src[p.p_net_id] = ('default', None)
+    if override is not None:
+        tols = {k: float(override) for k in tols}
+        src = {k: ('cli', r) for k, (_s, r) in src.items()}
+    return (tols or None), src
+
+
 def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[str],
                 layers: List[str] = None,
                 # #530: cap every auto-read net class at this clearance (the
@@ -467,6 +506,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 time_match_tolerance: float = defaults.TIME_MATCH_TOLERANCE,
                 diff_chamfer_extra: float = defaults.DIFF_PAIR_CHAMFER_EXTRA,
                 diff_pair_intra_match: bool = False,
+                intra_pair_tolerance: Optional[float] = None,
                 ac_couple_match: bool = False,
                 debug_memory: bool = False,
                 mps_reverse_rounds: bool = False,
@@ -522,6 +562,12 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         gnd_via_enabled: Add GND vias near diff pair signal vias (default: True)
         diff_chamfer_extra: Chamfer multiplier for diff pair meanders (default: 1.5)
         diff_pair_intra_match: Enable intra-pair P/N length matching (default: False)
+        intra_pair_tolerance: the P/N skew every intra-matched pair is matched
+            to, over a .kicad_dru rule's (#1503: the CLI's explicit
+            --length-match-tolerance, the GUI's ticked override). None: a pair a
+            .kicad_dru P/N skew rule (`within_diff_pairs`, with a max) binds is
+            matched to that rule's max -- with or without diff_pair_intra_match
+            -- and every other matched pair to `length_match_tolerance`.
         ac_couple_match: End-to-end length-match AC-coupled diff pairs split by series
             DC-blocking caps, matching the concatenated P vs N path (#196) (default: False)
         force_reroute: Strip the copper of every selected pair that is already
@@ -1440,6 +1486,17 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
 
     total_routes = len(diff_pair_ids_to_route)
 
+    # #1503: the pairs matched P to N, each at its tolerance -- a .kicad_dru
+    # P/N skew rule's, the explicit override, else the default
+    config.intra_pair_tolerances, _intra_src = resolve_intra_pair_tolerances(
+        diff_pair_ids_to_route, config, pcb_data, input_file, intra_pair_tolerance)
+    _by_rule = sorted({r for _s, r in _intra_src.values() if r})
+    if _by_rule and not config.diff_pair_intra_match:
+        print(f"Intra-pair matching on for {sum(1 for _s, r in _intra_src.values() if r)} "
+              f"pair(s) a .kicad_dru P/N skew rule binds ({', '.join(_by_rule)})"
+              + (f", at the override {intra_pair_tolerance}mm" if intra_pair_tolerance is not None
+                 else ''))
+
     results = []
     pad_swaps = []  # List of (pad1, pad2) tuples for nets that need swapping
     successful = 0
@@ -1910,7 +1967,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
 
     # Apply intra-pair P/N length matching if configured
     intra_pair_reports = []
-    if config.diff_pair_intra_match:
+    if config.intra_pair_tolerances:
         print("\n" + "=" * 60)
         print("Intra-pair P/N length matching")
         print("=" * 60)
@@ -2164,8 +2221,20 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                if r['status'] in ('matched', 'within-tolerance')]
         _iu = [r for r in intra_pair_reports
                if r['status'] not in ('matched', 'within-tolerance', 'skipped')]
+        _tols = sorted({r['tolerance_mm'] for r in intra_pair_reports
+                        if r.get('tolerance_mm') is not None})
+        # #1503: what each pair is graded to from now on, where no .kicad_dru
+        # rule binds it -- recorded on the board by the writeback
+        from protected_nets import note_intra_pair_tolerances
+        note_intra_pair_tolerances({
+            r['p_net']: {'n': r['n_net'], 'tolerance_mm': r['tolerance_mm'],
+                         'source': _intra_src.get(next(
+                             (p.p_net_id for _n, p in diff_pair_ids_to_route
+                              if p.p_net_name == r['p_net']), None), ('default', None))[0]}
+            for r in intra_pair_reports
+            if r['status'] != 'skipped' and r.get('tolerance_mm') is not None})
         print(f"\n  Intra-pair (shipped copper, #1303): {len(_im)}/{len(_im) + len(_iu)} "
-              f"pair(s) within {config.length_match_tolerance}mm"
+              f"pair(s) within {'/'.join(f'{t:g}' for t in _tols) or config.length_match_tolerance}mm"
               + (f" ({len(_isk)} matched end-to-end by the AC-coupled pass)"
                  if _isk else ""))
         if _iu:
@@ -2831,8 +2900,11 @@ Examples:
     parser.add_argument("--length-match-group", action="append", nargs="+", dest="length_match_groups",
                         help="Net patterns to length-match as a group (can be repeated). Use 'auto' for DRAM auto-grouping "
                              "(DDR2-5, LPDDR4/5: byte lanes plus one command/address group)")
-    parser.add_argument("--length-match-tolerance", type=float, default=defaults.LENGTH_MATCH_TOLERANCE,
-                        help="Acceptable length variance within group in mm (default: 0.1)")
+    parser.add_argument("--length-match-tolerance", type=float, default=None,
+                        help="Acceptable length variance within group in mm (default: 0.1). "
+                             "Given, it is also every matched pair's P/N skew, over a "
+                             ".kicad_dru P/N skew rule's; omitted, a pair such a rule binds "
+                             "is matched to the rule's max (#1503)")
     parser.add_argument("--meander-amplitude", type=float, default=defaults.MEANDER_AMPLITUDE,
                         help="Height of meander perpendicular to trace in mm (default: 1.0)")
     parser.add_argument("--meander-spacing", type=float, default=defaults.MEANDER_SPACING,
@@ -3238,7 +3310,10 @@ Examples:
                 ripped_route_avoidance_radius=args.ripped_route_avoidance_radius,
                 ripped_route_avoidance_cost=args.ripped_route_avoidance_cost,
                 length_match_groups=args.length_match_groups,
-                length_match_tolerance=args.length_match_tolerance,
+                length_match_tolerance=(defaults.LENGTH_MATCH_TOLERANCE
+                                        if args.length_match_tolerance is None
+                                        else args.length_match_tolerance),
+                intra_pair_tolerance=args.length_match_tolerance,
                 meander_amplitude=args.meander_amplitude,
                 meander_spacing=args.meander_spacing,
                 time_matching=args.time_matching,
@@ -3301,6 +3376,10 @@ Examples:
             _pro = pro_path_for_board(args.output_file)
             persist_protected_nets(_pro, consume_protection_candidates())
             persist_impedance_specs(_pro, consume_impedance_specs())
+            # #1503: the pairs matched P to N, and the skew each was matched to
+            from protected_nets import (consume_intra_pair_tolerances,
+                                        persist_intra_pair_tolerances)
+            persist_intra_pair_tolerances(_pro, consume_intra_pair_tolerances())
             # #581: an explicit active flag on this step is recorded so later
             # chain steps keep their vias off same-net pads too.
             if getattr(args, 'same_net_pad_clearance', None) is not None \

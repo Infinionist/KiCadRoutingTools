@@ -1774,7 +1774,18 @@ class RoutingDialog(wx.Dialog):
                                                         initial=defaults.LENGTH_MATCH_TOLERANCE, inc=r['inc'])
         self.length_match_tolerance.SetDigits(r['digits'])
         self.length_match_tolerance.SetToolTip("Acceptable length difference in mm for matched nets")
-        length_params_sizer.Add(self.length_match_tolerance, 0, wx.RIGHT, 10)
+        length_params_sizer.Add(self.length_match_tolerance, 0, wx.RIGHT, 5)
+        # #1503: a diff pair a .kicad_dru P/N skew rule binds is matched to the
+        # rule's max unless this is ticked (the CLI's explicit
+        # --length-match-tolerance); ticked, every matched pair takes the value
+        self.length_match_tolerance_check = wx.CheckBox(options_scroll, label="over .kicad_dru")
+        self.length_match_tolerance_check.SetValue(False)
+        self.length_match_tolerance_check.SetToolTip(
+            "Diff pairs: match every pair's P/N skew to this tolerance, over a "
+            ".kicad_dru skew rule (within_diff_pairs). Unticked, a pair such a rule "
+            "binds is matched to the rule's max.")
+        length_params_sizer.Add(self.length_match_tolerance_check, 0,
+                                wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
         length_params_sizer.Add(wx.StaticText(options_scroll, label="Amplitude:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         r = defaults.PARAM_RANGES['meander_amplitude']
         self.meander_amplitude = wx.SpinCtrlDouble(options_scroll, min=r['min'], max=r['max'],
@@ -2938,6 +2949,7 @@ class RoutingDialog(wx.Dialog):
         self.crossing_penalty.SetValue(defaults.CROSSING_PENALTY)
         self.length_match_groups_ctrl.SetValue("")
         self.length_match_tolerance.SetValue(defaults.LENGTH_MATCH_TOLERANCE)
+        self.length_match_tolerance_check.SetValue(False)
         self.meander_amplitude.SetValue(defaults.MEANDER_AMPLITUDE)
         self.meander_spacing.SetValue(defaults.MEANDER_SPACING)
         self.time_matching_check.SetValue(defaults.TIME_MATCHING)
@@ -3342,6 +3354,10 @@ class RoutingDialog(wx.Dialog):
             # Length matching
             'length_match_groups': self._parse_length_match_groups(),
             'length_match_tolerance': self.length_match_tolerance.GetValue(),
+            # #1503: the override over a .kicad_dru P/N skew rule, else None
+            'intra_pair_tolerance': (self.length_match_tolerance.GetValue()
+                                     if self.length_match_tolerance_check.GetValue()
+                                     else None),
             'meander_amplitude': self.meander_amplitude.GetValue(),
             'meander_spacing': self.meander_spacing.GetValue(),
             # Time matching
@@ -4390,6 +4406,11 @@ class RoutingDialog(wx.Dialog):
             persist_protected_nets(_pro, consume_protection_candidates(),
                                    board=board)
             persist_impedance_specs(_pro, consume_impedance_specs(), board=board)
+            # #1503: the pairs matched P to N, and the skew each was matched to
+            from protected_nets import (consume_intra_pair_tolerances,
+                                        persist_intra_pair_tolerances)
+            persist_intra_pair_tolerances(_pro, consume_intra_pair_tolerances(),
+                                          board=board)
         except Exception:
             pass
 
