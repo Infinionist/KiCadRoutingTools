@@ -6711,6 +6711,22 @@ def _neck_zone_exact_fits(seg, pcb_data, net_id: int, config) -> bool:
     for z in getattr(config, 'bga_exclusion_zones', None) or ():
         if _near(None, z[0], z[1], z[2], z[3]):
             return False
+    # In-flight copper (#1488, plane_pad_tap.push_inflight_copper) is stamped
+    # in the routing map but not yet in pcb_data, which every measure below
+    # reads: a phase-3 rip-up retry's tap copper, while the nets it ripped
+    # re-route. Measured against pcb_data alone, open_weather_station's +3V3
+    # pad entry read clear of Net-(U8-CRS_DV/MODE2)'s retry tap and shipped
+    # 0.0275 mm under the clearance the grid had refused it at.
+    for _segs, _vias in getattr(pcb_data, '_inflight_copper', None) or ():
+        for s in _segs:
+            if s.net_id != net_id and _near(s.layer, min(s.start_x, s.end_x),
+                                            min(s.start_y, s.end_y),
+                                            max(s.start_x, s.end_x),
+                                            max(s.start_y, s.end_y)):
+                return False
+        for v in _vias:
+            if v.net_id != net_id and _near(None, v.x, v.y, v.x, v.y):
+                return False
     for b in getattr(config, 'pour_barriers', None) or ():
         for poly in b.get('polygons') or ():
             if poly and _near(b.get('layer'), min(p[0] for p in poly),
