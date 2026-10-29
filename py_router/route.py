@@ -1298,10 +1298,15 @@ def _late_strict_collapse1063(pcb_data, output_file, return_results, results_dat
     try:
         if return_results:
             rd = results_data or {}
-            segs_by_net, vias_by_net = write_model(rd)
             board = _copy.copy(pcb_data)
-            board.segments = [s for _l in segs_by_net.values() for s in _l]
-            board.vias = [v for _l in vias_by_net.values() for v in _l]
+            if write_model is not None:
+                segs_by_net, vias_by_net = write_model(rd)
+                board.segments = [s for _l in segs_by_net.values() for s in _l]
+                board.vias = [v for _l in vias_by_net.values() for v in _l]
+            else:
+                # the "nothing to route" return (#1499): the board as it stands
+                board.segments = list(pcb_data.segments)
+                board.vias = list(pcb_data.vias)
         elif output_file and os.path.isfile(output_file):
             from kicad_parser import parse_kicad_pcb as _pk1063
             board = _pk1063(output_file)
@@ -1687,9 +1692,14 @@ def _late_stacked_dedup162(pcb_data, output_file, return_results, results_data,
         if return_results:
             rd = results_data if results_data is not None else {}
             board = _copy.copy(pcb_data)
-            segs_by_net, _vb = write_model(rd)
-            board.segments = [x for _l in segs_by_net.values() for x in _l]
-            board.vias = [x for _l in _vb.values() for x in _l]
+            if write_model is not None:
+                segs_by_net, _vb = write_model(rd)
+                board.segments = [x for _l in segs_by_net.values() for x in _l]
+                board.vias = [x for _l in _vb.values() for x in _l]
+            else:
+                # the "nothing to route" return (#1499): the board as it stands
+                board.segments = list(pcb_data.segments)
+                board.vias = list(pcb_data.vias)
         elif output_file and os.path.isfile(output_file):
             from kicad_parser import parse_kicad_pcb as _pk162
             board = _pk162(output_file)
@@ -3244,21 +3254,32 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # "nothing to route" and shipped its dead via-to-via branch.
         _scope1166 = {pcb_data.nets[_n].name for _n in sweep_scope_ids
                       if _n in pcb_data.nets}
+
+        def _late_cleanups1499(as_gui, rd):
+            # #1499: the end of a run's cleanups, in its order, so re-running
+            # route.py on an already-routed net cleans its stray copper (a
+            # KiCad-dangling joint, a dead-end stub) rather than shipping it
+            # again; --force-reroute was the only repair, and it rips the net.
+            # The via sweep ran here at every --quick level before (#1166);
+            # the rest run where the end of a run runs them (quick < 2).
+            if not (final_reconcile and not skip_routing):
+                return
+            full = quick < 2
+            for _pass in ((_late_kicad_dangling_split1217, _late_strict_collapse1063)
+                          if full else ()) + (_late_dangling_via_sweep1166,) + (
+                    (_late_stacked_dedup162, _late_kicad_dangling_split1217)
+                    if full else ()):
+                _pass(pcb_data, output_file, as_gui, rd, None, _input_sig1069,
+                      _scope1166, keep_input_copper)
         if return_results:
             _rd659 = _empty_results_data()
             _rd659['keep_away'] = keep_away_entries(_ka_done)
-            if final_reconcile and not skip_routing:
-                _late_dangling_via_sweep1166(
-                    pcb_data, output_file, True, _rd659, None, _input_sig1069,
-                    _scope1166, keep_input_copper)
+            _late_cleanups1499(True, _rd659)
             _late_orphan_sweep659(pcb_data, output_file, True, _rd659,
                                   None, keep_input_copper, skip_routing)
             return 0, 0, 0.0, _rd659
         _write_passthrough_output(input_file, output_file)
-        if final_reconcile and not skip_routing:
-            _late_dangling_via_sweep1166(
-                pcb_data, output_file, False, None, None, _input_sig1069,
-                _scope1166, keep_input_copper)
+        _late_cleanups1499(False, None)
         _late_orphan_sweep659(pcb_data, output_file, False, None,
                               None, keep_input_copper, skip_routing)
         return 0, 0, 0.0
