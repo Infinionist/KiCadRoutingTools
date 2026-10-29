@@ -7,7 +7,8 @@ copper and every DRC passes while the head lands on it.
 
 This leaf module is the one definition of both questions:
 
-  * ``mounting_holes(pcb)`` -- which footprints are mounting holes;
+  * ``mounting_holes(pcb)`` -- which footprints are mounting holes, and
+    which Edge.Cuts circles inside the outline are (#1502);
   * ``hole_copper(pcb)`` -- the other-net tracks and vias inside each hole's
     screw-head ring (``check_mounting_holes.py`` reports it);
   * ``keepout_polygon(hole)`` -- that ring as a polygon, which
@@ -116,6 +117,43 @@ def _main_hole(pads):
     return p0
 
 
+#: An Edge.Cuts circle's bounding box this close to the board's is the board's
+#: own outline (a round board), not a hole in it.
+OUTLINE_MATCH_MM = 0.05
+
+
+def edge_cut_holes(pcb) -> List[MountingHole]:
+    """Every circle drawn on Edge.Cuts (a ``gr_circle``, a board cut-out with
+    no footprint) of MOUNT_HOLE_MIN_DRILL or more across that is a hole IN
+    the board rather than its outline (#1502): the same screw hole, drawn
+    with the outline instead of as a part. Read off the board file
+    (``pcb.source_path``) with the parser's own circle pattern, since the
+    parser keeps the circle only as outline segments; named ``CUT1``,
+    ``CUT2`` ... in file order, on no net. [] without a board file."""
+    import os
+    path = getattr(pcb, 'source_path', '') or ''
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        from kicad_parser import _GR_CIRCLE_PATTERN
+        text = open(path, encoding='utf-8', errors='replace').read()
+    except Exception:                                        # noqa: BLE001
+        return []
+    bounds = getattr(getattr(pcb, 'board_info', None), 'board_bounds', None)
+    out = []
+    for m in re.finditer(_GR_CIRCLE_PATTERN, text, re.DOTALL):
+        cx, cy, ex, ey = (float(v) for v in m.groups())
+        r = math.hypot(ex - cx, ey - cy)
+        if 2.0 * r < MOUNT_HOLE_MIN_DRILL:
+            continue
+        if bounds is not None and all(
+                abs(a - b) <= OUTLINE_MATCH_MM
+                for a, b in zip((cx - r, cy - r, cx + r, cy + r), bounds)):
+            continue                        # the board's own round outline
+        out.append(MountingHole(f'CUT{len(out) + 1}', cx, cy, round(2.0 * r, 4), frozenset()))
+    return out
+
+
 def mounting_holes(pcb) -> List[MountingHole]:
     """Every footprint that is ONE round screw hole: at most
     MOUNT_HOLE_MAX_PADS pads, the widest drill ROUND and MOUNT_HOLE_MIN_DRILL
@@ -125,7 +163,8 @@ def mounting_holes(pcb) -> List[MountingHole]:
     ground-named net). A milled slot or cut-out is not a screw hole, and
     neither is a part whose several holes take no screw (a keyboard
     stabilizer's four, a bracket of mixed holes). The hole's centre and drill
-    are the screw hole's own, so the head ring is centred on it."""
+    are the screw hole's own, so the head ring is centred on it. A hole
+    drawn as an Edge.Cuts circle is one too (``edge_cut_holes``, #1502)."""
     out = []
     for ref, fp in sorted(pcb.footprints.items()):
         pads = fp.pads
@@ -141,6 +180,10 @@ def mounting_holes(pcb) -> List[MountingHole]:
             ref, hx, hy, p0.drill,
             frozenset(p.net_id for p in pads
                       if p.net_id and not _UNCONNECTED_NET.match(p.net_name or ''))))
+    # #1502: a hole drawn on Edge.Cuts, unless a footprint hole sits on it
+    for h in edge_cut_holes(pcb):
+        if not any(math.hypot(h.x - o.x, h.y - o.y) <= SAME_CENTRE_MM for o in out):
+            out.append(h)
     return out
 
 
