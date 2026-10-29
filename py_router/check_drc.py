@@ -4303,6 +4303,24 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         except Exception as _e:                                  # noqa: BLE001
             if not quiet:
                 print(f"  .kicad_dru: coupled-pair rules not read ({_e})")
+    # #1490: a clearance rule no channel above models (a NetClass-, Type- or
+    # area-scoped condition) binds copper this grader prices at the class or
+    # layer value -- KiCad enforces it, so it is NAMED, the clearance half of
+    # #1390's size disclosure: board_score lists it ungraded and check_complete
+    # reads INCOMPLETE rather than DONE.
+    if not quiet and pcb_file:
+        from kicad_dru import read_board_unmodelled_clearance_rules
+        _graded_coupled = ({r.name for r in _coupled_dr.rules
+                            if r.coupled and not r.unsupported}
+                           if _coupled_dr is not None else set())
+        for _nm, _mm, _cond in read_board_unmodelled_clearance_rules(
+                pcb_file, _board_copper):
+            if _nm in _graded_coupled:
+                continue
+            print(f"  NOT GRADED (clearance): rule '{_nm}' (clearance {_mm:g}mm"
+                  + (f", condition {_cond!r}" if _cond else '')
+                  + "): its scope is not modelled here -- the copper it binds is "
+                    "graded at the class or layer value; KiCad still enforces it")
     _coupled_cache: dict = {}
 
     def _coupled_cl(net_a: int, net_b: int, type_a: str, type_b: str, layers):
@@ -5960,7 +5978,8 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             _vd, _vh = _via_floors(via)
             dia_bad, drill_bad, dia_short, drill_short = check_via_size(
                 via, _vd, _vh, size_margin)
-            ring_bad, ring_short = check_via_annular(via, eff_min_via_ring,
+            _ring_floor = eff_min_via_ring
+            ring_bad, ring_short = check_via_annular(via, _ring_floor,
                                                      size_margin)
             if ring_bad:
                 net_name = pcb_data.nets.get(via.net_id, None)
@@ -5970,7 +5989,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                     'size': via.size,
                     'drill': via.drill,
                     'ring': (via.size - via.drill) / 2.0,
-                    'min_ring': eff_min_via_ring,
+                    'min_ring': _ring_floor,
                     'shortfall_mm': ring_short,
                     'via_loc': (via.x, via.y),
                 })
@@ -6361,7 +6380,8 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                               f"(short {v['shortfall_mm']:.4f}mm)")
                         print(f"    Via: ({v['via_loc'][0]:.2f},{v['via_loc'][1]:.2f})")
                     elif vtype == 'via-annular':
-                        print(f"  Via:{v['net1']} annular ring too small for fab")
+                        print(f"  Via:{v['net1']} annular ring too small "
+                              f"({v['ring']:.4f}mm under {v['min_ring']:.4f}mm)")
                         print(f"    Size {v['size']:.4f}mm, drill {v['drill']:.4f}mm: ring "
                               f"{v['ring']:.4f}mm < min {v['min_ring']:.4f}mm "
                               f"(short {v['shortfall_mm']:.4f}mm)")

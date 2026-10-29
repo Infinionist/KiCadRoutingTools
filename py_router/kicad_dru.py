@@ -280,9 +280,19 @@ def _parse_dru(text: str, copper_layers: List[str]
     honored track-pair subset becomes a TrackRule (and never a layer entry); any
     other out-of-subset scope is skipped with a note.
     """
+    result, track_rules, notes, _skipped = _parse_dru_full(text, copper_layers)
+    return result, track_rules, notes
+
+
+def _parse_dru_full(text: str, copper_layers: List[str]):
+    """`_parse_dru`, plus the clearance rules neither channel models:
+    `[(name, clearance_mm, condition)]` (#1490) -- a NetClass-, Type- or
+    area-scoped rule (`A.NetClass == 'HS' && B.Type == 'Pad'`) that KiCad
+    enforces and no layer or track entry stands for."""
     result: Dict[str, float] = {}
     track_rules: List[TrackRule] = []
     notes: List[str] = []
+    skipped: List[Tuple[str, float, Optional[str]]] = []
     for node in _parse_nodes(_tokenize(text)):
         if not isinstance(node, list) or not node or node[0] != "rule":
             continue
@@ -335,10 +345,27 @@ def _parse_dru(text: str, copper_layers: List[str]
             notes.append(f"rule '{name}': clearance {clearance_mm}mm has a "
                          f"non-layer scope (netclass/area/... condition) -- "
                          f"skipped, KiCad will still enforce it")
+            skipped.append((str(name), clearance_mm, condition))
             continue
         for l in layers:
             result[l] = clearance_mm
-    return result, track_rules, notes
+    return result, track_rules, notes, skipped
+
+
+def read_board_unmodelled_clearance_rules(board_path: str, copper_layers: List[str]
+                                          ) -> List[Tuple[str, float, Optional[str]]]:
+    """The sibling .kicad_dru's clearance rules the layer and track channels
+    do not model (#1490): `[(name, clearance_mm, condition)]`, [] without a
+    rules file. A caller grading through a further channel (check_drc's
+    coupled-pair rules, #1293) removes the ones that channel grades."""
+    dru = os.path.splitext(board_path)[0] + ".kicad_dru" if board_path else ""
+    if not dru or not os.path.isfile(dru):
+        return []
+    try:
+        text = open(dru, encoding="utf-8").read()
+    except OSError:
+        return []
+    return _parse_dru_full(text, copper_layers)[3]
 
 
 def parse_dru_layer_clearances(text: str, copper_layers: List[str]

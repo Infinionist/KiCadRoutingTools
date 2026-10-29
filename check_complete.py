@@ -591,6 +591,15 @@ def _grade(a, doc):
                 + ' -- the copper they bind is unchecked here and KiCad still '
                   'enforces it')
             continue
+        if _name == 'drc.dru_rules':
+            # #1490: a .kicad_dru clearance rule check_drc does not model.
+            reasons.append(
+                '.kicad_dru clearance rule(s) nothing grades: '
+                + ', '.join(repr(r) for r in
+                            (_comps.get('drc') or {}).get('ungraded_rules', ()))
+                + ' -- the copper they bind is graded at the class or layer '
+                  'value here and KiCad still enforces them')
+            continue
         _c = _comps.get(_name)
         if isinstance(_c, dict) and _c.get('declared'):
             notes.append(f'{_name}: the board DECLARES it '

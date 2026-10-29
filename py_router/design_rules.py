@@ -110,6 +110,11 @@ CONSUMED_KINDS = CLEARANCE_KINDS | SIZE_KINDS | {'disallow', 'via_count'}
 # diff-pair `skew` / `diff_pair_uncoupled` rule through the same channel
 # (#1303).
 GRADED_ONLY_KINDS = frozenset({'length', 'skew', 'diff_pair_uncoupled'})
+# Kinds the resolver models but no routing step sizes copper by (#1490): a
+# via's ring follows from via_diameter and hole_size alone, so a rule
+# declaring one is reported NOT honoured -- in route.py's
+# `design_rules.unsupported_rules` -- rather than passing as consumed.
+ROUTER_UNHONOURED_KINDS = frozenset({'annular_width'})
 
 # Spellings a caller may use for a kind.
 KIND_ALIASES = {
@@ -1376,8 +1381,16 @@ class DesignRules:
     # ---------------- disclosure ----------------
 
     def unsupported(self) -> List[Tuple[str, str]]:
-        return [(r.name, r.unsupported) for r in self.rules
-                if r.unsupported and not r.honoured]
+        out = [(r.name, r.unsupported) for r in self.rules
+               if r.unsupported and not r.honoured]
+        named = {n for n, _w in out}
+        for r in self.rules:
+            kinds = sorted(k for k in r.constraints if k in ROUTER_UNHONOURED_KINDS)
+            if kinds and r.name not in named and not r.honoured:
+                out.append((r.name, f"{', '.join(kinds)}: no routing step sizes "
+                                    f"a via by it (via_diameter and hole_size "
+                                    f"alone)"))
+        return out
 
     def honoured_rules(self) -> List[Tuple[str, str]]:
         """Rules the resolver does not evaluate but another consumer honours

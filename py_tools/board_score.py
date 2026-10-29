@@ -670,7 +670,11 @@ def ungraded_entries(parts: dict) -> list:
         # #1390: a .kicad_dru size rule check_drc could not model is a
         # declaration nothing grades.
         + (['undersized.dru_rules']
-           if (parts.get('undersized') or {}).get('ungraded_rules') else []))
+           if (parts.get('undersized') or {}).get('ungraded_rules') else [])
+        # #1490: the clearance half -- a NetClass- / Type-scoped .kicad_dru
+        # clearance rule check_drc does not model.
+        + (['drc.dru_rules']
+           if (parts.get('drc') or {}).get('ungraded_rules') else []))
 
 
 def baseline_problem(path: str):
@@ -772,9 +776,12 @@ def score_drc(root: str, board: str, clearance=None, sizes=None,
     # bind is ungraded, whatever `undersized` says about the rest.
     _unsz = sorted(set(re.findall(r"NOT GRADED \(size\): rule '([^']*)'", out)))
     _size_extra = {'ungraded_rules': _unsz} if _unsz else {}
+    # #1490: and the .kicad_dru clearance rules it does not model.
+    _uncl = sorted(set(re.findall(r"NOT GRADED \(clearance\): rule '([^']*)'", out)))
+    _clr_extra = {'ungraded_rules': _uncl} if _uncl else {}
     if 'NO DRC VIOLATIONS FOUND' in out:
         return ({'ran': True, 'count': 0, 'by_type': {}, 'graded_at': _graded_at(out),
-                 'graphic_grazes_unverified': _unverified_grazes(out),
+                 'graphic_grazes_unverified': _unverified_grazes(out), **_clr_extra,
                  'via_in_paste': {'ran': True, 'count': 0, 'by_type': {},
                                   'undeclarable': _undeclarable_vias(out)}},
                 {'ran': True, 'count': 0, 'by_type': {}, **_size_extra},
@@ -812,7 +819,7 @@ def score_drc(root: str, board: str, clearance=None, sizes=None,
              if t not in SIZE_TYPES and t not in RULE_PAIR_TYPES
              and t not in VIA_PASTE_TYPES and t not in PAIR_RULE_TYPES}
     return ({'ran': True, 'count': sum(clear.values()), 'by_type': clear,
-             'graded_at': _graded_at(out),
+             'graded_at': _graded_at(out), **_clr_extra,
              'graphic_grazes_unverified': _unverified_grazes(out),
              'pair_rules': pairs,
              'via_in_paste': {'ran': True, 'count': sum(vip.values()), 'by_type': vip,
