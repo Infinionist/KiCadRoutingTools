@@ -69,8 +69,12 @@ def end_to_end(td):
     for n in ('r1', 'r2'):
         p = os.path.join(run, 's0_route', f'{n}.json')
         knobs.append(json.load(open(p)).get('env_knobs') if os.path.isfile(p) else None)
-    check('step 1 ran with the knob', knobs[0] == {'KICAD_SMOOTH_ROUTE': '1'}, f'{knobs}')
-    check('step 2 ran without it', knobs[1] == {}, f'{knobs}')
+    # the knob itself, not the whole set: a runner may export knobs of its
+    # own (the cloud image's KICAD_SWEEP_GIT), which every step inherits
+    check('step 1 ran with the knob', (knobs[0] or {}).get('KICAD_SMOOTH_ROUTE') == '1',
+          f'{knobs}')
+    check('step 2 ran without it', knobs[1] is not None
+          and 'KICAD_SMOOTH_ROUTE' not in knobs[1], f'{knobs}')
 
 
 def main():
