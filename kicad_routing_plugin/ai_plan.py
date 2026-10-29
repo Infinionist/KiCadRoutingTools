@@ -1706,7 +1706,12 @@ class PlanExecutor:
                         edge_clearance=floors.get('board_edge_clearance'),
                         diff_pair_width=floors.get('diff_pair_width'),
                         diff_pair_gap=floors.get('diff_pair_gap'),
-                        clamp_nondefault_netclasses=_clamp)
+                        clamp_nondefault_netclasses=_clamp,
+                        # #1492: the raw override is the ceiling the classes
+                        # land at, min(class, ceiling)
+                        class_ceiling=(self.dialog.clearance.GetValue()
+                                       if _clamp and hasattr(self.dialog, 'clearance')
+                                       else None))
                     fix_project_for_output(board_file, input_pcb=board_file,
                                            minima=_minima, **_fix_kw)
                     # The SAME floors on the live board. KiCad's own save

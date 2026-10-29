@@ -447,6 +447,25 @@ def fab_floor_integrity(board, authored_from, hole_grader=None, timeout=3600):
                                      'automatic descent on '
                                      + ', '.join(_rec.get('nets') or ['?']) + ')',
                             'authored': _cls_was, 'on_board': _cls_now})
+        # #1492: every NON-Default class a descent on one of its own nets
+        # lowered below the ceiling it was routed at, named the same way
+        from fix_kicad_drc_settings import CLASS_CLEARANCE_RELAXED_CLASSES_KEY
+        _crecs = (_bproj.get('kicad_routing_tools') or {}).get(
+            CLASS_CLEARANCE_RELAXED_CLASSES_KEY) or {}
+        with open(pro, encoding='utf-8') as fh:
+            _was_cls = {c.get('name'): c.get('clearance') for c in
+                        ((json.load(fh).get('net_settings') or {}).get('classes') or ())}
+        _now_cls = {c.get('name'): c.get('clearance') for c in
+                    ((_bproj.get('net_settings') or {}).get('classes') or ())}
+        for _cn, _r in sorted(_crecs.items()):
+            _w, _n = _was_cls.get(_cn), _now_cls.get(_cn)
+            if isinstance(_w, (int, float)) and isinstance(_n, (int, float)) \
+                    and _n < _w - 1e-9:
+                relaxed.append({'key': f'net_class.{_cn}.clearance',
+                                'label': f'{_cn} class clearance (lowered by an '
+                                         f'automatic descent on '
+                                         + ', '.join(_r.get('nets') or ['?']) + ')',
+                                'authored': _w, 'on_board': _n})
     except (OSError, ValueError):
         pass
     return {'ran': True, 'relaxed': relaxed, 'unmeasured': unmeasured,

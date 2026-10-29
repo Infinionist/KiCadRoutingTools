@@ -1912,7 +1912,8 @@ class PlanesTab(wx.Panel):
                 _sev = severity_plan() if cfg.get('relax_drc_severities') else {}
                 if apply_targets_to_board(
                         board, targets, _sev,
-                        clamp_nondefault_netclasses=cfg.get('clamp_netclasses', False)):
+                        clamp_nondefault_netclasses=cfg.get('clamp_netclasses', False),
+                        class_ceiling=cfg.get('clearance_ceiling')):  # #1492
                     board.SetModified()
                     print("DRC settings: loosened Board Setup floors to the plane routing values")
             except Exception as e:

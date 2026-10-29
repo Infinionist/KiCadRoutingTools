@@ -651,8 +651,15 @@ assert config.obstacle_clearance(some_default_net) == 0.15  # not in the map -> 
   (`net_clearances[nid] = min(class, ceiling)`) before it is installed — a class
   *tighter* than the ceiling survives; a *looser* one is capped, because stock net
   classes are largely aspirational (real boards, and even the human-routed references,
-  route below them). The output `.kicad_pro` writeback then clamps every class down to
-  that same routed floor, so KiCad grades exactly what was routed. When it is OMITTED
+  route below them). The output `.kicad_pro` writeback then clamps every non-Default
+  class down to that same `min(class, ceiling)` (#1492: the ceiling, never the Default
+  class's routed value, which one descent on one Default net used to drag every class
+  down to), so KiCad grades exactly what was routed. An automatic clearance descent on
+  a class's OWN net lowers that class to it, records it under
+  `kicad_routing_tools.class_clearance_relaxed_classes` (`{class: {from, to, nets}}`,
+  the per-class twin of the Default class's `class_clearance_relaxed`), prints
+  `NET CLASS <name> CLEARANCE LOWERED BY A DESCENT`, and `check_complete
+  --authored-from` names it. When it is OMITTED
   there is no ceiling: each net routes at its own class and the writeback preserves the
   non-Default classes; `--clearance` then sets only the Default class for the run
   (#530), and the writeback lowers the Default class to it when it is below (never

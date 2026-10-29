@@ -2074,6 +2074,9 @@ class RoutingDialog(wx.Dialog):
                 'same_net_pad_clearance': self._same_net_pad_clearance_value(),
                 'relax_drc_severities': self.relax_drc_severities_check.GetValue(),
                 'clamp_netclasses': self._ceiling_on(),
+                # #1492: the raw ceiling for the writeback's class clamp
+                'clearance_ceiling': (self.clearance.GetValue()
+                                      if self._ceiling_on() else None),
                 'fab_tier': self.fab_tier.GetString(self.fab_tier.GetSelection()),
                 'fab_overrides_path': self.fab_overrides_path.GetValue().strip(),
                 # route_planes.py --net-clearances: the Advanced tab's Net
@@ -3318,6 +3321,10 @@ class RoutingDialog(wx.Dialog):
             'fix_drc_settings': self.fix_drc_check.GetValue(),
             'relax_drc_severities': self.relax_drc_severities_check.GetValue(),
             'clamp_netclasses': self._ceiling_on(),
+            # #1492: the RAW ceiling (#768), which the writeback clamps each
+            # non-Default class to -- min(class, ceiling) -- None unchecked
+            'clearance_ceiling': (self.clearance.GetValue()
+                                  if self._ceiling_on() else None),
             # Guide corridor (issue #7)
             'guide_corridor_enabled': self.guide_corridor_check.GetValue(),
             'guide_corridor_layer': self.guide_corridor_layer_ctrl.GetValue().strip() or defaults.GUIDE_CORRIDOR_LAYER,
@@ -4360,8 +4367,14 @@ class RoutingDialog(wx.Dialog):
                 import clearance_ledger
                 eff_clearance = clearance_ledger.effective(config.get('clearance')) \
                     if config.get('clearance') else config.get('clearance')
+                # #1493: the copper-to-hole floor this step HELD, lowered
+                # only to what the copper it drew needs -- route.py's
+                # step_hole_clearance, as the differential tab writes it (#1369)
+                from .gui_utils import held_hole_clearance_live
                 targets = compute_targets(
                     clearance=eff_clearance,
+                    hole_clearance=held_hole_clearance_live(
+                        self.pcb_data, board, results_data, eff_clearance),
                     hole_to_hole=config.get('hole_to_hole_clearance'),
                     edge_clearance=config.get('board_edge_clearance'),
                     track_width=config.get('track_width'),
@@ -4374,7 +4387,8 @@ class RoutingDialog(wx.Dialog):
                 _sev = severity_plan() if config.get('relax_drc_severities') else {}
                 drc_changes = apply_targets_to_board(
                     board, targets, _sev,
-                    clamp_nondefault_netclasses=config.get('clamp_netclasses', False))
+                    clamp_nondefault_netclasses=config.get('clamp_netclasses', False),
+                    class_ceiling=config.get('clearance_ceiling'))  # #1492
                 if drc_changes:
                     board.SetModified()
                     print(f"DRC settings: loosened {len(drc_changes)} Board Setup "

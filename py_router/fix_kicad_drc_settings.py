@@ -1470,7 +1470,9 @@ def severity_plan(keep_courtyards=False, keep_mask=False, keep_footprint=False,
 def apply_targets_to_project(proj: dict, targets: dict, sev_plan: dict,
                              ignore_current_warnings=False,
                              diff_pair_gap=None, diff_pair_width=None,
-                             clamp_nondefault_netclasses=False):
+                             clamp_nondefault_netclasses=False,
+                             class_ceiling=None, class_descents=None,
+                             lowered_classes=None):
     """Apply the floors + severity plan to a parsed ``.kicad_pro`` dict, only
     ever loosening (lowering a constraint / lowering a severity rank), never
     tightening. Returns a list of human-readable change strings.
@@ -1595,18 +1597,34 @@ def apply_targets_to_project(proj: dict, targets: dict, sev_plan: dict,
     # output kept the stock class. Clamp each non-Default class DOWN to the routed
     # values so grading matches the copper. clamp=False (the caller routed WITHOUT
     # --clearance-ceiling, honoring the classes) preserves the original class rules.
+    # #1492: each class is clamped to the CEILING the step was given --
+    # min(class, ceiling), the value the router priced it at -- not to the
+    # Default class's routed clearance, which a descent on one Default net
+    # dragged every class down to; a descent on the class's OWN net lowers it
+    # further, and is returned in `lowered_classes` to be recorded.
     if clamp_nondefault_netclasses:
         for cls in classes:
             if cls is default_cls or not isinstance(cls, dict):
                 continue
             cname = cls.get("name", "?")
-            for field, target in nc_map.items():
-                if target is None or field not in _NONDEFAULT_CLAMP_FIELDS:
+            for field, routed in nc_map.items():
+                if field not in _NONDEFAULT_CLAMP_FIELDS:
+                    continue
+                target = nondefault_class_target(cname, routed, class_ceiling,
+                                                 class_descents)
+                if target is None:
                     continue
                 target = round(float(target), 6)
                 cur = cls.get(field)
                 if cur is not None and cur > target + EPS:
                     changes.append(f"net_class[{cname}].{field}: {cur} -> {target} mm")
+                    d = (class_descents or {}).get(cname)
+                    if lowered_classes is not None and d is not None \
+                            and target <= d[0] + EPS:
+                        frm = min(float(cur), class_ceiling) \
+                            if class_ceiling is not None else float(cur)
+                        if target < frm - EPS:
+                            lowered_classes[cname] = (frm, target, d[1])
                     cls[field] = target
 
     def loosen_severity(cat, level):
@@ -1680,14 +1698,102 @@ def drc_fix_kwargs(args):
     # attribute (fanout, standalone runs) clamp by default -- the safe choice, since
     # clamping only ever lowers the output class to the copper actually routed.
     clamp = getattr(args, "_clamp_netclasses", True)
+    # #1492: the ceiling itself, so each class lands at min(class, ceiling) --
+    # what the router priced it at -- not at the routed Default clearance.
+    # None (a fanout front routing every net at one scalar, a standalone
+    # run): the classes are clamped to the routed value, as before.
     return dict(keep_thermal=args.keep_thermal, enable_layers=args.enable_used_layers,
                 relax_severities=getattr(args, "relax_drc_severities", False),
-                clamp_nondefault_netclasses=clamp)
+                clamp_nondefault_netclasses=clamp,
+                class_ceiling=getattr(args, "_clearance_ceiling", None) if clamp else None)
 
 
 #: The project record of a Default class clearance an AUTOMATIC descent
 #: lowered (#1160), under ``kicad_routing_tools``: ``{from, to, nets}``.
 CLASS_CLEARANCE_RELAXED_KEY = "class_clearance_relaxed"
+#: #1492: the same record for the NON-Default classes, ``{class: {from, to,
+#: nets}}``: a class lowered below min(class, ceiling) by a descent on one
+#: of its own nets.
+CLASS_CLEARANCE_RELAXED_CLASSES_KEY = "class_clearance_relaxed_classes"
+
+
+def nondefault_class_descents(pcb_path):
+    """``{class: (delivered, [nets])}`` for each NON-Default net class one of
+    whose nets this step routed below the clearance it asked for (#1492): the
+    run's ``design_rules`` ``clearance`` rows (fab_tiers.note_narrowing), each
+    net mapped to its classes through the project beside ``pcb_path``
+    (`list_nets.net_class_memberships`, the resolver the router prices by).
+    ``delivered`` is the class's lowest. {} when nothing descended."""
+    try:
+        from fab_tiers import escalation_summary
+        rows = [r for r in escalation_summary().get("narrowed") or ()
+                if r.get("kind") == "clearance"
+                and float(r["delivered"]) < float(r["requested"]) - _FLOOR_EPS]
+    except Exception:                                        # noqa: BLE001
+        return {}
+    if not rows or not pcb_path:
+        return {}
+    # one key per row: its net id, or a stand-in for a row that names the
+    # net only
+    keyed = [(r.get("net") if r.get("net") is not None else -1 - i, r)
+             for i, r in enumerate(rows)]
+    names = {k: r.get("net_name") for k, r in keyed if r.get("net_name")}
+    try:
+        from list_nets import net_class_memberships
+        member = net_class_memberships(pcb_path, names)
+    except Exception:                                        # noqa: BLE001
+        return {}
+    out = {}
+    for nid, r in keyed:
+        for c in member.get(nid) or ():
+            if c == "Default":
+                continue
+            d, nets = out.get(c, (float("inf"), []))
+            out[c] = (min(d, float(r["delivered"])),
+                      sorted(set(nets) | {r.get("net_name") or f"net {nid}"}))
+    return out
+
+
+def nondefault_class_target(cname, routed, ceiling=None, descents=None):
+    """The clearance a NON-Default class is clamped DOWN to (#1492): the
+    ceiling the step was given (min(class, ceiling), the router's own
+    pricing), else -- a caller that knows no ceiling, a fanout front routing
+    every net at one scalar -- the routed clearance, as before; either
+    lowered to the class's own descent (`nondefault_class_descents`)."""
+    t = ceiling if ceiling is not None else routed
+    d = (descents or {}).get(cname)
+    if d is not None and (t is None or d[0] < t):
+        t = d[0]
+    return t
+
+
+def record_nondefault_class_descents(proj, lowered):
+    """Store ``{class: {from, to, nets}}`` for the classes a descent lowered
+    (#1492) under ``kicad_routing_tools``, carrying an earlier step's record
+    forward (its ``from`` and nets kept). True when it changed."""
+    if not lowered:
+        return False
+    ns = proj.setdefault("kicad_routing_tools", {})
+    rec = dict(ns.get(CLASS_CLEARANCE_RELAXED_CLASSES_KEY) or {})
+    for c, (frm, to, nets) in lowered.items():
+        old = rec.get(c) or {}
+        rec[c] = {"from": round(max(float(old.get("from") or 0.0), frm), 6),
+                  "to": round(to, 6),
+                  "nets": sorted(set(old.get("nets") or ()) | set(nets))}
+    ns[CLASS_CLEARANCE_RELAXED_CLASSES_KEY] = rec
+    return True
+
+
+def nondefault_class_descent_disclosure(lowered):
+    """The lines naming each NON-Default class a descent lowered (#1492)."""
+    out = []
+    for c, (frm, to, nets) in sorted((lowered or {}).items()):
+        who = ", ".join(nets[:6]) + (f" (+{len(nets) - 6} more)" if len(nets) > 6 else "")
+        out.append(f"  NET CLASS {c} CLEARANCE LOWERED BY A DESCENT -- {frm:g} -> "
+                   f"{to:g} mm: an automatic clearance descent on {who} routed "
+                   f"below the {frm:g} mm this class was routed at; KiCad grades "
+                   f"the class at {to:g} from here on")
+    return out
 
 
 def record_class_clearance_descent(proj: dict, class_before):
@@ -2431,7 +2537,7 @@ def held_hole_clearance(held, clearance, step_min=None):
     return round(max(float(clearance), v), 6)
 
 
-def step_hole_clearance(input_pcb, output_pcb, clearance, verbose=True):
+def step_hole_clearance(input_pcb, output_pcb, clearance, verbose=True, ledger=True):
     """:func:`held_hole_clearance` for a file-writing step: the hole floor the
     step held (``obstacle_map.declared_hole_clearance`` of its INPUT, the
     value its engine resolved), lowered to what the copper it drew
@@ -2456,6 +2562,17 @@ def step_hole_clearance(input_pcb, output_pcb, clearance, verbose=True):
                   f"the copper clearance")
         return None
     v = held_hole_clearance(held, clearance, step_min)
+    # #1493: a floor written below the one the step held goes into the
+    # design_rules ledger (a run-wide row), so --strict-sizes sees it. Off
+    # for a mid-run sync, whose step's writeback ledgers it once.
+    if ledger and v is not None and v < float(held) - _FLOOR_EPS:
+        try:
+            from fab_tiers import note_narrowing
+            note_narrowing(None, 'hole_clearance', float(held), v,
+                           "copper-to-hole floor written under the board's own: "
+                           "this step's copper sits closer to a foreign hole")
+        except Exception:                                    # noqa: BLE001
+            pass
     if verbose and v is not None:
         why = (f"its own copper sits {step_min:g} mm from a foreign hole"
                if step_min is not None and step_min < held else
@@ -2468,7 +2585,8 @@ def step_hole_clearance(input_pcb, output_pcb, clearance, verbose=True):
 def apply_fix_to_board(board, *, minima, clearance=None, hole_clearance=None,
                        hole_to_hole=None, edge_clearance=None, track_width=None,
                        via_diameter=None, via_drill=None, diff_pair_gap=None,
-                       diff_pair_width=None, clamp_nondefault_netclasses=True):
+                       diff_pair_width=None, clamp_nondefault_netclasses=True,
+                       class_ceiling=None):
     """:func:`fix_project_for_output`'s FLOOR writeback, applied to a LIVE
     board -- the same :func:`compute_targets` call over the same keywords,
     through :func:`apply_targets_to_board`. ``minima`` is the board's own
@@ -2492,7 +2610,8 @@ def apply_fix_to_board(board, *, minima, clearance=None, hole_clearance=None,
     return apply_targets_to_board(board, targets, {},
                                   diff_pair_gap=diff_pair_gap,
                                   diff_pair_width=diff_pair_width,
-                                  clamp_nondefault_netclasses=clamp_nondefault_netclasses)
+                                  clamp_nondefault_netclasses=clamp_nondefault_netclasses,
+                                  class_ceiling=class_ceiling)
 
 
 def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
@@ -2503,7 +2622,8 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
                            keep_thermal=False, enable_layers=False,
                            clamp_nondefault_netclasses=True,  # #439: clamp by default
                            extra_ignore=(), verbose=True, minima=None,
-                           relax_severities=False, copper_holes=True):
+                           relax_severities=False, copper_holes=True,
+                           class_ceiling=None):
     """Make the DRC settings of a freshly written board consistent with the
     routing floors (issue #160 auto-invoke). Ensures ``output_pcb`` has a sibling
     ``.kicad_pro`` -- copying the input board's project if the output is a new
@@ -2563,6 +2683,23 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
     _origin, _origin_seeded = seed_fab_floor_origin(proj, _rules_before)
     from fab_tiers import project_default_class_clearance as _pdcc
     _class_before = _pdcc(proj)     # #1160
+    # #1493: what THIS step started from, for the banner. A routing engine's
+    # in-run floor sync (route.py #650) writes the output project mid-run, so
+    # by now its lowering reads as the input -- "unchanged by this step" in
+    # the log that printed it. A floor the input project declared higher was
+    # lowered by this step.
+    _banner_before = dict(_rules_before)
+    if input_pcb:
+        try:
+            _ip = find_project(input_pcb)
+            if os.path.isfile(_ip) and os.path.abspath(_ip) != os.path.abspath(out_pro):
+                for _k, _v in _effective_rules(tool_records.load_project(_ip)).items():
+                    _c = _banner_before.get(_k)
+                    if isinstance(_v, (int, float)) and isinstance(_c, (int, float)) \
+                            and _v > _c + _FLOOR_EPS:
+                        _banner_before[_k] = _v
+        except Exception:                                    # noqa: BLE001
+            pass
     # `minima` lets a caller that ALREADY has the board in memory supply these
     # instead of us re-parsing the file. The GUI does: scan_board_minima ->
     # parse_kicad_pcb allocates thousands of GC-tracked objects, and the GUI
@@ -2617,10 +2754,18 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
             plan = {cat: "ignore" for cat in extra_ignore}
     else:
         plan = {}
+    # #1492: non-Default classes at the step's CEILING (min(class, ceiling)),
+    # each lowered further only by a descent on one of its own nets
+    _lowered_classes = {}
     changes = apply_targets_to_project(proj, targets, plan,
                                        diff_pair_gap=diff_pair_gap,
                                        diff_pair_width=diff_pair_width,
-                                       clamp_nondefault_netclasses=clamp_nondefault_netclasses)
+                                       clamp_nondefault_netclasses=clamp_nondefault_netclasses,
+                                       class_ceiling=class_ceiling,
+                                       class_descents=(nondefault_class_descents(output_pcb)
+                                                       if clamp_nondefault_netclasses
+                                                       else None),
+                                       lowered_classes=_lowered_classes)
     # Machine-readable record of what this call wrote (LAST_PROJECT_WRITES:
     # nothing publishes it yet). Replaced per call, never appended.
     LAST_PROJECT_WRITES[:] = list(changes)
@@ -2651,13 +2796,18 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
             f"kicad_routing_tools.{CLASS_CLEARANCE_RELAXED_KEY}: recorded"]
         LAST_PROJECT_WRITES[:] = list(changes)
     _ccr_lines = class_clearance_disclosure(_ccr, _ccr_here, _pdcc(proj))
+    if record_nondefault_class_descents(proj, _lowered_classes):
+        changes = list(changes) + [
+            f"kicad_routing_tools.{CLASS_CLEARANCE_RELAXED_CLASSES_KEY}: recorded"]
+        LAST_PROJECT_WRITES[:] = list(changes)
+    _ccr_lines = list(_ccr_lines) + nondefault_class_descent_disclosure(_lowered_classes)
     if not changes:
         if verbose:
             print(f"  DRC settings already consistent ({out_pro})")
             # The floors did not move, but they may ALREADY be under the
             # board's original declaration from an earlier step -- and that is
             # still true of the board being shipped. Say so.
-            for line in _fab_floor_disclosure(output_pcb, _rules_before, proj,
+            for line in _fab_floor_disclosure(output_pcb, _banner_before, proj,
                                               _origin) + _ccr_lines:
                 print(line)
         return out_pro
@@ -2685,13 +2835,14 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
         # in it without grepping prose.
         print("PROJECT_WRITES_JSON: " + json.dumps(
             {"project": out_pro, "writes": list(changes)}, sort_keys=True))
-    for line in _fab_floor_disclosure(output_pcb, _rules_before, proj,
+    for line in _fab_floor_disclosure(output_pcb, _banner_before, proj,
                                       _origin) + _ccr_lines:
         print(line)
     return out_pro
 
 
-def clamp_nondefault_netclasses_on_board(board, targets, *, diff_pair_gap=None,
+def clamp_nondefault_netclasses_on_board(board, targets, *, class_ceiling=None,
+                                         class_descents=None, diff_pair_gap=None,
                                          diff_pair_width=None, default_nc=None):
     """THE live-board NON-Default net-class clamp: lower each non-Default class's
     DRC-enforced floors to the values this run actually used. Returns a list of
@@ -2750,7 +2901,8 @@ def clamp_nondefault_netclasses_on_board(board, targets, *, diff_pair_gap=None,
     # gap/width kwargs are accepted for signature compatibility and ignored:
     # they are draw defaults, and lowering them was the #842 ratchet.
     nd_map = {"SetClearance": _class_clearance(targets)}    # routed, not capped (#900)
-    if not any(v is not None for v in nd_map.values()):
+    if not any(v is not None for v in nd_map.values()) and class_ceiling is None \
+            and not class_descents:
         return changes
     other = {}
     ns2 = getattr(bds, "m_NetSettings", None)
@@ -2773,7 +2925,11 @@ def clamp_nondefault_netclasses_on_board(board, targets, *, diff_pair_gap=None,
         if nc is None or (default_nc is not None and nc is default_nc) \
                 or cname == "Default":
             continue
-        for setter, target in nd_map.items():
+        for setter, routed in nd_map.items():
+            # #1492: the ceiling (min(class, ceiling)), not the routed Default
+            # value; a descent on the class's own net lowers it further
+            target = nondefault_class_target(cname, routed, class_ceiling,
+                                             class_descents)
             if target is None or not hasattr(nc, setter):
                 continue
             getter = "Get" + setter[3:]
@@ -2820,7 +2976,8 @@ def _default_netclass_of(bds):
 
 def apply_targets_to_board(board, targets: dict, sev_plan: dict,
                            diff_pair_gap=None, diff_pair_width=None,
-                           clamp_nondefault_netclasses=False):
+                           clamp_nondefault_netclasses=False,
+                           class_ceiling=None):
     """GUI path: apply the same floors + severity plan to a live pcbnew BOARD
     via BOARD_DESIGN_SETTINGS (issue #160). Best-effort and defensive -- the
     pcbnew API field/severity names vary across KiCad versions, so each step is
@@ -2981,8 +3138,17 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
     # which writes the DEFAULT class only. A second copy over there is the
     # bug class #736/#747/#775 each fixed once in the placement engine.
     if clamp_nondefault_netclasses:
+        # #1492: at the step's ceiling, each class lowered further only by a
+        # descent on its own net (read through the board's project)
+        _path = ""
+        try:
+            _path = board.GetFileName() or ""
+        except Exception:                                    # noqa: BLE001
+            pass
         changes.extend(clamp_nondefault_netclasses_on_board(
-            board, targets, diff_pair_gap=diff_pair_gap,
+            board, targets, class_ceiling=class_ceiling,
+            class_descents=nondefault_class_descents(_path) if _path else None,
+            diff_pair_gap=diff_pair_gap,
             diff_pair_width=diff_pair_width, default_nc=default_nc))
 
     # Severities. Map our category strings to pcbnew DRCE_* codes (best-effort).
