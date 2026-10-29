@@ -1,3 +1,56 @@
+7978996dace6e34c26a39eacae293059ec4c6780 2026-10-29 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of 1239f2a2..b6b2aeac (238 commits, 213 non-merge) on main, the first
+on KiCad 10.0.6 (this Mac moved from 10.0.0 to match the cloud stress image),
+plus the fix it produced (7978996d). The range holds the #1461-#1508 rounds,
+#1503's intra-pair tolerance and its GUI override, #1491's scoped .kicad_dru
+clearance rules, the oracle forced-link/sliver-weld clearance fix, PR #1509
+and #1475/#1479.
+
+METHOD. Read-only halves plus every gate.
+(A) Flags and kwargs: every argparse flag in py_router/, py_tools/ and
+  py_placer/ compared between the two commits; batch_route,
+  batch_route_diff_pairs, create_plane, the fanout and repair entry points and
+  GridRouteConfig compared; the kicad_routing_plugin diff (9 files) read; wx
+  controls added and removed swept.
+(B) Gates: all 69 tests/gui_parity gates, 68 PASS on b6b2aeac (the same three
+  -- test_966_unset_clearance, test_967_pad_geometry_coverage,
+  test_zero_diff_pair_width_gui -- run under KiCad's python directly), 69 PASS
+  on 7978996d. test_gui_engine_parity: PARITY, copper sets identical (799
+  segments, 128 vias, 0 unconnected, 0 DRC on both fronts).
+
+IN RANGE, NO GAP:
+- route_diff --force-reroute / batch_route_diff_pairs(force_reroute) (#1399)
+  and net_name_patterns (d10ee7a7): passed by the Differential tab and the
+  plan executor.
+- route_diff --length-match-tolerance default None and the engine's
+  intra_pair_tolerance (#1503): the tab's length_match_tolerance_check
+  ("over .kicad_dru") passes it; saved and restored by settings_persistence,
+  reset per step, set by plans (_GEOMETRY_OVERRIDE_CHECKS);
+  test_settings_roundtrip PASS with it. The intra-pair records are persisted
+  at the gui_utils, ai_plan and swig_gui writebacks.
+- route_diff --json-out / batch_route_diff_pairs(json_out): CLI-only output,
+  registered so (test_engine_kwarg_parity, test_manifest_plan_parity PASS).
+- GridRouteConfig.scoped_clearance (#1491) is installed inside
+  install_track_clearances, which both engines call (route.py:3306,
+  route_diff.py:1422), so the GUI gets the scoped rules with no wiring.
+  GridRouteConfig.intra_pair_tolerances is set by the engine.
+- Placement-tool flags (place_simple --draft-zones/--plan-checked/--preview/
+  --repair-decaps, judge_seeds --confirm, place_pose --channel) reach the
+  placement tab through the skill it runs; the tab's one change stages the
+  project's schematic for that run (placement_run._stage_schematic).
+- New utility flags (add_rule_area/check_mounting_holes --ring and
+  --mounting-holes, board_context --schematic, cover_facts, pdf_text,
+  fill_for_delivery --baseline, autoplan) belong to no GUI routing tab.
+
+FOUND AND FIXED (7978996d):
+- test_714_mirror_pcbnew_parity FAILED on 10.0.6, the flip_witnesses WZONE3
+  witness only: pcbnew 10.0.6 mirrors a flipped footprint's inner-layer items
+  through the stack (In1.Cu -> In4.Cu on six layers), where 10.0.0 left them
+  and the writer still did. flip_layer_token takes the board's inner-layer
+  count, the writer reads it (board_inner_copper_count) and writes a flipped
+  all-copper layer list in layer-id order; the gate PASSES on 10.0.6, and
+  tests/test_714_inner_layer_flip.py is its wx-free half.
+
 1239f2a2cee29a7d0b4977b113843b1b90d601f5 2026-10-22 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
 Audit of 1abb3657..d9b20741 (363 commits, 336 non-merge) on grouped-placement,
 before it fast-forwards main for v0.23.7, plus the fix it produced (1239f2a2).
