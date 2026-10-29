@@ -4498,21 +4498,33 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
         # serves the terminal instead of forcing a separate spur. Taps are
         # (gx, gy, layer, owner_x, owner_y); the weld below uses the OWNER
         # of the cell actually chosen (never a distant anchor).
+        obstacles.clear_allowed_cells()
+        obstacles.clear_source_target_cells()
+        # A tap is a legal launch / land only where this net's track may stand
+        # (#1487): marked source/target it would be exempt from clearance like
+        # the one exact endpoint cell below, and an island cell inside the
+        # partner's (or a neighbour's) halo then carried the leg's last cell,
+        # and its weld to the owner, below clearance -- smartknob /STRAIN_S-
+        # landed on (80.70, 80.60), 0.07 mm from /STRAIN_S+, and welded back to
+        # its island at (80.679, 80.621). A blocked tap is dropped; the island
+        # offers its free cells, and the exact endpoints keep their exemption.
         _src_own = {}
         _tgt_own = {}
         if source_taps:
             for _t in source_taps:
-                _src_own[(int(_t[0]), int(_t[1]), int(_t[2]))] = (_t[3], _t[4])
+                _c = (int(_t[0]), int(_t[1]), int(_t[2]))
+                if not obstacles.is_blocked(*_c):
+                    _src_own[_c] = (_t[3], _t[4])
             sources = list({*sources, *_src_own.keys()})
         if target_taps:
             for _t in target_taps:
-                _tgt_own[(int(_t[0]), int(_t[1]), int(_t[2]))] = (_t[3], _t[4])
+                _c = (int(_t[0]), int(_t[1]), int(_t[2]))
+                if not obstacles.is_blocked(*_c):
+                    _tgt_own[_c] = (_t[3], _t[4])
         targets = ([(mgx, mgy, l) for l in mid_target_layers] if mid_target_layers
                    else [(mgx, mgy, mid_pt[2])])
         if target_taps:
             targets = list({*targets, *_tgt_own.keys()})
-        obstacles.clear_allowed_cells()
-        obstacles.clear_source_target_cells()
         # Mark ONLY the exact endpoint cells as source/target so the A* can start/end
         # ON them even when foreign clearance blocks them (the terminal pad / coupled-
         # middle end sits in a neighbour's keep-out). Issue #244: do NOT add a +-2
