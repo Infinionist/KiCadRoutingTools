@@ -28,6 +28,13 @@ frame (the footprint's local axes; axis 0 = local +x, 90 = local +y, as a
 The candidates are the connectors (a J, P, X or CN designator, 10 pads or
 more) and every part whose models raise a body past its own outline;
 `--refs` names them instead.
+
+On a PILE (`assess_placement(...).pile`, the predicate board_context and
+board_brief use) the poses are staging, so the two facts read off two poses
+-- a standoff's distance and the parts inside the raised extent -- are
+withheld unless both parts are KiCad-locked (#1353's rule, #1508): the text
+says so first, and the JSON's `pile` names what was withheld (null on a
+placed board).
 A model's underside is the model's, not the card's: a generic card model
 draws one card type. Weigh it against the datasheets.
 
@@ -122,6 +129,25 @@ def facts(pcb, board, refs=None):
     with open(board, encoding='utf-8') as f:
         text = f.read()
     models = _models(text, board, set(cands))
+    # On a PILE the poses are staging, not decisions (#1103/#1353, the pile
+    # predicate board_context and board_brief share): a standoff's distance
+    # and what stands inside the raised extent are read off two poses, so
+    # each is withheld unless both parts are KiCad-locked (#1508). The rest
+    # -- footprint, height, models, the raised extent in the connector's own
+    # frame -- does not depend on a pose and stays.
+    pile = None
+    try:
+        from placement.placement_state import assess_placement
+        st = assess_placement(pcb, board)
+    except Exception:                                        # noqa: BLE001
+        st = None
+    locked = {r for r, fp in fps.items() if getattr(fp, 'locked', False)}
+    if st is not None and st.pile:
+        pile = {'reasons': list(st.reasons[:3]), 'locked': sorted(locked),
+                'withheld': {'standoff_candidates': 0, 'inside_raised': 0}}
+
+    def claim(*rs):
+        return pile is None or all(x in locked for x in rs)
     out = []
     for r in cands:
         f = fps[r]
@@ -145,6 +171,9 @@ def facts(pcb, board, refs=None):
             tht = any((p.drill or 0) > 0 for p in g.pads or ())
             if gs != side and not tht:
                 continue
+            if not claim(r, o):
+                pile['withheld']['standoff_candidates'] += 1
+                continue
             lx, ly = to_local((g.x, g.y, g.x, g.y), pose)[:2]
             for deg, t, w in ((0, lx, ly), (90, ly, -lx), (180, -lx, -ly), (270, -ly, lx)):
                 if 0 < t <= REACH_MM and abs(w) <= OFF_AXIS_MM:
@@ -155,11 +184,14 @@ def facts(pcb, board, refs=None):
         row['standoff_candidates'] = sorted(stand, key=lambda s: (s['axis_deg'], s['along_mm']))
         if rz:
             ext = rz[0]
-            under = []
+            under, held = [], 0
             for o, g in geo.items():
                 if o == r or o not in fps or g.occupancy_local is None:
                     continue
                 if footprint_side(fps[o]) != side:
+                    continue
+                if not claim(r, o):
+                    held += 1
                     continue
                 go = fps[o]
                 b = to_local(to_board(g.occupancy_local, (go.x, go.y, go.rotation or 0.0)), pose)
@@ -167,8 +199,13 @@ def facts(pcb, board, refs=None):
                     under.append({'ref': o, 'height_mm': h.height(o),
                                   'height_from': (h.top.get(o) or (None, None))[1]})
             row['inside_raised'] = sorted(under, key=lambda u: u['ref'])
+            if held:
+                # the parts whose overlap a staging pose would decide: not
+                # counted, so "N inside now" is never a pile's number
+                row['inside_raised_withheld'] = held
+                pile['withheld']['inside_raised'] += held
         out.append(row)
-    return {'board': board, 'heights': h.note, 'connectors': out}
+    return {'board': board, 'heights': h.note, 'pile': pile, 'connectors': out}
 
 
 def _mounting(fp):
@@ -192,6 +229,16 @@ def _beyond(r, rasters, geo):
 
 def _print(doc):
     print(f"cover facts: {doc['board']}")
+    pile = doc.get('pile')
+    if pile:
+        w = pile['withheld']
+        print(f"  This board is a PILE ({'; '.join(pile['reasons'])}): its poses are staging, "
+              f"not decisions. Standoff distances and the parts inside a raised extent are "
+              f"WITHHELD unless both parts are KiCad-locked"
+              + (f" ({', '.join(pile['locked'][:8])})" if pile['locked'] else ' (none is)')
+              + f": {w['standoff_candidates']} standoff pair(s), {w['inside_raised']} "
+              f"part(s) under an extent. Read the standoff's distance off the connector's "
+              f"datasheet or drawing.")
     print(f"  heights: {doc['heights']}")
     for c in doc['connectors']:
         ht = (f"{c['height_mm']:g}mm ({c['height_from']})" if c['height_mm'] is not None
@@ -214,7 +261,9 @@ def _print(doc):
                   f"{s['along_mm']:.2f}mm along, {s['off_axis_mm']:+.2f}mm off it")
         if 'inside_raised' in c:
             ins = c['inside_raised']
+            held = c.get('inside_raised_withheld')
             print(f"  {len(ins)} part(s) inside the raised extent now"
+                  + (f" of the locked ones ({held} on staging poses withheld)" if held else '')
                   + (': ' + ', '.join(
                       f"{u['ref']} {u['height_mm']:g}mm" if u['height_mm'] is not None
                       else f"{u['ref']} unknown" for u in ins) if ins else ''))

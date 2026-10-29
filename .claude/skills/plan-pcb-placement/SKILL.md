@@ -516,7 +516,11 @@ under a card, and a tall part can be placed there.
    resolve, what its resolved models raise over the board (a card or module
    model) with that model's underside, the standoffs and mounting holes on
    its axes (distance along the axis and off it), and the parts under the
-   raised extent now. Facts, not decisions.
+   raised extent now. Facts, not decisions. On a pile (a from-scratch
+   run's `fixed.kicad_pcb`) it says so first and withholds the standoff
+   distances and the parts under the extent unless both parts are locked:
+   staging poses decide nothing, so read the standoff's distance off the
+   connector's datasheet or drawing (step 3).
 2. **The underside, from the datasheets.** The card's lowest point above the
    board is the socket's card height (or the stacking height) less what
    hangs below the card: nothing for a single-sided card, its bottom-side
