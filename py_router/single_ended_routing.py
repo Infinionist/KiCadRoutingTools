@@ -298,8 +298,44 @@ def _pt_foreign_pad_dist(pcb_data, net_id, x, y, layer, base_clearance=None,
     return min(float(np.min(d)), best_custom)
 
 
+def _foreign_pad_types(pcb_data, layer):
+    """The pad types of `_foreign_pad_arrays(pcb_data, layer)`'s rows, in its
+    order (#1491: a class/type-scoped rule may bind pads of one type), cached
+    on the same signature."""
+    _sig = (id(pcb_data.pads_by_net),
+            sum(len(v) for v in pcb_data.pads_by_net.values()))
+    cache = getattr(pcb_data, '_foreign_pad_type_cache', None)
+    if cache is None or cache[0] != _sig:
+        cache = (_sig, {})
+        pcb_data._foreign_pad_type_cache = cache
+    got = cache[1].get(layer)
+    if got is None:
+        from net_queries import expand_pad_layers
+        got = [getattr(pad, 'pad_type', None) or 'smd'
+               for _nid, pads in pcb_data.pads_by_net.items() for pad in pads
+               if layer in expand_pad_layers(pad.layers, [layer])
+               and not getattr(pad, 'polygons', None)]
+        cache[1][layer] = got
+    return got
+
+
+def _scoped_pad_excess(config, net_id, nids, types, base_clearance):
+    """#1491: per foreign pad, the scoped rule's requirement for the moving
+    net's track against it, minus `base_clearance` (negative where the rule
+    relaxes), or NaN where no scoped rule binds the pair."""
+    s = getattr(config, 'scoped_clearance', None)
+    out = np.full(len(nids), np.nan)
+    if s is None:
+        return out
+    for i, (nid, pt) in enumerate(zip(nids, types)):
+        v, every = s.pair(int(net_id), int(nid), ('track',), (('pad', pt),))
+        if v is not None and every:
+            out[i] = v - base_clearance
+    return out
+
+
 def _seg_foreign_pad_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
-                          base_clearance=None, net_clearances=None):
+                          base_clearance=None, net_clearances=None, config=None):
     """Min foreign-pad edge distance sampled along a (short, terminal) segment.
     Pads are modelled as rounded rects (corner_r), so round/oval/roundrect pads --
     e.g. BGA balls -- use their true outline, not the bounding-box corner that
@@ -336,6 +372,17 @@ def _seg_foreign_pad_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
             fcls = np.array([max(0.0, net_clearances.get(int(f), base_clearance) - base_clearance)
                              for f in nids[near]], dtype=float)
             excess = np.maximum(excess, fcls)
+        if config is not None and getattr(config, 'scoped_clearance', None) is not None:
+            # #1491: a class/type-scoped rule REPLACES the class term for the
+            # pads it binds (a pad's own override still outranks it)
+            types = np.asarray(_foreign_pad_types(pcb_data, layer), dtype=object)[near]
+            sx_ = _scoped_pad_excess(config, net_id, nids[near], types, base_clearance)
+            bound = ~np.isnan(sx_)
+            if bound.any():
+                # KiCad: a pad override returns before any rule is read
+                scoped_x = np.where(plc[near] > 0, plc[near] - base_clearance,
+                                    np.nan_to_num(sx_))
+                excess = np.where(bound, scoped_x, excess)
     # Rounded-rect signed distance in each pad's LOCAL frame (query offsets
     # rotated by R(-rot); identity for axis-aligned pads): shrink the
     # half-extents by the corner radius, take the outside distance to that
@@ -1017,7 +1064,8 @@ def _neck_terminal_grazes(segments, term_pts, pcb_data, net_id, config, floor=No
         own_l = (config.layer_clearance(s.layer, own)
                  if hasattr(config, 'layer_clearance') else own)
         d = min(_seg_foreign_pad_dist(pcb_data, net_id, s.start_x, s.start_y, s.end_x, s.end_y, s.layer,
-                                      base_clearance=own_l, net_clearances=nc),
+                                      base_clearance=own_l, net_clearances=nc,
+                                      config=config),
                 _seg_foreign_seg_dist(pcb_data, net_id, s.start_x, s.start_y, s.end_x, s.end_y, s.layer,
                                       net_clearances=nc, base_clearance=own_l))
         # #1279: the net's own protected sense copper is foreign here too,

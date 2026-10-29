@@ -176,11 +176,17 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
     max_net_clearance = max(_routed_clearances) if _routed_clearances else config.clearance
     effective_clearance = max(config.clearance, max_net_clearance)
 
-    def _obstacle_clearance(net_id):
+    def _obstacle_clearance(net_id, pad=None):
         # KiCad pairwise clearance: max(routing-side floor classA, this obstacle net's own class
         # clearance classB). A net not in the map falls back to config.clearance, so an EMPTY map
         # reproduces the prior behaviour exactly (inert until a per-net clearance map is supplied).
-        return max(effective_clearance, net_clearances.get(net_id, config.clearance))
+        # #1491: a class/type-scoped .kicad_dru rule replaces it where it binds
+        # (a pad by its pad type); without one the value is unchanged.
+        v = max(effective_clearance, net_clearances.get(net_id, config.clearance))
+        if config.scoped_clearance is None:
+            return v
+        return config.scoped_stamp(
+            net_id, (getattr(pad, 'pad_type', None) or 'smd') if pad is not None else None, v)
 
     _real_obstacles = GridObstacleMap(num_layers)
     # #422: when static_base, stamp every base blocked cell/via into the permanent
@@ -482,12 +488,12 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
             if id(pad) in _tie_partner_pad_ids:
                 _rec = _RecordingObstacles(obstacles)
                 _add_pad_obstacle(_rec, pad, coord, layer_map, config, extra_clearance,
-                                  clearance_override=_obstacle_clearance(net_id))
+                                  clearance_override=_obstacle_clearance(net_id, pad))
                 if _rec.cell_batches:
                     _tie_recorded.append(('pad', id(pad), _rec.merged_cells()))
                 continue
             _add_pad_obstacle(obstacles, pad, coord, layer_map, config, extra_clearance,
-                              clearance_override=_obstacle_clearance(net_id),
+                              clearance_override=_obstacle_clearance(net_id, pad),
                               cell_sink=_pad_cell_sink, via_sink=_pad_via_sink)
     # One Rust call per layer for every pad's track keep-out, one for the via
     # keep-outs -- the segment loop above has done this since 2026-08-14; the
@@ -2791,11 +2797,11 @@ def add_net_pads_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
 
     # Cross-class clearance (PR392): price this net's pads at its own KiCad
     # pairwise clearance so a foreign routed net keeps max(classA, classB).
-    obs_clearance = config.obstacle_clearance(net_id)
     pads = pcb_data.pads_by_net.get(net_id, [])
     for pad in pads:
+        # #1491: by the pad's own type (a scoped rule may bind pads alone)
         _add_pad_obstacle(obstacles, pad, coord, layer_map, config, extra_clearance,
-                          clearance_override=obs_clearance)
+                          clearance_override=config.pad_obstacle_clearance(pad))
     # #1226: into each per-net via rung too, at that rung's via.
     _stamp_rungs_at_own_via(obstacles, config, lambda s, c: add_net_pads_as_obstacles(
         s, pcb_data, net_id, c, extra_clearance), populated_only=True)
@@ -4596,7 +4602,7 @@ def _pad_via_keepout_cells(pad, coord: GridCoord, config: GridRouteConfig,
     # Cross-class clearance (PR392): price the keep-out at this pad net's KiCad
     # pairwise clearance. add/remove call this helper identically, so the derived
     # value is the same on both sides -> ref-counts stay balanced.
-    clearance = config.obstacle_clearance(getattr(pad, 'net_id', 0))
+    clearance = config.pad_obstacle_clearance(pad)               # #1491
     # #498: a via barrel meets the pad's copper on every layer it carries ->
     # stack max of the per-layer .kicad_dru resolution (fallback = the value
     # above on unruled layers).

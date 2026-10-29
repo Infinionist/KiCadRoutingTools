@@ -398,6 +398,12 @@ class GridRouteConfig:
     # frozenset({P, N}) -> mm, which pair_clearance reads instead of that map.
     # Engine-computed (kicad_dru.install_track_clearances); empty = inert.
     track_partner_clearances: Dict[FrozenSet[int], float] = field(default_factory=dict)
+    # #1491: the board's .kicad_dru clearance rules scoped by net class or
+    # item type, installed for this call's routed set
+    # (kicad_dru.install_scoped_clearances, from install_track_clearances).
+    # obstacle_clearance / pad_obstacle_clearance / pair_clearance read it;
+    # None (no such rule) leaves every value as it was.
+    scoped_clearance: Optional[object] = None
     # #530: the board's design rules resolved in KiCad's order
     # (design_rules.DesignRules), installed engine-side by
     # kicad_dru.install_layer_clearances for both fronts. None until then.
@@ -539,7 +545,38 @@ class GridRouteConfig:
         and REMOVE paths derive an identical per-obstacle value (ref-count
         symmetry, issue #208/#309)."""
         floor = self.net_clearance_floor if self.net_clearance_floor is not None else self.clearance
-        return max(floor, self.net_clearances.get(net_id, self.clearance))
+        base = max(floor, self.net_clearances.get(net_id, self.clearance))
+        if self.scoped_clearance is None:
+            return base
+        return self.scoped_stamp(net_id, None, base)
+
+    def scoped_stamp(self, net_id: int, pad_type, default: float) -> float:
+        """#1491: the scoped channel's stamp for an obstacle of `net_id` (a
+        track or via, or a pad of `pad_type`), or `default` when no class/type-
+        scoped .kicad_dru rule binds it against a routed net. A builder that
+        prices obstacles by its own formula (build_base_obstacle_map) passes
+        its value as `default`."""
+        s = self.scoped_clearance
+        if s is not None:
+            v = s.stamp(net_id, pad_type, self)
+            if v is not None:
+                return v
+        return default
+
+    def pad_obstacle_clearance(self, pad, default: Optional[float] = None) -> float:
+        """The stamp clearance of a foreign PAD (#1491): the scoped channel's
+        pad value for its net and pad type, else `default` (the class-resolved
+        value; `obstacle_clearance` without the scoped channel when None). A
+        relaxed track/via stamp never reaches a pad: a rule that binds tracks
+        does not bind pads."""
+        nid = int(getattr(pad, 'net_id', 0) or 0)
+        if default is None:
+            floor = (self.net_clearance_floor if self.net_clearance_floor is not None
+                     else self.clearance)
+            default = max(floor, self.net_clearances.get(nid, self.clearance))
+        if self.scoped_clearance is None:
+            return default
+        return self.scoped_stamp(nid, getattr(pad, 'pad_type', None) or 'smd', default)
 
     def set_net_clearances(self, net_clearances, routed_net_ids) -> None:
         """Install the cross-class clearance map and compute the routing-side
@@ -568,7 +605,7 @@ class GridRouteConfig:
 
     def pair_clearance(self, net_a: int, net_b: int,
                        layer: Optional[str] = None, *, kind: str = 'layer',
-                       base: Optional[float] = None) -> float:
+                       base: Optional[float] = None, types=None) -> float:
         """check_drc's clearance between copper of `net_a` and `net_b`.
 
         `base` is the floor the pair starts from (`self.clearance` when None;
@@ -612,6 +649,16 @@ class GridRouteConfig:
             b = nc.get(net_b)
             if b is not None and b > clr:
                 clr = b
+        if self.scoped_clearance is not None and net_a != net_b:
+            # #1491: a class/type-scoped rule REPLACES the class value when it
+            # binds every item combination the kind stands for, else raises it
+            types = (types if types is not None else
+                     (('via',), ('via',)) if kind == 'stack' else
+                     (('track',), ('track',)) if kind == 'track' else
+                     (('track', 'via'), ('track', 'via')))
+            sv, every = self.scoped_clearance.pair(net_a, net_b, types[0], types[1])
+            if sv is not None:
+                clr = sv if every else max(clr, sv)
         if kind == 'stack':
             return self.stack_clearance(clr)
         if kind != 'layer' and kind != 'track':
@@ -659,15 +706,18 @@ class GridRouteConfig:
                        + list((cp.get('layer') or {}).values())):
                 if mv is not None and mv > v:
                     v = mv
+        if self.scoped_clearance is not None:
+            v = max(v, self.scoped_clearance.max_value)
         return v
 
     def pair_clearance_inert(self) -> bool:
         """True when no channel can move a pair off the floor it is given: no
         class map, no .kicad_dru layer rule, no track rule, no coupled-pair
-        rule. A hot loop may then keep its flat term instead of pricing every
-        item."""
+        rule, no class/type-scoped rule. A hot loop may then keep its flat
+        term instead of pricing every item."""
         return not (self.net_clearances or self.layer_clearances
-                    or self.track_clearances or self.coupled_pair_clearances)
+                    or self.track_clearances or self.coupled_pair_clearances
+                    or self.scoped_clearance is not None)
 
     def pad_pair_clearance_before_override(self, pad, other_net: int,
                                            layer: Optional[str] = None, *,
@@ -682,8 +732,11 @@ class GridRouteConfig:
         class and rule term only, so a board that declares neither is
         unchanged whatever its pads carry). `pad_pair_clearance` is
         `pad_override_clearance(<this>, pad, other_pad)`."""
+        _pt = ('pad', getattr(pad, 'pad_type', None) or 'smd')
+        _ot = ((('pad', getattr(other_pad, 'pad_type', None) or 'smd'),)
+               if other_pad is not None else ('track', 'via'))
         eff = self.pair_clearance(getattr(pad, 'net_id', 0) or 0, other_net,
-                                  base=base)
+                                  base=base, types=((_pt,), _ot))
         if layer is not None:
             return self.layer_clearance(layer, eff)
         if self.layer_clearances:

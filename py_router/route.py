@@ -5925,6 +5925,17 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         _rules = getattr(config, 'rules', None)
         if _rules is not None:
             _dr['unsupported_rules'] = [n for n, _why in _rules.unsupported()]
+        # #1491: the class/type-scoped rules this call honoured, and each
+        # relaxing one another routed net held at its class value
+        _sc = getattr(config, 'scoped_clearance', None)
+        if _sc is not None:
+            from kicad_dru import scoped_clearance_report
+            _dr['scoped_clearance'] = {'rules': _sc.sc.names,
+                                       'held_up': scoped_clearance_report(config)}
+            for _row in _dr['scoped_clearance']['held_up']:
+                print(f"  .kicad_dru rule '{_row['rule']}': relaxing, but held at the "
+                      f"class value against {_row['held_by_routed_nets']} obstacle "
+                      f"group(s) -- {_row['why']} (#1491)")
         summary['design_rules'] = _dr
     except Exception as _dre:                                   # noqa: BLE001
         summary['design_rules'] = {'error': str(_dre)}
@@ -8574,7 +8585,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     for _sm in list(_SUMMARY_SINK) + [summary]:
                         if isinstance(_sm.get('design_rules'), dict):
                             _keep = {k: v for k, v in _sm['design_rules'].items()
-                                     if k == 'unsupported_rules'}
+                                     if k in ('unsupported_rules', 'scoped_clearance')}
                             _sm['design_rules'] = dict(_dr1033, **_keep)
                 except Exception as _dre1033:                   # noqa: BLE001
                     print(f"  (design_rules power reconcile skipped: "
@@ -8669,7 +8680,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         if isinstance(_sm.get('design_rules'), dict):
                             _keep = {k: v for k, v in
                                      _sm['design_rules'].items()
-                                     if k == 'unsupported_rules'}
+                                     if k in ('unsupported_rules', 'scoped_clearance')}
                             _sm['design_rules'] = dict(_dr1282, **_keep)
         except Exception as _wwe:                               # noqa: BLE001
             print(f"  (wide-net width disclosure skipped: {_wwe})")
@@ -8715,7 +8726,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 for _sm in list(_SUMMARY_SINK) + [summary]:
                     if isinstance(_sm.get('design_rules'), dict):
                         _keep = {k: v for k, v in _sm['design_rules'].items()
-                                 if k == 'unsupported_rules'}
+                                 if k in ('unsupported_rules', 'scoped_clearance')}
                         _sm['design_rules'] = dict(_dr1371, **_keep)
         except Exception as _vre:                               # noqa: BLE001
             print(f"  (via-size disclosure skipped: {_vre})")

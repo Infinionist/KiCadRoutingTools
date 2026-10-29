@@ -4231,7 +4231,8 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         this runs per nearby seg-seg pair, and a board with no rules must not
         pay a call for it (the same zero-cost-when-undeclared property the
         netclass and override channels above have)."""
-        eff = _pair_cl(net_a, net_b, layer=layer)
+        eff = _pair_cl(net_a, net_b, layer=layer,
+                       types=(('track', None), ('track', None)))
         if not _track_rules:
             return eff, None
         coupled = (_track_names is not None
@@ -4264,9 +4265,14 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             eff, _lcl, _pad_copper(pad),
             _pad_copper(other_pad) if other_pad is not None else None)
 
-    def _pair_cl(net_a: int, net_b: int, layer: str = None) -> float:
+    def _pair_cl(net_a: int, net_b: int, layer: str = None, types=None) -> float:
         base = clearance if not _ncl_by_id else \
             max(clearance, _ncl_by_id.get(net_a, 0.0), _ncl_by_id.get(net_b, 0.0))
+        if _scoped is not None and types is not None and net_a != net_b:
+            (_ta, _pta), (_tb, _ptb) = types
+            _sv = _scoped.pair_value(net_a, _ta, net_b, _tb, _pta, _ptb)
+            if _sv is not None:
+                base = _sv[0]                      # #1491: the rule replaces the class
         if layer is not None:
             return _layer_cl(layer, base)
         return base
@@ -4303,6 +4309,25 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         except Exception as _e:                                  # noqa: BLE001
             if not quiet:
                 print(f"  .kicad_dru: coupled-pair rules not read ({_e})")
+    # #1491: the clearance rules scoped by net class or item type, graded
+    # PAIR-EXACT through the router's own resolver (kicad_dru.
+    # ScopedClearanceRules): the rule that binds a pair of items REPLACES its
+    # class value, at KiCad's value (no fab floor), before the layer rule and a
+    # pad override -- the order `_pair_cl` / `_pad_pair_cl` apply.
+    _scoped = None
+    if pcb_file:
+        try:
+            from kicad_dru import ScopedClearanceRules
+            _scoped = ScopedClearanceRules.for_board(pcb_data, pcb_file,
+                                                     copper_layers=_board_copper)
+        except Exception as _se:                                 # noqa: BLE001
+            if not quiet:
+                print(f"  .kicad_dru: class/type-scoped clearance rules not read ({_se})")
+            _scoped = None
+        if _scoped is not None and not quiet:
+            print("Class/type-scoped clearance rules (.kicad_dru, #1491): "
+                  + ", ".join(f"'{r.name}':{r.constraints['clearance']['min']:g}"
+                              for r in _scoped.rules))
     # #1490: a clearance rule no channel above models (a NetClass-, Type- or
     # area-scoped condition) binds copper this grader prices at the class or
     # layer value -- KiCad enforces it, so it is NAMED, the clearance half of
@@ -4313,9 +4338,10 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         _graded_coupled = ({r.name for r in _coupled_dr.rules
                             if r.coupled and not r.unsupported}
                            if _coupled_dr is not None else set())
+        _graded_scoped = set(_scoped.names) if _scoped is not None else set()
         for _nm, _mm, _cond in read_board_unmodelled_clearance_rules(
                 pcb_file, _board_copper):
-            if _nm in _graded_coupled:
+            if _nm in _graded_coupled or _nm in _graded_scoped:
                 continue
             print(f"  NOT GRADED (clearance): rule '{_nm}' (clearance {_mm:g}mm"
                   + (f", condition {_cond!r}" if _cond else '')
@@ -4343,7 +4369,12 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
 
     def _pad_pair_cl(pad, other_net: int, layer: str = None, other_pad=None,
                      other_type: str = None) -> float:
-        eff = _pair_cl(pad.net_id, other_net)
+        _ot = (other_type or ('pad' if other_pad is not None else None))
+        eff = _pair_cl(pad.net_id, other_net,
+                       types=((('pad', getattr(pad, 'pad_type', None) or 'smd'),
+                               (_ot, getattr(other_pad, 'pad_type', None) or 'smd'
+                                if _ot == 'pad' else None))
+                              if _ot is not None else None))
         if layer is not None:
             eff = _layer_cl(layer, eff)
         else:
@@ -4575,7 +4606,8 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                 # check_dru floor gates; graders may treat them as advisory.
                 _rule_only = False
                 if _trule is not None:
-                    _base = _pair_cl(net1, net2, layer=seg1.layer)
+                    _base = _pair_cl(net1, net2, layer=seg1.layer,
+                                     types=(('track', None), ('track', None)))
                     _rule_only = (_eff - overlap) >= _base * (1 - clearance_margin)
                 _v = {
                     'type': ('segment-segment-track-rule' if _rule_only
@@ -4776,7 +4808,8 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                 if not via_net_matches and not seg_net_matches:
                     continue
 
-                _eff = _pair_cl(via_net, seg_net, layer=seg.layer)
+                _eff = _pair_cl(via_net, seg_net, layer=seg.layer,
+                                types=(('via', None), ('track', None)))
                 _cv = _coupled_cl(via_net, seg_net, 'via', 'track', (seg.layer,))
                 if _cv is not None:
                     _eff = _cv
@@ -4984,7 +5017,8 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                 continue
             via_via_checked.add(pair_key)
 
-            _eff = _stack_cl(_pair_cl(net1, net2) if net1 != net2 else clearance)
+            _eff = _stack_cl(_pair_cl(net1, net2, types=(('via', None), ('via', None)))
+                             if net1 != net2 else clearance)
             _cv = _coupled_cl(net1, net2, 'via', 'via', _board_copper)
             if _cv is not None:
                 _eff = _cv

@@ -762,6 +762,15 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     _gap_track_rules, _gap_classes = (
         ([], {}) if track_clearances is not None
         else board_track_rules(pcb_data, input_file))
+    # #1491: a class/type-scoped rule binds P against N as any two nets
+    # (`A.NetClass == 'CSI' && B.NetClass == 'CSI'`), so it raises the gap too
+    _gap_scoped = None
+    if track_clearances is None:
+        try:
+            from kicad_dru import ScopedClearanceRules
+            _gap_scoped = ScopedClearanceRules.for_board(pcb_data, input_file)
+        except Exception:                                       # noqa: BLE001
+            _gap_scoped = None
 
     def _pair_rule_gap(p_net_id, n_net_id):
         # #1295: a "keep pairs apart" rule exempts P against N only when
@@ -774,6 +783,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             _gap_classes.get(n_net_id, frozenset()),
             coupled=nets_coupled(getattr(_pn, 'name', None),
                                  getattr(_nn, 'name', None)))
+        if _gap_scoped is not None:
+            _sv = _gap_scoped.pair_value(p_net_id, 'track', n_net_id, 'track')
+            if _sv is not None and _sv[0] > g:
+                g, why = _sv[0], f"the .kicad_dru scoped rule '{_sv[1]}'"
         if track_clearances:
             # an explicit map (tests) prices the pair as pair_clearance does
             v = max(track_clearances.get(p_net_id) or 0.0,
@@ -2473,6 +2486,13 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     _dr857 = narrowed_summary()
     if _dr857 is not None:
         summary['design_rules'] = _dr857
+    # #1491: the class/type-scoped rules this call honoured, and each relaxing
+    # one another routed pair held at its class value
+    if getattr(config, 'scoped_clearance', None) is not None:
+        from kicad_dru import scoped_clearance_report
+        summary.setdefault('design_rules', {})['scoped_clearance'] = {
+            'rules': config.scoped_clearance.sc.names,
+            'held_up': scoped_clearance_report(config)}
     print(f"JSON_SUMMARY: {json.dumps(summary)}")
     # #1421: the --json-out document; written at the end of the run, once
     # the via-protection record below has been stamped onto it.

@@ -623,7 +623,7 @@ def _add_pad_via_obstacle(obstacles: GridObstacleMap, pad: Pad,
     half_height = pad.size_y / 2
     # Add half grid step buffer to account for grid quantization errors.
     # Foreign pads are priced at their net's netclass clearance (#434).
-    clearance = (config.obstacle_clearance(pad.net_id)
+    clearance = (config.pad_obstacle_clearance(pad)             # #1491
                  if clearance_override is None else clearance_override)
     # #498: a via barrel meets the pad's copper on each layer the pad carries
     # it -> max over the per-layer resolution ('*.Cu' = the whole stack).

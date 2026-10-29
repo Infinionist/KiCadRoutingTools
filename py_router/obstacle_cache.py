@@ -968,7 +968,8 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
     for pad in pads:
         _collect_pad_obstacles(pad, coord, layer_map, config, extra_clearance,
                                 blocked_cells_set, blocked_vias_set,
-                                obs_clearance=obs_clearance)
+                                obs_clearance=(obs_clearance if config.scoped_clearance is None
+                                               else config.pad_obstacle_clearance(pad)))
 
     # Concatenate and deduplicate (the Rust map refcounts batch adds, so
     # each cell must appear once per net - same as the old set semantics)

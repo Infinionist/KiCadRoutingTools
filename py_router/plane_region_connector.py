@@ -3644,7 +3644,7 @@ def build_base_obstacles(
             # and the pad net's netclass clearance (#434 cross-class).
             # #498: one value stamps every layer the pad is on -> max over the
             # pad's per-layer resolution (conservative on relaxed layers).
-            _pc = config.obstacle_clearance(pad_net_id)
+            _pc = config.pad_obstacle_clearance(pad)              # #1491
             if getattr(config, 'layer_clearances', None):
                 _pls = [l for l in (pad.layers or [])
                         if l.endswith('.Cu') and l != '*.Cu']

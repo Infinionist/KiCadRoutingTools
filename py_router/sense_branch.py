@@ -1027,7 +1027,8 @@ def sense_obstacle_rows(b: SenseBranch, config, coord, layer_map, clearance: flo
                           diagonal_margin=defaults.DIAGONAL_MARGIN, routing_layers=names)
     for p in b.sense_pads:
         _add_pad_obstacle(col, p, coord, layer_map, config, extra_clearance,
-                          clearance_override=clearance)
+                          clearance_override=(clearance if config.scoped_clearance is None
+                                              else config.pad_obstacle_clearance(p)))
     cells = (np.concatenate(col.cells) if col.cells else np.empty((0, 3), np.int32))
     vias = (np.concatenate(col.vias) if col.vias else np.empty((0, 2), np.int32))
     # Near the join pad the rule holds only the copper that sticks out of it:

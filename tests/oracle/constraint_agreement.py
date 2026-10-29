@@ -250,6 +250,43 @@ def _rows():
         cl(), lambda v: dict(segments=_pair_tracks(v)),
         'net A matches P1 (priority 0) and P2 (priority 1): the aggregate takes P1')
 
+    # -- class/type-scoped rows (#1491): resolved by the router's and the
+    # grader's own channel (kicad_dru.ScopedClearanceRules), with the class
+    # value where it binds nothing ---------------------------------------------
+    def scoped(a=1, b=2, ta='track', tb='track', ptb=None):
+        def f(dr):
+            from kicad_dru import ScopedClearanceRules, is_scoped_clearance_rule
+            sc = ScopedClearanceRules(dr, [r for r in dr.rules if is_scoped_clearance_rule(r)])
+            got = sc.pair_value(a, ta, b, tb, None, ptb)
+            if got is not None:
+                return got[0]
+            ia = dr.item_for_net(a, ta, 'F.Cu')
+            ib = dr.item_for_net(b, tb, 'F.Cu', **({'pad_type': ptb} if ptb else {}))
+            return dr.resolve('clearance', ia, ib, 'F.Cu').min
+        return f
+
+    _csi = dict(classes=[{'name': 'CSI', 'clearance': 0.2, 'priority': 0}],
+                patterns=[('A', 'CSI'), ('B', 'CSI')],
+                dru='(rule "csi gap" (constraint clearance (min 0.3mm)) '
+                    '(condition "A.NetClass == \'CSI\' && B.NetClass == \'CSI\'"))')
+    add('scoped_class_pair_tightens', 'clearance', _csi,
+        scoped(), lambda v: dict(segments=_pair_tracks(v)),
+        'class-pair rule 0.3 over the CSI class 0.2 (#1491)')
+    _hs = dict(classes=[{'name': 'HS', 'clearance': 0.5, 'priority': 0}],
+               patterns=[('B', 'HS')], rules={'min_clearance': 0.05},
+               dru='(rule "hs pad escape" (constraint clearance (min 0.2mm)) '
+                   '(condition "A.NetClass == \'HS\' && B.Type == \'Pad\'"))')
+
+    def _hs_pad(v):
+        fps, segs = _pad_and_track(v, None)
+        return dict(footprints=fps, segments=segs)
+    add('scoped_type_pad_relaxes', 'clearance', _hs,
+        scoped(2, 1, 'track', 'pad', 'smd'), _hs_pad,
+        'an HS track (class 0.5) against a pad: the Type-scoped rule relaxes it to 0.2 (#1491)')
+    add('scoped_type_pad_not_track', 'clearance', _hs,
+        scoped(2, 1), lambda v: dict(segments=_pair_tracks(v, nets=(2, 1))),
+        'the same rule does not bind two tracks: the HS class 0.5 holds (#1491)')
+
     # -- pad override rows (KiCad returns before rules) ---------------------
     def cl_pad(dr):
         return dr.resolve('clearance',
