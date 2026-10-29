@@ -1389,7 +1389,7 @@ class DesignRules:
             if kinds and r.name not in named and not r.honoured:
                 out.append((r.name, f"{', '.join(kinds)}: no routing step sizes "
                                     f"a via by it (via_diameter and hole_size "
-                                    f"alone)"))
+                                    f"alone); check_drc grades it"))
         return out
 
     def honoured_rules(self) -> List[Tuple[str, str]]:

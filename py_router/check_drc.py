@@ -4408,6 +4408,22 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             v = _size_rules.floor('track_width', seg.net_id, seg.layer)
             return v if v is not None else eff_min_track
 
+        def _via_ring_floor(via):
+            """#1490: the annular ring KiCad requires of this via -- Board
+            Setup's min_via_annular_width and every .kicad_dru annular_width
+            rule binding it (NetClass, Type, ... resolved per net, #530) --
+            never below the fab floor's ring (#1433)."""
+            if _size_rules is None:
+                return eff_min_via_ring
+            # KiCad's own value, before this tool's fab-profile raise: the
+            # profile's `annular` term is enforced by no routing step, and the
+            # fab half is the ring the floor's smallest via implies (#1433)
+            c = _size_rules.resolve('annular_width',
+                                    _size_rules.item_for_net(via.net_id, 'via', None),
+                                    None, None)
+            v = c.kicad_min if c.fab_bound else c.min
+            return max(eff_min_via_ring, v) if v is not None else eff_min_via_ring
+
         def _via_floors(via):
             if _size_rules is None:
                 return eff_min_via_dia, eff_min_via_drill
@@ -5978,7 +5994,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             _vd, _vh = _via_floors(via)
             dia_bad, drill_bad, dia_short, drill_short = check_via_size(
                 via, _vd, _vh, size_margin)
-            _ring_floor = eff_min_via_ring
+            _ring_floor = _via_ring_floor(via)
             ring_bad, ring_short = check_via_annular(via, _ring_floor,
                                                      size_margin)
             if ring_bad:
