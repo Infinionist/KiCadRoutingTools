@@ -123,6 +123,9 @@ REGISTRY = {
         'strings ("Tool time (sum of wall_s)", "Total run time (first ...").'),
     'py_router/redo_record.py': (
         'record', 'wall seconds recorded into the redo manifest row'),
+    'py_placer/placement/run_record.py': (
+        'record', "each placement step's time stamp in placement_manifest.json "
+        "(#1486), as data; the replay reads no clock"),
     'py_tools/repo_metrics.py': (
         'record',
         'the COLLECTION DATE of a metrics snapshot: `_today()` keys the '
