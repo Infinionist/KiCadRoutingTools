@@ -5646,10 +5646,21 @@ def rule_keepout(ctx) -> Iterator[Violation]:
                 name = k['name']
                 shape = (_fmt_rect(k['rect']) if k.get('rect') is not None
                          else f"circle {k['circle']}")
+                # #1475: a height-limited keep-out binds a part by its height,
+                # so say which height (or that none is known) and the limit
+                tall = ''
+                if k.get('max_height_mm') is not None:
+                    h = hts.height(ref) if hts is not None else None
+                    tall = (f": it admits parts no taller than "
+                            f"{k['max_height_mm']:g}mm, and {ref} "
+                            + (f"is {h:g}mm" if h is not None and
+                               len(part.sides) == 1 else
+                               "stands on both faces" if h is not None else
+                               "has no known height"))
                 yield Violation(
                     rule='keepout', severity=ctx.sev('keepout'), ref=ref,
                     message=(f"{ref} ({part.side}) is inside keep-out "
-                             f"{name!r} {shape}"),
+                             f"{name!r} {shape}{tall}"),
                     measured={'keepout': name, 'side': part.side,
                               'sides_occupied': sorted(part.sides)},
                     expected={'allow': list(k.get('allow') or ())})

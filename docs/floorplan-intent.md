@@ -815,7 +815,9 @@ are kept out of the band too: a member the zone's `tolerance_mm` lets stray
 past the zone is still refused there. `fence_mm` needs a `zone`, and an
 intent may not name its own keep-out `fence:...` (refused at load). Holding
 the members inside and strangers out of the zone itself is the block's own
-job (`refs`, `exclusive`); the fence only adds the band.
+job (`refs`, `exclusive`); the fence only adds the band. A design brief's
+`cans[]` row writes this block, its keep-outs and its height limit for you
+from one declaration (`docs/design-brief.md`, "`cans[]`").
 
 A container -- an enclosure drawn as a footprint round the parts, a pin frame
 -- is graded by every keep-out on its pads, not its frame rect, as the seat
