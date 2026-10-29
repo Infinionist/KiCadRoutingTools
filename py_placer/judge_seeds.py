@@ -40,7 +40,9 @@ the full route can be the file as it stands. A command runs from the current
 folder (run from the repo root, as every skill command does), without a
 shell: quote a glob (`'*'`) as you would on the command line, and it reaches
 the tool unexpanded. `python3`/`python` at the head of a line is this
-interpreter.
+interpreter. A leading `NAME=value` prefix (`KICAD_SMOOTH_ROUTE=1 python3
+...`, the form plan-pcb-routing puts on a route step) is that step's
+environment, over the judge's own, and no other step's (#1497).
 
 PER SEED S, from the run folder: `s<S>_route/` is made afresh, the seed's
 placement copied in (`in.kicad_pcb`, siblings included), each step run in
@@ -198,15 +200,27 @@ def _strip_quick(argv):
     return out
 
 
+def step_env(line, split=False):
+    """The env knobs a chain line sets for its step alone -- its leading
+    `NAME=value` tokens, the prefix plan-pcb-routing puts on a route step and
+    the redo recorder writes (#1497) -- as a dict; with `split`, `(env, the
+    command's tokens after them)`. Handed to the process as argv, such a
+    prefix was run as a program and the judge died on PermissionError."""
+    from redo_record import split_env_prefix
+    env, rest = split_env_prefix(shlex.split(line))
+    return (env, rest) if split else env
+
+
 def step_argv(line, subst, full=False):
     """The command to run for one chain line: placeholders filled token by
     token (a path with spaces stays one argument), `python3`/`python` made
     this interpreter, and `--quick 2` added to a route.py / route_diff.py
     step with no `--quick` of its own. With `full`, every `--quick` is taken
     off a route step instead, so it runs at the full level (the confirming
-    route, #1383). -> (argv, quick_added)"""
+    route, #1383). A leading `NAME=value` prefix is not part of the command:
+    it is the step's environment (`step_env`, #1497). -> (argv, quick_added)"""
     argv = []
-    for tok in shlex.split(line):
+    for tok in step_env(line, split=True)[1]:
         for k, v in subst.items():
             tok = tok.replace('{' + k + '}', str(v))
         argv.append(tok)
@@ -245,12 +259,14 @@ def judge_seed(run, s, steps, intent, lock, baseline=None, full=False):
                                   f".kicad_pcb")
             argv, added = step_argv(line, {'in': cur, 'out': out, 'dir': w, 'seed': s, 'run': run},
                                     full=full)
-            log.write(f"$ {' '.join(shlex.quote(a) for a in argv)}\n"
+            knobs = step_env(line)
+            log.write(f"$ {' '.join(shlex.quote(a) for a in [f'{k}={v}' for k, v in knobs.items()] + argv)}\n"
                       + ('# --quick 2 added: the judge routes every route.py / route_diff.py '
                          'step at level 2\n' if added else ''))
             log.flush()
             ts = time.time()
-            rc = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT).returncode
+            rc = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT,
+                                env=dict(os.environ, **knobs) if knobs else None).returncode
             log.write(f'# exit {rc} in {time.time() - ts:.1f} s\n')
             log.flush()
             res['steps'].append({'step': i, 'exit': rc, 'quick_added': added})

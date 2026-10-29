@@ -1057,7 +1057,9 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
    (a trailing `\` continues it), each naming its boards by placeholder:
    `{in}` the board the step reads, `{out}` the one it writes, `{dir}` the
    seed's route folder (`--json-out {dir}/route.json`), `{run}` this folder
-   (`--intent {run}/intent.json`).
+   (`--intent {run}/intent.json`). A step's env knobs stay its
+   `NAME=value` prefix, as plan-pcb-routing writes them: they reach that
+   step alone.
    ```text
    python3 -X utf8 py_router/route_planes.py {in} {out} --nets GND --plane-layers B.Cu
    python3 -X utf8 py_router/route.py {in} {out} --nets '*' --json-out {dir}/route.json

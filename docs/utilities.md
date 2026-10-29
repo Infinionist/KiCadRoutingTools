@@ -1193,7 +1193,9 @@ python3 -X utf8 py_placer/judge_seeds.py wk/run/judge.json --chain wk/run/judge_
   chain can be the file as it stands.
 - A command runs from the current folder (the repo root) with no shell: a
   quoted `'*'` reaches the tool as `*`, and `python3` at the head of a line is
-  the runner's own interpreter.
+  the runner's own interpreter. A leading `NAME=value` prefix
+  (`KICAD_SMOOTH_ROUTE=1 python3 ...`) is that step's environment alone,
+  over the runner's (#1497), as `bash` would read it.
 - Per seed: `s<S>_route/` made afresh with the placement copied in
   (`copy_board`, siblings included), every step's output in
   `s<S>_route/chain.log`, the last board copied to `s<S>_fast.kicad_pcb` and

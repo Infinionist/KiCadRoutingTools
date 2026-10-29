@@ -20,6 +20,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -95,6 +96,32 @@ def env_prefix_tokens(knobs: dict) -> list:
     bash reads `NAME='a b' cmd` as an assignment, but a quoted `'NAME=a b'`
     as the name of the command to run."""
     return [f"{k}={shlex.quote(v)}" for k, v in knobs.items()]
+
+
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def split_env_prefix(argv):
+    """(env, argv): the command's leading `NAME=value` assignments, and the
+    command that follows them (#1302).
+
+    The recorder writes the env knobs a step ran with as that prefix -- the
+    shell's own spelling, so `bash redo_commands.sh` applies them -- and an
+    agent may type one by hand. A replayer must apply them as the child's
+    ENVIRONMENT: handed to Popen as argv, `KICAD_PLANE_FRAGILITY_COST=0` was
+    run as a program (PermissionError / FileNotFoundError), and a replayer
+    that dropped them routed the step at the defaults instead. The parsed
+    manifest keeps the prefix in argv, so every reader sees what was run;
+    the analysis helpers (board_io, is_check_cmd, the pruner) are blind to
+    it by construction, and anything that EXECUTES or converts a command
+    splits it here."""
+    env = {}
+    i = 0
+    while i < len(argv) and _ENV_ASSIGN.match(argv[i]):
+        k, v = argv[i].split("=", 1)
+        env[k] = v
+        i += 1
+    return env, list(argv[i:])
 
 
 def record_invocation(manifest_env: str = "REDO_MANIFEST") -> None:
