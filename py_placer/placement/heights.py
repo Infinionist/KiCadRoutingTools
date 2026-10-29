@@ -10,7 +10,8 @@ Two rules read it, for two parts on one face whose heights are both KNOWN:
   * a part may stand inside a cover's occupancy (the box the seat and the
     grade give it -- its courtyard, else its fab outline or pads) where the
     cover's model is over it at least the part's height plus `MARGIN_MM`
-    higher, and never under `ROOM_FLOOR_MM`, and nowhere inside a courtyard
+    higher, and never under `ROOM_FLOOR_MM` (a measured underside: a declared
+    one has no floor, `Cover.floor`), and nowhere inside a courtyard
     the cover DRAWS (KiCad grades that
     one, and the human boards never put a part in one);
   * a part may NOT stand under a cover's raised body outside that occupancy
@@ -162,14 +163,20 @@ class Cover:
     `solid`: nothing may stand inside the part's occupancy, whatever the
     model says -- a part something reaches from above (a connector's model
     is the likeliest to stand off its footprint); its raised body past the
-    occupancy still binds."""
+    occupancy still binds.
+    `floor`: the lowest underside that admits a part. `ROOM_FLOOR_MM` for a
+    measured one, whose low readings are a model's offset or standoff; 0 for
+    a declared `underside_mm`, which is the datasheet's room, not a guess."""
 
-    __slots__ = ('ref', 'x0', 'y0', 'lo', 'court', 'lift_box', 'solid', 'decl')
+    __slots__ = ('ref', 'x0', 'y0', 'lo', 'court', 'lift_box', 'solid', 'decl',
+                 'floor')
 
-    def __init__(self, ref, x0, y0, lo, court=None, solid=False, decl=None):
+    def __init__(self, ref, x0, y0, lo, court=None, solid=False, decl=None,
+                 floor=ROOM_FLOOR_MM):
         import numpy as np
         self.ref = ref
         self.solid = solid
+        self.floor = floor
         self.x0, self.y0 = x0, y0
         self.lo = lo
         self.court = court if court is not None else np.zeros(lo.shape, bool)
@@ -229,7 +236,7 @@ class Cover:
         if ok:
             w = self.lo[i0:i1, j0:j1]
             # a cell the model is not over (inf) is unknown, not room
-            ok = bool((w < math.inf).all() and (w >= max(top + MARGIN_MM, ROOM_FLOOR_MM)).all()
+            ok = bool((w < math.inf).all() and (w >= max(top + MARGIN_MM, self.floor)).all()
                       and not self.court[i0:i1, j0:j1].any())
         return 0.0 if ok else (ix[2] - ix[0]) * (ix[3] - ix[1])
 
@@ -791,9 +798,10 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
             lo[inb] = float(row['underside_mm'])
             court = _mask(_no_go(fps[r], getattr(g, 'court_shape_local', None)),
                           x0, y0, nx, ny)
-            # the datasheet outranks the designator: never solid
+            # the datasheet outranks the designator: never solid, and its
+            # room is what it declares, however low (no measured floor)
             covers[r] = Cover(r, x0, y0, lo, court, False,
-                              base.decl if base is not None else None)
+                              base.decl if base is not None else None, floor=0.0)
             applied[r] = float(row['underside_mm'])
             n_u += 1
     # a footprint with no pads is no part (a logo, a mechanical drawing)
@@ -811,7 +819,8 @@ def with_declared(h: Heights, declared, pcb_data, pcb_file=None) -> Heights:
                     bool(row.get('removable')), _sweep(row))
         base = covers.get(r)
         if base is not None:
-            covers[r] = Cover(r, base.x0, base.y0, base.lo, base.court, base.solid, decl)
+            covers[r] = Cover(r, base.x0, base.y0, base.lo, base.court, base.solid, decl,
+                              floor=base.floor)
         else:
             # no measured room: its own occupancy keeps its occupancy test
             covers[r] = Cover(r, 0.0, 0.0, np.full((1, 1), np.inf), None, True, decl)

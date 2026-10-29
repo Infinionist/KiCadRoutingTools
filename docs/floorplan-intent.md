@@ -1425,7 +1425,11 @@ as drift).
 known height) and its `underside_mm` (the room under a module whose model is
 drawn solid to the board: across its occupancy, outside its drawn courtyard
 and pads, as a model's underside would be read). Declared values win over
-measured ones. Take them from a datasheet, never a guess.
+measured ones. Take them from a datasheet, never a guess. A declared
+underside is room however low: the 1.5 mm floor a measured underside must
+clear (every lower one the corpus showed was a model's offset or standoff)
+does not apply to it, and a part fits under it when it is at least its height
+plus 0.5 mm.
 
 A declared `underside_mm` also wins over the "reached from above" rule: a
 part whose class or designator says something reaches it from above (a

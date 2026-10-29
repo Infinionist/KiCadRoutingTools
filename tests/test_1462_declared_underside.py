@@ -228,6 +228,48 @@ def main():
     check('the brief names C9 and Q?, not C*', rep['unmatched'] == ['C9', 'Q?'],
           f"{rep['unmatched']}")
 
+    print('6. a declared underside is room however low; a measured one is floored (#1475)')
+    pcb = boards['SH1']
+    short = [{'ref': r, 'height_mm': 0.5, 'source': 't'} for r in ('C1', 'C2', 'U1')]
+    for under, fits in ((1.6, True), (1.45, True), (1.2, True), (0.9, False)):
+        heights._DECL_MEMO.clear()
+        h = heights.with_declared(heights.EMPTY, {'covers': [], 'heights': short + [
+            {'ref': 'SH1', 'underside_mm': under, 'source': 't'}]}, pcb, pcb.source_path)
+        got = pair(h, pcb, 'SH1', 'C1')
+        check(f'declared underside {under:g} over a 0.5 mm part: '
+              f"{'fits' if fits else 'refused (the 0.5 mm margin)'}",
+              (got == 0.0) == fits, f'blocked {got}')
+    heights._DECL_MEMO.clear()
+    h = heights.with_declared(modelled(pcb, pcb.source_path, 'SH1', under=1.2),
+                              {'covers': [], 'heights': short}, pcb, pcb.source_path)
+    got = pair(h, pcb, 'SH1', 'C1')
+    check('a MEASURED 1.2 mm underside keeps the floor: refused', got > 0.0,
+          f'blocked {got}')
+
+    print('7. a height-limited keep-out over a zone binds the members too tall for it (#1475)')
+    from placement import floorplan as fp
+    path = pcb.source_path
+    for h_mm, flagged in ((0.9, False), (2.5, True), (None, True)):
+        doc = {'schema': fp.SCHEMA_VERSION, 'kind': fp.KIND, 'units': 'mm',
+               'min_reader': fp.COVERS_READER,
+               'blocks': [{'name': 'b', 'refs': ['C1', 'C2', 'U1'], 'zone': [11, 11, 29, 29],
+                           'side': 'F'}],
+               'keepouts': [{'name': 'lid', 'rect': [11, 11, 29, 29], 'sides': ['F'],
+                             'max_height_mm': 2.0, 'allow': ['SH1']}],
+               'heights': ([{'ref': r, 'height_mm': h_mm, 'source': 't'}
+                            for r in ('C1', 'C2', 'U1')] if h_mm else [])}
+        it = fp.intent_from_dict(doc, 't.json')
+        heights._DECL_MEMO.clear()
+        r = quiet(fp.grade, it, pcb, path)
+        vs = r.errors + r.warnings
+        zone = sorted(v.ref or v.block for v in vs if v.rule == 'intent_zone_in_keepout')
+        keep = sorted(v.ref for v in vs if v.rule == 'keepout')
+        label = 'unknown' if h_mm is None else f'{h_mm:g} mm'
+        check(f'members {label} under a 2.0 mm lid: the zone check agrees with the '
+              f"keepout rule ({'flagged' if flagged else 'admitted'})",
+              bool(zone) == flagged and bool(keep) == flagged,
+              f'intent_zone_in_keepout {zone}, keepout {keep}')
+
     print('FAILED: ' + ', '.join(failures) if failures else 'PASS')
     return 1 if failures else 0
 

@@ -345,7 +345,8 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb preview.png \
   headers, a shield can, a part whose body stands off the board -- where the
   cover's model is over it at least its height plus 0.5 mm higher (and at
   least 1.5 mm: every lower underside the corpus showed was a model's offset
-  or a standoff, not room), never in a
+  or a standoff, not room; a declared `heights[].underside_mm` has no such
+  floor), never in a
   courtyard the cover draws and never on the cover's pads; and it may not
   stand under a cover's raised body past that occupancy (a module's overhang)
   where the two models meet, cell by cell -- the human boards tuck a part's

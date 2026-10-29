@@ -3590,7 +3590,8 @@ def _inflate(rect, by: float):
 
 
 def zone_covered_by_keepout(zone, keepouts, member_sides=None,
-                            tolerance: float = 0.0) -> Optional[str]:
+                            tolerance: float = 0.0,
+                            member_heights=None) -> Optional[str]:
     """The name of a keep-out that swallows `zone` whole for a member that it
     actually BINDS, or None (#702).
 
@@ -3625,6 +3626,10 @@ def zone_covered_by_keepout(zone, keepouts, member_sides=None,
     with a corner bitten out still has room -- and deciding whether what is
     left can actually hold the part is a different (harder) question than this
     one.
+
+    `member_heights` is `{ref: height or None}`, the heights the grade's
+    `keepout` rule reads (#1475): a `max_height_mm` keep-out over a can's zone
+    binds only the members too tall for it, as it does in the grade.
     """
     if zone.rect is None:
         return None
@@ -3644,7 +3649,8 @@ def zone_covered_by_keepout(zone, keepouts, member_sides=None,
         # and the grade use, so `allow` globs and `sides` are honoured here
         # exactly as they are there.
         for ref, sides in member_sides.items():
-            if keepouts_for_ref((k,), ref, sides):
+            if keepouts_for_ref((k,), ref, sides,
+                                (member_heights or {}).get(ref)):
                 return str(k.get('name') or '<unnamed>')
     return None
 
@@ -5231,6 +5237,13 @@ def intent_zone_keepout_problems(intent, blocks, pcb_data,
         fp = pcb_data.footprints[ref]
         member_sides[ref] = legality.sides_occupied(
             legality.footprint_side(fp), legality.footprint_has_through_pads(fp))
+    # #1475: a height-limited keep-out binds a member as the grade's `keepout`
+    # rule binds it -- by its height -- read the way that rule reads it.
+    member_heights = {}
+    if any(k.get('max_height_mm') is not None for k in intent.keepouts):
+        from .heights import for_board
+        hts = for_board(pcb_data, pcb_file or None, intent.height_declarations())
+        member_heights = {r: hts.height(r) for r in member_sides}
 
     # #1174: the grade's open sides, so neither half refuses an edge member
     # the grade lets sit past its zone's open side.
@@ -5244,7 +5257,8 @@ def intent_zone_keepout_problems(intent, blocks, pcb_data,
                 and not zone_open_sides(z.rect, _bounds, _claimed.get(r))}
         if not mine:
             continue
-        hit = zone_covered_by_keepout(z, intent.keepouts, mine, tol)
+        hit = zone_covered_by_keepout(z, intent.keepouts, mine, tol,
+                                      member_heights)
         if hit is not None:
             out.append(Violation(
                 rule='intent_zone_in_keepout', block=z.name,
@@ -5264,7 +5278,8 @@ def intent_zone_keepout_problems(intent, blocks, pcb_data,
     # keep-out -- which is every board `emit_intent` can write -- this function
     # has already returned, so it costs no file read at all.
     needs = [z for z in zoned
-             if any(keepouts_for_ref(intent.keepouts, r, member_sides[r])
+             if any(keepouts_for_ref(intent.keepouts, r, member_sides[r],
+                                     member_heights.get(r))
                     for r in blocks.get(z.name, ()) if r in member_sides)]
     if not needs:
         return out
@@ -5279,7 +5294,8 @@ def intent_zone_keepout_problems(intent, blocks, pcb_data,
             lb = locals_.get(ref)
             if lb is None or lb.synthetic:
                 continue
-            bound = keepouts_for_ref(intent.keepouts, ref, member_sides[ref])
+            bound = keepouts_for_ref(intent.keepouts, ref, member_sides[ref],
+                                     member_heights.get(ref))
             if not bound:
                 continue
             fp = pcb_data.footprints[ref]
