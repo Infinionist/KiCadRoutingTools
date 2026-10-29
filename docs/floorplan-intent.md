@@ -733,6 +733,15 @@ Every declared connector on the board gets a row in `edge_connector_evidence`
 
 The same keys are added to the entry's `edge_seating` row when one exists.
 
+**A part inside its band leaves `legality_budget`'s `oob_count` and
+`oob_amount`** (`_Ctx.oob_exempt`, counted as `oob_count_exempt`). The
+entries that qualify are the ones `place_simple`'s edge seat holds on their
+edge: every entry that names an `edge`, a `connector_affinity` header's
+included. A band with no `max` is flush: it ends at its `min` (where the
+seat puts the part), so a pin header whose body the seat lays on the edge
+is exempt with its courtyard past it, and one standing further out is
+counted.
+
 ### `refs` is the primitive, not `group`
 
 Sheet group keys are opaque uuid paths — KiCad's `Sheetname` property is absent

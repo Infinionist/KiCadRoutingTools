@@ -3921,25 +3921,34 @@ class _Ctx:
         The amount is `rect_outside_amount` with the part's OWN milled rings
         skipped -- the exact call `QuenchState.legality_metrics` makes -- so
         "counted" and "exempt" are decided on one number, never on two
-        readings of the outline. Only `edge_claims()` entries qualify (a
-        `connector_affinity` row claims no edge), only entries with a `max`
-        (an unbounded band would exempt any overhang whatever, which is the
-        run-10 160 mm case), and only when the part is actually off the board
-        (an interior connector is not "exempt" from anything). A part outside
+        readings of the outline. The entries that qualify are the ones
+        `place_simple` seats on their edge (`edge_seat.seats`): every
+        `edge_claims()` entry, and a `connector_affinity` row that names an
+        edge (a header an author put on one). An entry with no `max` is
+        flush: its band ends at its `min`, give or take the seat's own
+        `BAND_SLACK_MM`, where the seat holds it -- never unbounded, which
+        would exempt any overhang whatever (the run-10 160 mm case). A pin
+        header seated flush by its body has its courtyard past the edge by
+        design, and counted, it failed every seed of a run that declared
+        `oob_count: 0`. Only a part actually off the board qualifies (an
+        interior connector is not "exempt" from anything). A part outside
         its band is NOT exempt: it stays in the count AND `rule_edge_connector`
         names it, two rules reporting one fact.
         """
         if self._oob_exempt is None:
             from .connector_geometry import courtyard_overhang_past, geometry_for
+            from .edge_seat import BAND_SLACK_MM
             out: Dict[str, float] = {}
-            for c in self.intent.edge_claims():
+            for c in self.intent.edge_connectors:
+                if c.get('class') == 'connector_affinity' and not c.get('edge'):
+                    continue
                 ref = c['ref']
                 part = self.parts.get(ref)
-                lim = c.get('overhang_mm') or {}
-                if part is None or lim.get('max') is None:
+                if part is None:
                     continue
+                lim = c.get('overhang_mm') or {}
                 lo = float(lim.get('min', 0.0))
-                hi = float(lim['max'])
+                hi = float(lim['max']) if lim.get('max') is not None else lo + BAND_SLACK_MM
                 own = self.state._owned_rings(ref)  # noqa: SLF001
                 amt = self.gate.rect_outside_amount(part.rect,
                                                     skip_rings=own)
