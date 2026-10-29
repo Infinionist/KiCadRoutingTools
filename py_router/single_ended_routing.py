@@ -2011,6 +2011,69 @@ def oracle_link_end_layers(pcb_data: PCBData, net_id: int, x: float, y: float,
     return []
 
 
+def _on_own_copper(pcb_data: PCBData, net_id: int, x: float, y: float,
+                   layer: str) -> bool:
+    """Whether (x, y) lies on the net's own pad, via or track on `layer`."""
+    from geometry_utils import point_to_segment_distance, via_on_layer
+    from net_queries import expand_pad_layers
+    for v in pcb_data.vias:
+        if v.net_id == net_id and via_on_layer(v, layer) \
+                and math.hypot(v.x - x, v.y - y) <= v.size / 2.0:
+            return True
+    for s in pcb_data.segments:
+        if s.net_id == net_id and s.layer == layer and \
+                point_to_segment_distance(x, y, s.start_x, s.start_y,
+                                          s.end_x, s.end_y) <= s.width / 2.0:
+            return True
+    cu = list(pcb_data.board_info.copper_layers)
+    for p in pcb_data.pads_by_net.get(net_id, []):
+        if layer in expand_pad_layers(p.layers, cu) and \
+                abs(p.global_x - x) <= p.size_x / 2.0 and \
+                abs(p.global_y - y) <= p.size_y / 2.0:
+            return True
+    return False
+
+
+def step_link_end_into_fill(pcb_data: PCBData, net_id: int, end, other,
+                            layer: str, layer_index: int,
+                            config: GridRouteConfig,
+                            obstacles: GridObstacleMap, reach: float = 0.5):
+    """A forced-link end (#572) on fill, moved to where a track may start.
+
+    The oracle's anchors are the two clusters' nearest approach, so an end
+    that is not on the net's own pad, via or track sits on its island's
+    EDGE -- and that edge stands at clearance from the foreign copper that
+    carved it. A track centred there reaches half its width past the fill,
+    into that clearance, and the end's grid cell is one the obstacle map
+    blocks (a source cell is stamped free all the same). Walk from the end
+    away from the other end -- into its own island, the direction the
+    nearest-approach pair points -- and return the first point on the net's
+    fill whose grid cell the map leaves free. The end unchanged when it is on
+    own copper or no such point lies within `reach`: it then routes as it
+    always did."""
+    x, y = end
+    dx, dy = x - other[0], y - other[1]
+    d = math.hypot(dx, dy)
+    if d < 1e-6:
+        return end
+    from plane_fill_model import get_fill_models
+    models = get_fill_models(pcb_data, net_id).get(layer, [])
+    if not models or _on_own_copper(pcb_data, net_id, x, y, layer):
+        return end
+    coord = GridCoord(config.grid_step)
+    ux, uy = dx / d, dy / d
+    step = config.grid_step / 2.0
+    t = config.track_width / 2.0
+    while t <= reach:
+        px, py = x + ux * t, y + uy * t
+        gx, gy = coord.to_grid(px, py)
+        if not obstacles.is_blocked(gx, gy, layer_index) and \
+                any((m.query_component(px, py) or 0) > 0 for m in models):
+            return (px, py)
+        t += step
+    return end
+
+
 def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
                        obstacles: GridObstacleMap, links,
                        attraction_path=None) -> Optional[dict]:
@@ -2047,6 +2110,24 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
             uncommit_dropped_result(pcb_data, merged)
             return {'failed': True, 'iterations': 0,
                     'failed_link': ((ax, ay), (bx, by))}
+        # An end on one named layer may sit on its island's edge: start the
+        # track inside the fill, on a cell the map leaves free.
+        if len(las) == 1:
+            ax, ay = step_link_end_into_fill(pcb_data, net_id, (ax, ay),
+                                             (bx, by), las[0],
+                                             layer_idx[las[0]], config,
+                                             obstacles)
+        if len(lbs) == 1:
+            bx, by = step_link_end_into_fill(pcb_data, net_id, (bx, by),
+                                             link[0][:2], lbs[0],
+                                             layer_idx[lbs[0]], config,
+                                             obstacles)
+        for (ox, oy), (nx, ny) in ((link[0][:2], (ax, ay)),
+                                   (link[1][:2], (bx, by))):
+            if (ox, oy) != (nx, ny):
+                print(f"    forced link end ({ox:.3f},{oy:.3f}) is on its "
+                      f"fill's edge -- starts at ({nx:.3f},{ny:.3f}), "
+                      f"{math.hypot(nx - ox, ny - oy):.3f} mm into the island")
         gax, gay = coord.to_grid(ax, ay)
         gbx, gby = coord.to_grid(bx, by)
         print(f"    forced oracle link: ({ax:.3f},{ay:.3f})"

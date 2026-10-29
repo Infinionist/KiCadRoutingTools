@@ -1706,6 +1706,32 @@ def _direct_sliver_weld(pcb_data, net_id, ax, ay, bx, by, layer, config,
     if terminal_sense_dist(pcb_data, net_id, x1, y1, x2, y2, layer, w / 2.0) \
             < reach + config.layer_clearance(layer, config.obstacle_clearance(net_id), net_id):
         return None
+    # The board edge and milled slots, as the router's edge keep-out prices
+    # them (board_edge_clearance, else the track clearance) and from the
+    # geometry check_drc grades with: the weld is a straight shot, not an
+    # A* path, so nothing else keeps it out of the band (a GND weld ended
+    # 0.048 mm inside it).
+    from check_drc import (board_edge_geometry, _point_on_board,
+                           _segment_to_rings_distance, npth_slot_capsules,
+                           segment_to_npth_slots_distance)
+    edge_clr = getattr(config, 'board_edge_clearance', 0.0) or clr
+    need = edge_clr + w / 2.0 - 1e-4
+    if segment_to_npth_slots_distance(npth_slot_capsules(pcb_data),
+                                      x1, y1, x2, y2) < need:
+        return None
+    rings, outer, cutouts = board_edge_geometry(pcb_data.board_info)
+    if rings:
+        if not _point_on_board(x1, y1, outer, cutouts) \
+                or not _point_on_board(x2, y2, outer, cutouts) \
+                or _segment_to_rings_distance(x1, y1, x2, y2, rings) < need:
+            return None
+    elif pcb_data.board_info.board_bounds:
+        # A plain rectangle reaches no rings; inside it the segment's nearest
+        # approach to the boundary is at an endpoint.
+        bx0, by0, bx1, by1 = pcb_data.board_info.board_bounds
+        if any(min(px - bx0, bx1 - px, py - by0, by1 - py) < need
+               for px, py in ((x1, y1), (x2, y2))):
+            return None
     return Segment(start_x=x1, start_y=y1, end_x=x2, end_y=y2,
                    width=w, layer=layer, net_id=net_id)
 
