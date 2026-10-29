@@ -151,7 +151,14 @@ traced from its output to its input, never the other way. A pass-through with
 three terminals (a FET, a load switch) conducts between its non-ground nets.
 When a part's pads and nets say nothing (heater nets, an unlabeled connector),
 name them: `classify_component(components, 'V1', role, current_rating_ma=300,
-supply_nets=['/HEAT_A', '/HEAT_B'])`. A classified part that still reaches no
+supply_nets=['/HEAT_A', '/HEAT_B'])`. For a regulator `supply_nets` names its
+OUTPUTS (a buck's switch node -- its output rail is reached through the
+inductor, classified PASS_THROUGH), and `input_nets` its input rail when its
+pins do not say: `classify_component(components, 'U3', ComponentRole.POWER_SOURCE,
+current_rating_ma=2000, supply_nets=['/power/L1'], input_nets=['+5V'])`.
+Without an input it is a root source, and the load behind it never reaches its
+input rail: `get_power_net_recommendations` warns for each source that is a
+root with pads on two or more rails (#1496). A classified part that still reaches no
 net raises a warning from `get_power_net_recommendations` -- read it, it means
 that part contributed no width.
 

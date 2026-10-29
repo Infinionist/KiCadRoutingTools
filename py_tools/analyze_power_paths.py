@@ -61,6 +61,7 @@ class ComponentInfo:
     current_rating_ma: Optional[float] = None  # Estimated current in mA
     notes: str = ""                    # Additional notes from AI analysis
     supply_nets: Optional[List[str]] = None  # Nets the agent names as this part's rails
+    input_nets: Optional[List[str]] = None   # A source's input rails, named by the agent (#1496)
     classified: bool = False           # classify_component() was called on it
 
 
@@ -208,7 +209,8 @@ def classify_component(components: Dict[str, ComponentInfo],
                        role: ComponentRole,
                        current_rating_ma: Optional[float] = None,
                        notes: str = "",
-                       supply_nets: Optional[List[str]] = None) -> None:
+                       supply_nets: Optional[List[str]] = None,
+                       input_nets: Optional[List[str]] = None) -> None:
     """
     Set the classification for a component based on AI analysis.
 
@@ -221,18 +223,24 @@ def classify_component(components: Dict[str, ComponentInfo],
         supply_nets: The nets this part draws on (a sink) or feeds (a source),
             for a part whose pads carry no pintype or pin function and whose
             nets are not named like rails. Optional: without it the pads are
-            read by pintype, pin function, then net name.
+            read by pintype, pin function, then net name. For a POWER_SOURCE
+            they are its OUTPUTS (a buck's switch node: its output rail is
+            reached through the inductor, a PASS_THROUGH).
+        input_nets: a POWER_SOURCE's input rails (#1496) -- a regulator whose
+            pins say nothing, so the load behind it reaches its input. Never
+            taken as one of its outputs.
     """
     if ref in components:
-        if supply_nets:
-            known = set(components[ref].net_connections.values())
-            missing = [n for n in supply_nets if n not in known]
+        known = set(components[ref].net_connections.values())
+        for what, nets in (('supply_nets', supply_nets), ('input_nets', input_nets)):
+            missing = [n for n in (nets or ()) if n not in known]
             if missing:
-                raise ValueError(f"{ref} has no pad on net(s) {missing}")
+                raise ValueError(f"{ref} has no pad on net(s) {missing} ({what})")
         components[ref].role = role
         components[ref].current_rating_ma = current_rating_ma
         components[ref].notes = notes
         components[ref].supply_nets = list(supply_nets) if supply_nets else None
+        components[ref].input_nets = list(input_nets) if input_nets else None
         components[ref].classified = True
 
 
@@ -290,22 +298,32 @@ def _supply_nets(comp: ComponentInfo) -> Tuple[List[str], List[str]]:
 def _regulator_terminals(comp: ComponentInfo) -> Tuple[List[str], List[str]]:
     """(output nets, input nets) of a POWER_SOURCE part.
 
-    Outputs are power_out pins or OUT-named pins; inputs are IN-named pins or
-    power_in pins on a non-ground net, read only when the part has outputs. A
-    part with no typed output (a connector, a battery holder, a regulator whose
+    Outputs are the `supply_nets` the agent named, else power_out pins or
+    OUT-named pins; inputs are the `input_nets` the agent named and IN-named
+    pins or power_in pins on a non-ground net, read only when the part has
+    outputs -- naming its outputs no longer drops a typed regulator's input
+    (#1496). A net named as an input is never an output. A part with no output
+    and no named input (a connector, a battery holder, a regulator whose
     footprint carries no pintypes) offers its supply rails as outputs and has
-    no input, so it is a root source.
+    no input, so it is a root source (`root_regulator_warnings` names the ones
+    that look like regulators).
     """
     outs: List[str] = []
-    ins: List[str] = []
-    if not comp.supply_nets:
+    named_in = [n for n in (comp.input_nets or ())
+                if _is_connected(n) and not is_ground_net_name(n)]
+    ins: List[str] = list(named_in)
+    if comp.supply_nets:
+        outs = [n for n in comp.supply_nets
+                if _is_connected(n) and not is_ground_net_name(n) and n not in named_in]
+    else:
         for pad, pt in comp.pin_types.items():
             net = comp.net_connections.get(pad, '')
             if not _is_connected(net) or is_ground_net_name(net):
                 continue
             fn = comp.pin_functions.get(pad, '').upper()
-            if ('power_out' in (pt or '').split('+')
-                    or fn in ('OUT', 'VOUT', 'OUTPUT')) and net not in outs:
+            if (('power_out' in (pt or '').split('+')
+                    or fn in ('OUT', 'VOUT', 'OUTPUT'))
+                    and net not in outs and net not in named_in):
                 outs.append(net)
     for pad, net in comp.net_connections.items():
         if (not outs or not _is_connected(net) or is_ground_net_name(net)
@@ -324,8 +342,32 @@ def _regulator_terminals(comp: ComponentInfo) -> Tuple[List[str], List[str]]:
             # never reached by the search, so a data pin here costs nothing.
             rails = [n for n in dict.fromkeys(comp.net_connections.values())
                      if _is_connected(n) and not is_ground_net_name(n)]
-        return rails, []
+        # #1496: a named input is never one of its own outputs
+        return [n for n in rails if n not in named_in], named_in
     return outs, ins
+
+
+def root_regulator_warnings(components: Dict[str, ComponentInfo]) -> List[str]:
+    """#1496: one line per classified POWER_SOURCE that is a ROOT (no input)
+    while it has pads on two or more rail-named nets -- a regulator whose pins
+    say nothing reads as one, and the load behind it then never reaches its
+    input rail. A connector on one rail is not named."""
+    out = []
+    for ref, comp in sorted(components.items()):
+        if comp.role != ComponentRole.POWER_SOURCE or not comp.classified:
+            continue
+        _outs, ins = _regulator_terminals(comp)
+        if ins:
+            continue
+        rails = sorted({n for n in comp.net_connections.values()
+                        if _is_connected(n) and not is_ground_net_name(n)
+                        and is_power_net_name(n)})
+        if len(rails) >= 2:
+            out.append(f"{ref} is a root source with pads on rails {', '.join(rails)}: if it "
+                       f"is a regulator, name its input with classify_component(..., "
+                       f"input_nets=[...]) (and its output with supply_nets=[...]), or "
+                       f"its input rail carries none of its load's current")
+    return out
 
 
 def trace_power_paths(pcb_data: PCBData,
@@ -485,6 +527,8 @@ def get_power_net_recommendations(pcb_data: PCBData,
             f"classified part(s) {', '.join(sorted(lost))} reach no power net, so "
             f"they contribute no width; name their nets with "
             f"classify_component(..., supply_nets=[...])", stacklevel=2)
+    for line in root_regulator_warnings(components):
+        warnings.warn(line, stacklevel=2)
 
     net_currents: Dict[str, float] = {}
     charged: Set[Tuple[str, str]] = set()          # (sink ref, net)
