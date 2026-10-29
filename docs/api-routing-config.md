@@ -565,6 +565,7 @@ on the corpus.
 | `max_turn_angle` | `180.0` | Cumulative turn limit before reset (prevents U-turns) |
 | `gnd_via_enabled` | `True` | Place GND return vias next to diff-pair signal vias |
 | `diff_pair_intra_match` | `False` | Meander the shorter of P/N to match lengths within the pair |
+| `intra_pair_tolerances` | `None` | `{P net id: mm}`, set by the diff-pair engine (#1503): the pairs matched P to N this run and the skew each is matched to -- a `.kicad_dru` P/N skew rule's max, the explicit override, else `length_match_tolerance` |
 | `ac_couple_match` | `False` | End-to-end length-match AC-coupled pairs split by series caps: concatenated P vs N path (#196) |
 | `diff_chamfer_extra` | `1.5` | Meander chamfer multiplier for pairs (avoids P/N crossings) |
 | `diff_pair_hybrid_escape` | `True` | When a coupled pair's terminal connector can't clear foreign copper (#165 graze), keep the coupled middle and defer each terminal leg to a single-ended point-to-point join instead of failing the whole pair |
