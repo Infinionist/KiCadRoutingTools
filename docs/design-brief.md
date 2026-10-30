@@ -599,6 +599,8 @@ zone in board coordinates; a `cans[]` row says it once and compiles to them:
 out; every part not listed is out. Members are literal references, never
 patterns. A face not listed claims nothing: list `B` only when the can's
 footprint area on the other face is kept for its own parts too.
+Two cans whose zones overlap on a face both list are refused: each can's
+keep-out would shut out the other's parts.
 `interior_height_mm` and `source` are required -- a part is admitted under a
 can only by a declared height, never a guessed one -- and `zone` is required
 with or without `ref`: it is not read off the drawn can. A member whose

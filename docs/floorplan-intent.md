@@ -936,7 +936,7 @@ status from this list:
 | `intent_zone_in_keepout` | a declared zone is contradicted by a keep-out that binds its members: covered entirely (reported per block), or left with no pose for a member at any rotation (per member) | `zone_covered_by_keepout`, then `zone_pose_feasibility` |
 | `keepout_allow_unresolved` | a keep-out's `allow` pattern matches no footprint (**warn** by default) | `allow_pattern_matches`, the resolver's own matcher |
 | `intent_zone_outside_envelope` | the intent contradicts itself (no board needed) | — |
-| `intent_zone_overlap` | two zones overlap on one face -- a **warn**: a member of either may sit in the shared area | — |
+| `intent_zone_overlap` | two zones overlap on one face -- a **warn**: a member of either may sit in the shared area. Not raised when a keep-out over the shared area already shuts out every (literal) member of one of them, as a shield can's keep-out does for the block it stands in | — |
 | `plan_zone_exclusive_unsatisfiable` | a member has no pose in its own zone that stays out of a stranger's EXCLUSIVE zone -- the one overlap no placement can satisfy | `zone_pose_feasibility` with the exclusive zone as a keep-out |
 | `array_formation` | a declared array is not ONE formed row: off a common axis, out of the expected order (either direction), at more than one rotation or not the declared one, or at uneven (or not the declared) pitch. A policy rule, dark when nothing is declared | `arrays.formation` over the courtyard centres (`GradedPart.rect`) and board rotations; the order from `arrays.pin_order` |
 | `array_unresolved` | an array names a member, or a `serves` part, this board does not have | — |

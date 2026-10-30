@@ -20,7 +20,9 @@ Each section names the defect it is there to catch:
      drawn, never by its bounding box); nor does a zone that is not under
      the can, or a can whose outline cannot be read;
   6. the merge takes a can's parts out of an inferred block and says so,
-     `either`-only cans included;
+     `either`-only cans included; the can's block inside that block's zone
+     is no `intent_zone_overlap`, since the can's keep-out closes the shared
+     area to the other block's parts (and without it, it is);
   7. drift: none when equal, the can's clause when its zone changes, when
      only a block changes (a part moved from `in` to `either`), and when an
      undrawn can's lid height changes;
@@ -369,6 +371,18 @@ def _main(tmp):
     check('each change is a contradiction',
           sum('under a can' in c for c in rep['contradictions']) == 2,
           str(rep['contradictions']))
+    # the can's block lies inside sheetA's zone, and the can's keep-out shuts
+    # sheetA's own part out of it: the shared area is not "either's"
+    def overlaps(d):
+        return [v.block for v in fp.validate_intent(
+            fp.intent_from_dict(copy.deepcopy(d), 't.json'))
+            if v.rule == 'intent_zone_overlap']
+    check('no zone-overlap warning where the can\'s keep-out closes the area',
+          overlaps(doc) == [], str(overlaps(doc)))
+    bare = dict(doc, keepouts=[k for k in doc.get('keepouts') or ()
+                               if not k['name'].startswith('can:')])
+    check('without the keep-out the overlap is warned (the control)',
+          overlaps(bare) != [], str(overlaps(bare)))
     # a can of `either` parts only compiles no block, and still takes them
     doc, _f, rep = intent_for(brief([can_row(members={'F': {'either': ['C1', 'C2']}})]),
                               None, '', copy.deepcopy(emitted))
@@ -449,12 +463,23 @@ def _main(tmp):
                                  members={'F': {'in': ['C1']}})], (),
              'one can per part'),
             ('the can also in heights[]', [can_row()], (('SH1', 3.0),),
-             'also in heights[]')):
+             'also in heights[]'),
+            ('two cans over one area of one face',
+             [can_row(), can_row(name='RF2', ref='SH2', zone=[20, 20, 35, 35],
+                                 members={'F': {'in': ['R5']}})], (),
+             'overlaps cans[0] (RF) on face F')):
         try:
             brief(cans, hts)
             check(f"refused: {label}", False, 'accepted')
         except db.BriefError as exc:
             check(f"refused: {label}", why in str(exc), str(exc))
+    try:
+        brief([can_row(), can_row(name='RF2', ref='SH2', zone=[20, 20, 35, 35],
+                                  members={'B': {'in': ['R5']}})])
+        check('two cans over one area of different faces are accepted', True)
+    except db.BriefError as exc:
+        check('two cans over one area of different faces are accepted', False,
+              str(exc))
     try:
         db.brief_from_dict({'schema': 1, 'kind': 'design-brief',
                             'keepouts': [{'name': 'can:x', 'rect': ZONE}]})

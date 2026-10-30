@@ -978,6 +978,22 @@ def _can_rows(raw: Dict, heights) -> List[Dict]:
         row = dict(c)
         row['zone'] = list(zone)
         out.append(row)
+    # Two cans over one area of one face cannot both hold: each can's keep-out
+    # shuts out the other's parts, so a part either can claims is refused by
+    # the other.
+    for i, a in enumerate(out):
+        for b in out[i + 1:]:
+            shared = sorted(set(a['members']) & set(b['members']))
+            za, zb = a['zone'], b['zone']
+            w = min(za[2], zb[2]) - max(za[0], zb[0])
+            h = min(za[3], zb[3]) - max(za[1], zb[1])
+            if shared and w > 0 and h > 0:
+                raise BriefError(
+                    f"cans[{names[b['name']]}] ({b['name']}): its zone overlaps "
+                    f"cans[{names[a['name']]}] ({a['name']}) on face "
+                    f"{', '.join(shared)} by {w:g} x {h:g} mm -- each can's "
+                    f"keep-out shuts out the other's parts. Give them "
+                    f"separate zones")
     return out
 
 
