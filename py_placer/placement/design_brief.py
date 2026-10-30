@@ -1949,6 +1949,7 @@ def can_consequences(fragment: Dict, report: Dict, pcb=None,
     if not cans or pcb is None:
         return fragment, report
     import copy
+    from .legality import footprint_side
     frag = copy.deepcopy(fragment)
     rep = copy.deepcopy(report)
     rows = rep.setdefault('consequences', [])
@@ -1961,7 +1962,7 @@ def can_consequences(fragment: Dict, report: Dict, pcb=None,
             continue                        # reported as unmatched already
         zone = h['context']['can_zone']
         side = h['context']['can_side']
-        face = 'B' if str(fp_.layer or '').startswith('B') else 'F'
+        face = footprint_side(fp_)
         why = None
         if face != side:
             why = f"{ref} is on the {face} face, and the row declares {side}"
